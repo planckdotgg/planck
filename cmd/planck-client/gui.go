@@ -1,0 +1,154 @@
+//go:build darwin || windows
+
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"sync/atomic"
+
+	"github.com/egoist/mygo"
+
+	"github.com/planckdotgg/planck/internal/session"
+	"github.com/planckdotgg/planck/internal/ui"
+	"github.com/planckdotgg/planck/internal/ui/theme"
+	"github.com/planckdotgg/planck/pkg/decode"
+	"github.com/planckdotgg/planck/pkg/discovery"
+	"github.com/planckdotgg/planck/pkg/player"
+	"github.com/planckdotgg/planck/pkg/tailscale"
+)
+
+func runGUI(o options) error {
+	if err := theme.RegisterFonts(); err != nil {
+		return err
+	}
+	logf := log.Printf
+	ts := tailscale.New()
+	f := newFinder(fmt.Sprintf(":%d", discovery.DefaultPort), ts, nil, logf)
+	video := &videoView{logf: logf}
+	b, err := newBackend(backendConfig{
+		dir: o.configDir, name: o.name, finder: f, tailscale: ts, openSink: video.open,
+		hostConfig: func(s ui.Settings) session.HostConfig {
+			c := session.DefaultHostConfig()
+			c.ConfigDir, c.Name, c.Adapter, c.InjectInput, c.Logf = o.configDir, o.name, s.Encoder, true, logf
+			return c
+		},
+		encoders: localEncoders(), logf: logf,
+	})
+	if err != nil {
+		return err
+	}
+	app := ui.NewApp(b)
+	fwd := &inputForwarder{send: b.SendInput}
+	app.SetStreamView(fwd.view)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go f.run(ctx)
+	mygo.App.WhenReady(func() {
+		win := mygo.NewWindow(mygo.WindowOptions{
+			Title: "Planck", Width: 1280, Height: 800, MinWidth: 960, MinHeight: 600,
+			BackgroundColor: "#0E0F12", Transparent: composeUnderUI, Content: app.Content(),
+		})
+		video.attach(win)
+		win.OnResize(video.resized)
+	})
+	err = mygo.App.Run()
+	b.close()
+	return err
+}
+
+// videoView puts each stream's GPU surface under the window's UI and
+// tracks the window's size for it.
+type videoView struct {
+	logf func(string, ...any)
+	win  atomic.Pointer[mygo.Window]
+	cur  atomic.Pointer[surfaceHost]
+	// size is the window's content size in DIPs, width in the high half;
+	// resize tells the presenting thread it changed.
+	size   atomic.Uint64
+	resize atomic.Bool
+}
+
+// attach runs on the main thread.
+func (v *videoView) attach(w *mygo.Window) {
+	v.win.Store(w)
+	v.storeSize(w)
+}
+
+func (v *videoView) storeSize(w *mygo.Window) {
+	cw, ch := w.ContentSize()
+	v.size.Store(uint64(uint32(cw))<<32 | uint64(uint32(ch)))
+}
+
+func (v *videoView) contentSize() (int, int) {
+	s := v.size.Load()
+	return int(s >> 32), int(uint32(s))
+}
+
+// resized runs on the main thread after the window's size changed; the
+// presenting thread resizes the surface before its next picture.
+func (v *videoView) resized() {
+	w := v.win.Load()
+	if w == nil {
+		return
+	}
+	v.storeSize(w)
+	if h := v.cur.Load(); h != nil {
+		h.fit()
+	}
+	v.resize.Store(true)
+}
+
+var errNoWindow = errors.New("no window to show the stream in")
+
+// open is the session's SinkOpener: a surface on the window, made on the
+// main thread, and a hardware decoder on its device.
+func (v *videoView) open(cfg decode.Config) (session.Sink, error) {
+	w := v.win.Load()
+	if w == nil {
+		return nil, errNoWindow
+	}
+	var h *surfaceHost
+	var err error
+	mygo.RunOnMain(func() { h, err = newSurfaceHost(w) })
+	if err != nil {
+		return nil, err
+	}
+	if h == nil {
+		return nil, errNoWindow
+	}
+	p, err := player.Open(h.surf, cfg, 0)
+	if err != nil {
+		mygo.RunOnMain(h.close)
+		return nil, err
+	}
+	v.cur.Store(h)
+	v.resize.Store(true)
+	return &surfaceSink{v: v, host: h, p: p}, nil
+}
+
+// surfaceSink decodes and presents on the session's decode goroutine.
+type surfaceSink struct {
+	v    *videoView
+	host *surfaceHost
+	p    *player.Player
+}
+
+func (s *surfaceSink) Submit(au []byte, pts int64) (player.Timing, error) {
+	if s.v.resize.Swap(false) {
+		if err := s.host.resizeSurface(s.p, s.v); err != nil {
+			s.v.logf("planck: resize the video surface: %v", err)
+		}
+	}
+	return s.p.Submit(au, pts)
+}
+
+func (s *surfaceSink) Close() error {
+	err := s.p.Close()
+	s.v.cur.CompareAndSwap(s.host, nil)
+	mygo.RunOnMain(s.host.close)
+	return err
+}
