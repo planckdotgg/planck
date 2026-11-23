@@ -137,13 +137,19 @@ const (
 	drainTarget = 0.5
 	// holdQueueNs stops increases while this much queueing delay remains.
 	holdQueueNs = int64(15 * time.Millisecond)
+	// An application-limited sender sends under appLimitedShare of the
+	// target. Its sparse, bursty frames trip the delay trendline without any
+	// congestion, so it only acts on delay overuse once a standing queue of
+	// appLimitedQueueNs shows the path really is full.
+	appLimitedShare   = 0.7
+	appLimitedQueueNs = int64(5 * time.Millisecond)
 )
 
 type point struct{ x, y float64 }
 
 type delivery struct {
-	at    int64
-	bytes int
+	at, sent int64
+	bytes    int
 }
 
 // Controller is the sender-side bitrate controller. Not safe for concurrent
@@ -244,23 +250,32 @@ func (c *Controller) clamp(kbps float64) float64 {
 // DeliveredKbps is the receive rate over the last half second of acks, or 0
 // before there is enough history.
 func (c *Controller) DeliveredKbps() int {
+	return c.rateKbps(func(d delivery) int64 { return d.at })
+}
+
+// sentKbps is the send rate of the acked frames over the last half second.
+func (c *Controller) sentKbps() int {
+	return c.rateKbps(func(d delivery) int64 { return d.sent })
+}
+
+func (c *Controller) rateKbps(ts func(delivery) int64) int {
 	if c.histLen < 2 {
 		return 0
 	}
 	newest := c.hist[(c.histHead-1+deliveredHistory)%deliveredHistory]
 	bytes := 0
-	oldest := newest.at
+	oldest := ts(newest)
 	for i := 0; i < c.histLen; i++ {
 		d := c.hist[(c.histHead-1-i+2*deliveredHistory)%deliveredHistory]
-		if newest.at-d.at > rateWindowNs {
+		if ts(newest)-ts(d) > rateWindowNs {
 			break
 		}
-		oldest = d.at
+		oldest = ts(d)
 		if i > 0 {
 			bytes += d.bytes
 		}
 	}
-	span := newest.at - oldest
+	span := ts(newest) - oldest
 	if span <= 0 {
 		return 0
 	}
@@ -301,7 +316,7 @@ func (c *Controller) Update(a Ack) Decision {
 }
 
 func (c *Controller) recordDelivery(a Ack) {
-	c.hist[c.histHead] = delivery{at: a.ArrivalTS, bytes: a.Bytes}
+	c.hist[c.histHead] = delivery{at: a.ArrivalTS, sent: a.SendTS, bytes: a.Bytes}
 	c.histHead = (c.histHead + 1) % deliveredHistory
 	c.histLen = min(c.histLen+1, deliveredHistory)
 	if c.avgFrame == 0 {
@@ -424,9 +439,11 @@ func (c *Controller) adjust(now int64, rtt time.Duration) {
 		c.lastDecrease = c.target
 	}
 
+	appLimited := float64(c.sentKbps()) < appLimitedShare*c.target
 	switch c.usage {
 	case UsageOver:
-		if now-c.lastCut >= responseNs {
+		congested := !appLimited || c.queueNs >= appLimitedQueueNs
+		if congested && now-c.lastCut >= responseNs {
 			base := c.target
 			if delivered > 0 {
 				base = min(base, delivered)
@@ -442,14 +459,17 @@ func (c *Controller) adjust(now int64, rtt time.Duration) {
 		if c.loss > lowLoss || dt == 0 || c.queueNs > holdQueueNs {
 			break
 		}
+		prev := c.target
 		if c.lastDecrease > 0 && c.target < 1.2*c.lastDecrease {
 			halfFrameKbits := c.avgFrame * 4 / 1000
 			c.target += max(halfFrameKbits, 1) * dt * 1e9 / float64(responseNs)
 		} else {
 			c.target *= math.Pow(1.08, dt)
 		}
+		// What was delivered only limits growth; an encoder sending less
+		// than asked is no reason to lower the target.
 		if delivered > 0 {
-			c.target = min(c.target, 1.5*delivered+10)
+			c.target = max(prev, min(c.target, 1.5*delivered+10))
 		}
 	}
 	c.target = c.clamp(c.target)

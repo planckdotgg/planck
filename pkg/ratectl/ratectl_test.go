@@ -1,6 +1,7 @@
 package ratectl
 
 import (
+	"math/rand/v2"
 	"net/netip"
 	"testing"
 	"time"
@@ -187,5 +188,133 @@ func TestClassifyAddr(t *testing.T) {
 		if got := ClassifyAddr(netip.MustParseAddr(s)); got != want {
 			t.Errorf("%s: %v, want %v", s, got, want)
 		}
+	}
+}
+
+// source is a frame producer for simulateSource: next returns the gap to
+// the following frame and that frame's size given the current target.
+type source func(i int, targetKbps int) (gap int64, bytes int)
+
+// simulateSource is simulate with a pluggable frame source and per-frame
+// path jitter, for application-limited senders and noisy paths.
+func simulateSource(c *Controller, l *link, src source, jitter func(i int) int64, dur time.Duration) simResult {
+	var res simResult
+	var pending []pendingAck
+	t := int64(0)
+	for i := 0; t < int64(dur); i++ {
+		gap, bytes := src(i, c.TargetKbps())
+		t += gap
+		for len(pending) > 0 && pending[0].at <= t {
+			a := pending[0].ack
+			a.Now = pending[0].at
+			c.Update(a)
+			pending = pending[1:]
+		}
+		start := max(t, l.free)
+		done := start + int64(float64(bytes*8)/(l.capKbps(t)*1000)*1e9)
+		l.free = done
+		arrival := done + l.prop
+		if jitter != nil {
+			arrival += jitter(i)
+		}
+		a := Ack{SendTS: t, ArrivalTS: arrival, Bytes: bytes, RTT: time.Duration(2*l.prop + (start - t)), Loss: 0}
+		at := arrival + l.prop
+		k := len(pending)
+		for k > 0 && pending[k-1].at > at {
+			k--
+		}
+		pending = append(pending[:k], append([]pendingAck{{at: at, ack: a}}, pending[k:]...)...)
+		res.targets = append(res.targets, c.TargetKbps())
+		res.queueMs = append(res.queueMs, float64(start-t)/1e6)
+		res.times = append(res.times, t)
+	}
+	return res
+}
+
+func minTarget(r simResult, from time.Duration) int {
+	m := 1 << 30
+	for i, t := range r.times {
+		if t >= int64(from) {
+			m = min(m, r.targets[i])
+		}
+	}
+	return m
+}
+
+// TestAppLimitedCaptureHoldsTarget is a real desktop at 60 Hz: the screen
+// changes at irregular intervals and the encoder sends far less than the
+// target on a 1 Gbps LAN with no loss. Nothing is congested, so the target
+// must not fall to what the encoder happened to send.
+func TestAppLimitedCaptureHoldsTarget(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.StartKbps = 40_000
+	c := New(cfg)
+	c.SetPath(PathLAN)
+	rng := rand.New(rand.NewPCG(1, 2))
+	frame := int64(time.Second) / 60
+	src := func(i int, _ int) (int64, int) {
+		gap := frame * int64(1+rng.IntN(4))
+		if rng.IntN(20) == 0 {
+			gap = int64(time.Duration(200+rng.IntN(1500)) * time.Millisecond)
+		}
+		bytes := 2_000 + rng.IntN(12_000)
+		if rng.IntN(30) == 0 {
+			bytes = 150_000 + rng.IntN(100_000)
+		}
+		return gap, bytes
+	}
+	r := simulateSource(c, &link{capKbps: constant(940_000), prop: int64(300 * time.Microsecond)}, src,
+		func(int) int64 { return int64(rng.IntN(300)) * int64(time.Microsecond) }, 60*time.Second)
+	avg, _, _ := window(r, 10*time.Second, 60*time.Second)
+	low := minTarget(r, 10*time.Second)
+	t.Logf("app-limited 60 Hz capture: avg target %.0f kbps, min %d kbps", avg, low)
+	if low < 30_000 {
+		t.Fatalf("target fell to %d kbps on an idle, lossless LAN; want it held near the 40000 start", low)
+	}
+}
+
+// TestTailscaleJitterHoldsTarget is a Tailscale direct path with 1-3 ms of
+// random per-frame jitter, occasional 5-25 ms spikes and no loss, carrying
+// an encoder that sends under its target on easy content.
+func TestTailscaleJitterHoldsTarget(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.StartKbps = 40_000
+	c := New(cfg)
+	c.SetPath(PathTailscaleDirect)
+	rng := rand.New(rand.NewPCG(3, 4))
+	frame := int64(time.Second) / 120
+	src := func(i int, target int) (int64, int) {
+		return frame, min(target*1000/8/120, 3_000+rng.IntN(20_000))
+	}
+	jitter := func(int) int64 {
+		j := int64(1000+rng.IntN(2000)) * int64(time.Microsecond)
+		if rng.IntN(50) == 0 {
+			j += int64(5+rng.IntN(20)) * int64(time.Millisecond)
+		}
+		return j
+	}
+	r := simulateSource(c, &link{capKbps: constant(150_000), prop: int64(2 * time.Millisecond)}, src, jitter, 60*time.Second)
+	avg, _, _ := window(r, 10*time.Second, 60*time.Second)
+	low := minTarget(r, 10*time.Second)
+	t.Logf("tailscale direct, 1-3 ms jitter: avg target %.0f kbps, min %d kbps", avg, low)
+	if low < 30_000 {
+		t.Fatalf("target fell to %d kbps on a lossless Tailscale path with 1-3 ms jitter", low)
+	}
+}
+
+// TestAppLimitedBacksOffWhenCongested: a sender under its target still
+// backs off when its frames overrun a slower link and queue.
+func TestAppLimitedBacksOffWhenCongested(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.StartKbps = 40_000
+	c := New(cfg)
+	src := func(i int, target int) (int64, int) {
+		return int64(time.Second) / 60, min(target*1000/8/60, 16_000)
+	}
+	r := simulateSource(c, &link{capKbps: constant(4_000), prop: int64(2 * time.Millisecond)}, src, nil, 30*time.Second)
+	avg, q, _ := window(r, 20*time.Second, 30*time.Second)
+	t.Logf("app-limited over 4 Mbps: avg target %.0f kbps, avg queue %.2f ms", avg, q)
+	if avg > 4_400 || q > 40 {
+		t.Fatalf("target %.0f kbps and queue %.1f ms over a 4 Mbps link: no back-off", avg, q)
 	}
 }
