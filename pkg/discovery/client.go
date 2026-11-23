@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/watzon/planck/pkg/tailscale"
+	"github.com/watzon/planck/pkg/transport"
 )
 
 type PathKind uint8
@@ -101,7 +102,8 @@ const probeRetry = 100 * time.Millisecond
 // Probe asks the host at addr for its beacon and measures the round trip.
 // It resends every 100 ms until a reply arrives or ctx ends. Replies are
 // matched by nonce, not source address: a multi-homed host may answer from
-// another interface.
+// another interface. RTT uses transport.Mono because Go's monotonic clock on
+// Windows steps in about 0.5 ms, which reads a LAN round trip as zero.
 func Probe(ctx context.Context, addr netip.AddrPort) (Beacon, time.Duration, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -119,7 +121,7 @@ func Probe(ctx context.Context, addr netip.AddrPort) (Beacon, time.Duration, err
 
 	dst := net.UDPAddrFromAddrPort(netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port()))
 	var mu sync.Mutex
-	sent := map[uint64]time.Time{}
+	sent := map[uint64]int64{}
 	sendOne := func() error {
 		nonce := rand.Uint64() | 1
 		pkt, err := encode(message{Type: msgProbe, Nonce: nonce})
@@ -127,7 +129,7 @@ func Probe(ctx context.Context, addr netip.AddrPort) (Beacon, time.Duration, err
 			return err
 		}
 		mu.Lock()
-		sent[nonce] = time.Now()
+		sent[nonce] = transport.Mono()
 		mu.Unlock()
 		_, err = conn.WriteTo(pkt, dst)
 		return err
@@ -170,7 +172,7 @@ func Probe(ctx context.Context, addr netip.AddrPort) (Beacon, time.Duration, err
 		at, ok := sent[m.Nonce]
 		mu.Unlock()
 		if ok {
-			return *m.Beacon, time.Since(at), nil
+			return *m.Beacon, time.Duration(transport.Mono() - at), nil
 		}
 	}
 }
