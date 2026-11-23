@@ -9,4 +9,5 @@ func init() {
 	commands["xfer"] = runXfer
 	commands["vendors"] = runVendors
 	commands["amf"] = runAMF
+	commands["pipeline"] = runPipeline
 }
