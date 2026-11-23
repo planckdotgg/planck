@@ -40,6 +40,9 @@ type App struct {
 	theme      *mui.Theme
 	goos       string
 	streamView func(c *mui.Context)
+	// videoTheme is theme with a clear window background, for a stream
+	// view whose video shows under the UI's layer.
+	videoTheme *mui.Theme
 
 	// Main-thread state, read and written only by the view.
 	screen       Screen
@@ -71,8 +74,14 @@ func (a *App) Content() *mui.Content { return mui.View(a.View) }
 
 // SetStreamView sets what draws the video under the HUD, such as an
 // element a GPU surface presents into. Without one the stream view shows
-// the letterbox well.
-func (a *App) SetStreamView(build func(c *mui.Context)) { a.streamView = build }
+// the letterbox well. With one, a live stream paints no background at
+// all, so that a surface beneath the window's UI layer shows through.
+func (a *App) SetStreamView(build func(c *mui.Context)) {
+	a.streamView = build
+	t := *a.theme
+	t.Background = mui.Color{}
+	a.videoTheme = &t
+}
 
 // Notify asks for a redraw. Safe from any goroutine.
 func (a *App) Notify() {
@@ -122,6 +131,9 @@ func (a *App) View(c *mui.Context) {
 	c.OnWindowShortcut(mui.Ctrl|mui.Alt, mui.KeyH, a.CycleHUD)
 
 	tel := a.backend.Telemetry()
+	if tel.Connected && a.streamView != nil {
+		c.SetTheme(a.videoTheme)
+	}
 	if tel.Connected || connecting != "" {
 		a.streamScreen(c, tel, connecting)
 		return

@@ -111,6 +111,10 @@ type ClientStats struct {
 	E2EMs     float64
 	E2E       Latency
 	Network   Latency
+	// Encode, Decode and Present summarize the last frames' stage times.
+	Encode  Latency
+	Decode  Latency
+	Present Latency
 
 	// FECParityPct is the parity share of the video datagrams received,
 	// estimated from datagram counts.
@@ -181,6 +185,9 @@ type conn struct {
 	mu        sync.Mutex
 	e2e       *window
 	network   *window
+	encodeW   *window
+	decodeW   *window
+	presentW  *window
 	encodeMs  float64
 	decodeMs  float64
 	presentMs float64
@@ -281,7 +288,8 @@ func (c *Client) connect(ctx context.Context, t Target) (*conn, error) {
 	}
 
 	cc := &conn{hostID: hostID, name: r.name, path: path.String(), addr: addr, frames: make(chan *frameBuf, frameQueue),
-		free: make(chan *frameBuf, frameQueue+2), e2e: newWindow(latencyWindow), network: newWindow(latencyWindow)}
+		free: make(chan *frameBuf, frameQueue+2), e2e: newWindow(latencyWindow), network: newWindow(latencyWindow),
+		encodeW: newWindow(latencyWindow), decodeW: newWindow(latencyWindow), presentW: newWindow(latencyWindow)}
 	for range frameQueue + 2 {
 		cc.free <- &frameBuf{}
 	}
@@ -470,6 +478,11 @@ func (cc *conn) decodeLoop(sink Sink, logf func(string, ...any)) {
 		cc.mu.Lock()
 		cc.encodeMs = ms(info.EncodeTS - info.CaptureTS)
 		cc.decodeMs, cc.presentMs = ms(int64(t.Decode)), ms(int64(t.Present))
+		cc.encodeW.add(cc.encodeMs)
+		if err == nil {
+			cc.decodeW.add(cc.decodeMs)
+			cc.presentW.add(cc.presentMs)
+		}
 		if clock.Samples() > 0 {
 			cc.network.add(ms(arrival - clock.ToLocal(info.EncodeTS)))
 			if err == nil {
@@ -567,6 +580,7 @@ func (cc *conn) stats() ClientStats {
 	}
 	s.EncodeMs, s.DecodeMs, s.PresentMs = cc.encodeMs, cc.decodeMs, cc.presentMs
 	s.E2E, s.Network = cc.e2e.summary(), cc.network.summary()
+	s.Encode, s.Decode, s.Present = cc.encodeW.summary(), cc.decodeW.summary(), cc.presentW.summary()
 	s.E2EMs, s.NetworkMs = cc.e2e.last(), cc.network.last()
 	cc.mu.Unlock()
 	return s

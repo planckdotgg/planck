@@ -53,7 +53,11 @@ func stages(t Telemetry) []stage {
 }
 
 func (a *App) streamScreen(c *mui.Context, tel Telemetry, connecting string) {
-	mui.Box(c).Fill().Background(theme.RoleWell).Children(func() {
+	well := mui.Box(c).Fill()
+	if !tel.Connected || a.streamView == nil {
+		well.Background(theme.RoleWell)
+	}
+	well.Children(func() {
 		if !tel.Connected {
 			mui.Column(c).Fill().AlignItems(mui.Center).Justify(mui.Center).Gap(theme.Space4).Children(func() {
 				sliceMeter(c, 1, 4, theme.RoleAccent)
