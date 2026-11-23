@@ -3,6 +3,7 @@
 package gpusurface
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"syscall"
@@ -93,6 +94,24 @@ var (
 	procQPF        = kernel32.NewProc("QueryPerformanceFrequency")
 	procD3DCompile = syscall.NewLazyDLL(device.SystemDir() + `\d3dcompiler_47.dll`).NewProc("D3DCompile")
 	qpcFrequency   int64
+)
+
+// DirectComposition, for Options.Composite.
+const (
+	factoryCreateSwapChainComp = 24 // CreateSwapChainForComposition
+	alphaModeIgnore            = 3
+	// IDCompositionDevice, IDCompositionTarget, IDCompositionVisual
+	dcompCommit           = 3
+	dcompCreateTarget     = 6 // CreateTargetForHwnd
+	dcompCreateVisual     = 7
+	dcompTargetSetRoot    = 3
+	dcompVisualSetContent = 15 // the overload taking an IUnknown
+)
+
+var (
+	iidIDCompositionDevice       = guid{0xc37ea93a, 0xe7aa, 0x450d, [8]byte{0xb1, 0x6f, 0x97, 0x46, 0xcb, 0x04, 0x07, 0xf3}}
+	procDCompositionCreateDevice = syscall.NewLazyDLL(device.SystemDir() + `\dcomp.dll`).NewProc("DCompositionCreateDevice")
+	procGetClientRect            = syscall.NewLazyDLL(device.SystemDir() + `\user32.dll`).NewProc("GetClientRect")
 )
 
 func init() { procQPF.Call(uintptr(unsafe.Pointer(&qpcFrequency))) }
@@ -252,6 +271,9 @@ type Surface struct {
 	adapterName          string
 	width, height        int
 
+	// dcomp, target and visual show the swap chain with Options.Composite.
+	dcomp, target, visual uintptr
+
 	cache    [wrapCache]frameViews
 	nextSlot int
 	noViews  [2]uintptr
@@ -263,7 +285,7 @@ type Surface struct {
 }
 
 // New makes a surface with a swap chain of its own on opts.Window, an
-// HWND, which has none.
+// HWND, which has none unless opts.Composite.
 func New(opts Options) (s *Surface, err error) {
 	if opts.Window == 0 {
 		return nil, errors.New("gpusurface: no window")
@@ -311,10 +333,16 @@ func New(opts Options) (s *Surface, err error) {
 	if s.tearing {
 		desc.Flags = swapChainTearing
 	}
-	if hr := call(s.factory, factoryCreateSwapChain, s.device, s.hwnd, uintptr(unsafe.Pointer(&desc)), 0, 0, uintptr(unsafe.Pointer(&s.swapChain))); failed(hr) {
-		return nil, fmt.Errorf("gpusurface: cannot create the swap chain: %#x", uint32(hr))
+	if opts.Composite {
+		if err = s.compose(dxgiDev, desc); err != nil {
+			return nil, err
+		}
+	} else {
+		if hr := call(s.factory, factoryCreateSwapChain, s.device, s.hwnd, uintptr(unsafe.Pointer(&desc)), 0, 0, uintptr(unsafe.Pointer(&s.swapChain))); failed(hr) {
+			return nil, fmt.Errorf("gpusurface: cannot create the swap chain: %#x", uint32(hr))
+		}
+		call(s.factory, factoryMakeWindowAssoc, s.hwnd, mwaNoAltEnter)
 	}
-	call(s.factory, factoryMakeWindowAssoc, s.hwnd, mwaNoAltEnter)
 	if err = s.viewBackBuffer(); err != nil {
 		return nil, err
 	}
@@ -322,6 +350,53 @@ func New(opts Options) (s *Surface, err error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// compose makes a swap chain for composition of the window's client size
+// and shows it as the root visual of a target on the window that is not
+// topmost, on a DirectComposition device of the surface's own, as MyGo
+// shows web views under a window's frames. The swap chain's frames show as
+// it presents them, with no commit.
+func (s *Surface) compose(dxgiDev uintptr, desc swapChainDesc1) error {
+	if err := procDCompositionCreateDevice.Find(); err != nil {
+		return fmt.Errorf("gpusurface: no DirectComposition: %w", err)
+	}
+	if hr, _, _ := procDCompositionCreateDevice.Call(dxgiDev, uintptr(unsafe.Pointer(&iidIDCompositionDevice)), uintptr(unsafe.Pointer(&s.dcomp))); failed(hr) {
+		return fmt.Errorf("gpusurface: cannot create the DirectComposition device: %#x", uint32(hr))
+	}
+	desc.Width, desc.Height = s.clientSize()
+	desc.AlphaMode = alphaModeIgnore
+	hr := call(s.factory, factoryCreateSwapChainComp, s.device, uintptr(unsafe.Pointer(&desc)), 0, uintptr(unsafe.Pointer(&s.swapChain)))
+	if failed(hr) && s.tearing {
+		s.tearing, desc.Flags = false, 0
+		hr = call(s.factory, factoryCreateSwapChainComp, s.device, uintptr(unsafe.Pointer(&desc)), 0, uintptr(unsafe.Pointer(&s.swapChain)))
+	}
+	if failed(hr) {
+		return fmt.Errorf("gpusurface: cannot create the swap chain for composition: %#x", uint32(hr))
+	}
+	if hr := call(s.dcomp, dcompCreateTarget, s.hwnd, 0, uintptr(unsafe.Pointer(&s.target))); failed(hr) {
+		return fmt.Errorf("gpusurface: cannot compose the window: %#x", uint32(hr))
+	}
+	if hr := call(s.dcomp, dcompCreateVisual, uintptr(unsafe.Pointer(&s.visual))); failed(hr) {
+		return fmt.Errorf("gpusurface: cannot create the visual: %#x", uint32(hr))
+	}
+	if hr := call(s.visual, dcompVisualSetContent, s.swapChain); failed(hr) {
+		return fmt.Errorf("gpusurface: cannot show the swap chain in the visual: %#x", uint32(hr))
+	}
+	if hr := call(s.target, dcompTargetSetRoot, s.visual); failed(hr) {
+		return fmt.Errorf("gpusurface: cannot show the visual on the window: %#x", uint32(hr))
+	}
+	if hr := call(s.dcomp, dcompCommit); failed(hr) {
+		return fmt.Errorf("gpusurface: cannot commit the composition: %#x", uint32(hr))
+	}
+	return nil
+}
+
+// clientSize returns the window's client size in pixels, at least 1 x 1.
+func (s *Surface) clientSize() (w, h uint32) {
+	var r struct{ Left, Top, Right, Bottom int32 }
+	procGetClientRect.Call(s.hwnd, uintptr(unsafe.Pointer(&r)))
+	return uint32(max(r.Right-r.Left, 1)), uint32(max(r.Bottom-r.Top, 1))
 }
 
 // tearingSupported reports whether the system shows frames presented with
@@ -535,6 +610,11 @@ func (s *Surface) Resize(w, h int) error {
 	if w < 0 || h < 0 {
 		return fmt.Errorf("gpusurface: size %dx%d", w, h)
 	}
+	if s.dcomp != 0 && (w == 0 || h == 0) {
+		// A swap chain for composition has no window to take the size of.
+		cw, ch := s.clientSize()
+		w, h = cmp.Or(w, int(cw)), cmp.Or(h, int(ch))
+	}
 	// The swap chain resizes only once nothing holds its back buffer.
 	fastCall(s.ctx, ctxOMSetRenderTargets, 0, 0, 0, 0, 0)
 	free(&s.rtv)
@@ -578,7 +658,11 @@ func (s *Surface) Close() {
 		free(&s.cache[i].srv[1])
 		free(&s.cache[i].crop)
 	}
-	for _, p := range []*uintptr{&s.params10, &s.params8, &s.sampler, &s.psYUV, &s.psRGB, &s.vs, &s.rtv, &s.swapChain, &s.factory, &s.ctx, &s.device} {
+	if s.target != 0 {
+		call(s.target, dcompTargetSetRoot, 0)
+		call(s.dcomp, dcompCommit)
+	}
+	for _, p := range []*uintptr{&s.params10, &s.params8, &s.sampler, &s.psYUV, &s.psRGB, &s.vs, &s.rtv, &s.visual, &s.target, &s.dcomp, &s.swapChain, &s.factory, &s.ctx, &s.device} {
 		free(p)
 	}
 }

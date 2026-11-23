@@ -58,6 +58,12 @@ type Options struct {
 	Adapter string
 	// Timings is how many frames, from the first, record a Timing.
 	Timings int
+	// Composite, on Windows, shows the frames through a DirectComposition
+	// target on Window that is not topmost, under the window's own content
+	// and the topmost target a MyGo window with Transparent draws through,
+	// which shows the frames where it paints nothing. The window may then
+	// have a swap chain of its own. macOS ignores it.
+	Composite bool
 }
 
 // Timing is the way of one frame from Present to the screen, in

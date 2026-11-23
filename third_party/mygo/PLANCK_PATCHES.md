@@ -34,6 +34,14 @@ Phase 1B added, in the same files:
 | `gpusurface/gpusurface_darwin.go` | `Resize(w, h)`: the layer's frame (in points) and drawable size (in pixels). |
 | `gpusurface/gpusurface_other.go` | `Resize` returns an error. |
 
+Phase 1B polish added:
+
+| File | What |
+|---|---|
+| `gpusurface/gpusurface.go` | `Options.Composite` (Windows; macOS ignores it). |
+| `gpusurface/gpusurface_windows.go` | With `Composite`: `CreateSwapChainForComposition` at the window's client size (flip-discard, `DXGI_ALPHA_MODE_IGNORE`, the tearing flag kept when the factory takes it, else dropped), on a `DCompositionCreateDevice` device of the surface's own, as the root visual of `CreateTargetForHwnd(hwnd, FALSE)`: a target that is not topmost, under the topmost one a MyGo `Transparent` window draws its UI through, the pattern of `internal/windows/webview_embed.go`. `Resize(0, 0)` takes the client size itself (a composition swap chain has no window), and `Close` detaches the visual. Pass the `MyGoSurface` child window, where MyGo's target is, not the top-level `NativeHandle()`: a target on the top-level window does not show under the child. |
+| `gpusurface/gpusurface_windows_test.go` | `TestComposite`: a composite surface takes the client size, follows a resize, and its frames reach the screen (`GetPixel` on the desktop DC). |
+
 ### API
 
 ```go
@@ -55,9 +63,10 @@ allocate, on Core Animation's thread.
 1. `gpusurface` as is, behind its own package so apps that do not import it
    pay nothing (MyGo's "apps pay only for what they use" rule).
 2. Open questions for upstream:
-   - On Windows the surface needs an HWND with no swap chain. To sit inside a
-     MyGo native-UI window it needs a child HWND or a DirectComposition
-     visual under the window's own.
+   - On Windows the surface needs an HWND with no swap chain, or `Composite`
+     to sit under a MyGo native-UI window's own target. Its caller finds the
+     `MyGoSurface` child by class name; upstream could expose the content
+     HWND (or a `platform.SurfaceNative`) so callers need not.
    - The zero-allocation call path (`syscall6`) may belong in MyGo's
      `internal/darwin` for every hot path, not just this package.
    - `Resize` is explicit: the app calls it from its resize event. MyGo's
