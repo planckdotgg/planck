@@ -12,7 +12,7 @@ func TestParseConfigDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ListenAddr != ":47998" || cfg.MediaPort != 47999 || cfg.DiscoveryAddr != ":47997" {
+	if cfg.ListenAddr != ":47701" || cfg.MediaPort != 47702 || cfg.DiscoveryAddr != ":47700" {
 		t.Errorf("ports: %q %d %q", cfg.ListenAddr, cfg.MediaPort, cfg.DiscoveryAddr)
 	}
 	if cfg.Codec != encode.HEVC || cfg.Chroma != encode.NV12 || cfg.FPS != 0 || !cfg.InjectInput || cfg.Synth || stats == 0 {

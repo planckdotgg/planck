@@ -17,12 +17,13 @@ import (
 	"time"
 
 	"github.com/planckdotgg/planck/internal/session"
+	"github.com/planckdotgg/planck/pkg/config"
 	"github.com/planckdotgg/planck/pkg/encode"
 )
 
 // defaultControlPort is planck-host's QUIC port, used when an address
 // leaves the port out.
-const defaultControlPort = 47998
+const defaultControlPort = config.DefaultControlPort
 
 type pathMode string
 

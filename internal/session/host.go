@@ -36,12 +36,12 @@ type HostConfig struct {
 	// Empty uses config.Dir().
 	ConfigDir string
 	Name      string
-	// ListenAddr is the QUIC control address; empty means ":47998".
+	// ListenAddr is the QUIC control address; empty means ":47701".
 	ListenAddr string
 	// MediaPort is the UDP media port; 0 picks a free one per session.
 	MediaPort int
 	// DiscoveryAddr answers LAN probes and sends beacons; empty means
-	// ":47997", "off" disables discovery.
+	// ":47700", "off" disables discovery.
 	DiscoveryAddr string
 
 	Display string
@@ -92,8 +92,8 @@ type HostConfig struct {
 // DefaultHostConfig is the configuration of cmd/planck-host before flags.
 func DefaultHostConfig() HostConfig {
 	return HostConfig{
-		ListenAddr:    fmt.Sprintf(":%d", 47998),
-		MediaPort:     47999,
+		ListenAddr:    fmt.Sprintf(":%d", config.DefaultControlPort),
+		MediaPort:     config.DefaultMediaPort,
 		DiscoveryAddr: fmt.Sprintf(":%d", discovery.DefaultPort),
 		FPS:           60,
 		BitrateKbps:   50_000,
@@ -191,7 +191,7 @@ func NewHost(cfg HostConfig) (*Host, error) {
 		return nil, err
 	}
 	if cfg.ListenAddr == "" {
-		cfg.ListenAddr = ":47998"
+		cfg.ListenAddr = fmt.Sprintf(":%d", config.DefaultControlPort)
 	}
 	if cfg.DiscoveryAddr == "" {
 		cfg.DiscoveryAddr = fmt.Sprintf(":%d", discovery.DefaultPort)

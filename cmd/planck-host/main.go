@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/planckdotgg/planck/internal/session"
+	"github.com/planckdotgg/planck/pkg/discovery"
 )
 
 func main() {
@@ -41,7 +42,7 @@ func parseConfig(args []string, out io.Writer) (session.HostConfig, time.Duratio
 	var (
 		listen        = fs.String("listen", cfg.ListenAddr, "QUIC control address")
 		mediaPort     = fs.Int("media-port", cfg.MediaPort, "UDP media port (0 picks a free one)")
-		discoveryPort = fs.Int("discovery-port", 47997, "LAN discovery port (0 disables discovery)")
+		discoveryPort = fs.Int("discovery-port", discovery.DefaultPort, "LAN discovery port (0 disables discovery)")
 		codec         = fs.String("codec", "hevc", "video codec: hevc, av1 or h264")
 		chroma        = fs.String("chroma", "nv12", "coded chroma: nv12, p010, yuv444 or yuv444p10")
 		noInput       = fs.Bool("no-input", false, "ignore client keyboard, mouse and gamepad input")

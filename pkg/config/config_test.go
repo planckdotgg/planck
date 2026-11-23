@@ -31,7 +31,7 @@ func TestHostConfigRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(first.HostID) != 32 || first.ControlPort != 47998 || first.MediaPort != 47999 || !first.RequirePINForLAN || !first.AllowTailscaleSameUser {
+	if len(first.HostID) != 32 || first.ControlPort != 47701 || first.MediaPort != 47702 || !first.RequirePINForLAN || !first.AllowTailscaleSameUser {
 		t.Fatalf("defaults = %+v", first)
 	}
 	if first.CertPath != filepath.Join(dir, "host-cert.pem") {

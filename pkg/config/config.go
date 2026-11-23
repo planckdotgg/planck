@@ -20,6 +20,13 @@ const (
 	ClientConfigFile = "client.json"
 )
 
+// The host's default ports, with discovery.DefaultPort (47700) beside
+// them: below 47981-48500, the range Sunshine uses.
+const (
+	DefaultControlPort = 47701
+	DefaultMediaPort   = 47702
+)
+
 // Codec and chroma values use the same names as the encoder flags in the
 // Phase 0 spikes, lower case.
 var (
@@ -69,8 +76,8 @@ func DefaultHostConfig(dir string) HostConfig {
 	return HostConfig{
 		HostID:                 newHostID(),
 		Name:                   name,
-		ControlPort:            47998,
-		MediaPort:              47999,
+		ControlPort:            DefaultControlPort,
+		MediaPort:              DefaultMediaPort,
 		Codec:                  "hevc",
 		Chroma:                 "nv12",
 		FPS:                    120,
