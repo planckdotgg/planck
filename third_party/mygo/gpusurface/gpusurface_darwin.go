@@ -216,6 +216,7 @@ type Surface struct {
 	pending              [pendingRing]pending
 	timings              timings
 	width, height        int
+	scale                float64
 }
 
 var surfaces sync.Map // layer → *Surface, for the presented handler
@@ -295,6 +296,7 @@ func New(opts Options) (s *Surface, err error) {
 	send(layer, "setOpaque:", true)
 	lib.msgSetRect(layer, objc.RegisterName("setFrame:"), bounds)
 	lib.msgSetFloat(layer, objc.RegisterName("setContentsScale:"), scale)
+	s.scale = scale
 	s.width, s.height = int(bounds.W*scale), int(bounds.H*scale)
 	lib.msgSetSize(layer, objc.RegisterName("setDrawableSize:"), cgSize{float64(s.width), float64(s.height)})
 	send(parent, "addSublayer:", layer)
@@ -358,6 +360,21 @@ func (s *Surface) Queue() uintptr  { return s.queue }
 
 // Size returns the size of the drawables in pixels.
 func (s *Surface) Size() (w, h int) { return s.width, s.height }
+
+// Resize makes the layer w x h pixels, as after the window's content view
+// changed size. Call it from the thread that presents, between presents.
+func (s *Surface) Resize(w, h int) error {
+	if w <= 0 || h <= 0 {
+		return fmt.Errorf("gpusurface: size %dx%d", w, h)
+	}
+	pool, _, _ := purego.SyscallN(lib.poolPush)
+	defer purego.SyscallN(lib.poolPop, pool)
+	lib.msgSetRect(s.layer, objc.RegisterName("setFrame:"), cgRect{W: float64(w) / s.scale, H: float64(h) / s.scale})
+	lib.msgSetSize(s.layer, objc.RegisterName("setDrawableSize:"), cgSize{float64(w), float64(h)})
+	send(class("CATransaction"), "flush")
+	s.width, s.height = w, h
+	return nil
+}
 
 // errNoDrawable is Present's error when the layer gave no drawable in time.
 var errNoDrawable = errors.New("gpusurface: no drawable")

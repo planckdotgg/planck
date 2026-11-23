@@ -26,6 +26,7 @@ const (
 	ctxPSSetSamplers          = 10
 	ctxVSSetShader            = 11
 	ctxDraw                   = 13
+	ctxVSSetConstantBuffers   = 7
 	ctxPSSetConstantBuffers   = 16
 	ctxIASetInputLayout       = 17
 	ctxIASetPrimitiveTopology = 24
@@ -44,6 +45,7 @@ const (
 	factory5CheckFeature   = 28
 	scPresent              = 8
 	scGetBuffer            = 9
+	scResizeBuffers        = 13
 
 	formatB8G8R8A8Unorm = 87
 	formatR8Unorm       = 61
@@ -60,6 +62,7 @@ const (
 	mwaNoAltEnter         = 2
 	topologyTriangleList  = 4
 	dimensionTexture2D    = 4
+	dimensionTexture2DArr = 5
 	bindConstantBuffer    = 0x4
 	usageImmutable        = 1
 
@@ -161,7 +164,8 @@ type srvDesc struct {
 	Format, ViewDimension uint32
 	MostDetailedMip       uint32
 	MipLevels             uint32
-	_                     [2]uint32
+	// FirstArraySlice and ArraySize are read for a texture array.
+	FirstArraySlice, ArraySize uint32
 }
 
 type bufferDesc struct {
@@ -194,13 +198,18 @@ var (
 	params10 = yuvParams{64 * 64 / 65535.0, 65535.0 / (876 * 64), 512 * 64 / 65535.0, 65535.0 / (896 * 64)}
 )
 
+// uvScale crops the frame: the part of the texture inside the picture's
+// visible size (a decoder's textures are aligned past it).
+type uvScale struct{ U, V, _, _ float32 }
+
 const shaderSource = `
 struct VOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
+cbuffer Crop : register(b0) { float2 uvScale; };
 VOut vs(uint id : SV_VertexID) {
 	float2 p = float2((id << 1) & 2, id & 2);
 	VOut o;
 	o.pos = float4(p * float2(2, -2) + float2(-1, 1), 0, 1);
-	o.uv = p;
+	o.uv = p * uvScale;
 	return o;
 }
 Texture2D<float4> t0 : register(t0);
@@ -217,12 +226,15 @@ float4 ps_yuv(VOut i) : SV_Target {
 `
 
 // frameViews is a frame of the pool with views of it: its BGRA, or its
-// luma and chroma.
+// luma and chroma, of one slice of the texture.
 type frameViews struct {
-	tex    uintptr
-	srv    [2]uintptr
-	format Format
-	params uintptr // constant buffer
+	tex           uintptr
+	slice         int
+	width, height int
+	srv           [2]uintptr
+	format        Format
+	params        uintptr // constant buffer
+	crop          uintptr // constant buffer of uvScale
 }
 
 const wrapCache = 16
@@ -303,19 +315,9 @@ func New(opts Options) (s *Surface, err error) {
 		return nil, fmt.Errorf("gpusurface: cannot create the swap chain: %#x", uint32(hr))
 	}
 	call(s.factory, factoryMakeWindowAssoc, s.hwnd, mwaNoAltEnter)
-	var back uintptr
-	if hr := call(s.swapChain, scGetBuffer, 0, uintptr(unsafe.Pointer(&iidID3D11Texture2D)), uintptr(unsafe.Pointer(&back))); failed(hr) {
-		return nil, fmt.Errorf("gpusurface: no back buffer: %#x", uint32(hr))
+	if err = s.viewBackBuffer(); err != nil {
+		return nil, err
 	}
-	var bd texture2DDesc
-	call(back, texGetDesc, uintptr(unsafe.Pointer(&bd)))
-	hr := call(s.device, devCreateRenderTargetView, back, 0, uintptr(unsafe.Pointer(&s.rtv)))
-	free(&back)
-	if failed(hr) {
-		return nil, fmt.Errorf("gpusurface: cannot view the back buffer: %#x", uint32(hr))
-	}
-	s.width, s.height = int(bd.Width), int(bd.Height)
-	s.vp = viewport{W: float32(bd.Width), H: float32(bd.Height), MaxDepth: 1}
 	if err = s.makeShaders(); err != nil {
 		return nil, err
 	}
@@ -419,9 +421,15 @@ func (s *Surface) Tearing() bool { return s.tearing }
 // Present draws the frame in texture, an ID3D11Texture2D of the surface's
 // device in BGRA, NV12 or P010 that shaders can read, and presents it at
 // once.
-func (s *Surface) Present(texture uintptr) error {
+func (s *Surface) Present(texture uintptr) error { return s.PresentSlice(texture, 0, 0, 0) }
+
+// PresentSlice is Present for slice of a texture array, as hardware
+// decoders write their pictures, showing its top-left width x height: the
+// visible picture of a texture aligned past it. Zero width or height shows
+// the whole texture.
+func (s *Surface) PresentSlice(texture uintptr, slice, width, height int) error {
 	submitted := Now()
-	f := s.wrap(texture)
+	f := s.wrap(texture, slice, width, height)
 	if f == nil {
 		return ErrFormat
 	}
@@ -432,6 +440,7 @@ func (s *Surface) Present(texture uintptr) error {
 	fastCall(ctx, ctxIASetPrimitiveTopology, topologyTriangleList, 0, 0, 0, 0)
 	fastCall(ctx, ctxIASetInputLayout, 0, 0, 0, 0, 0)
 	fastCall(ctx, ctxVSSetShader, s.vs, 0, 0, 0, 0)
+	fastCall(ctx, ctxVSSetConstantBuffers, 0, 1, uintptr(unsafe.Pointer(&f.crop)), 0, 0)
 	if f.format == FormatBGRA8 {
 		fastCall(ctx, ctxPSSetShader, s.psRGB, 0, 0, 0, 0)
 	} else {
@@ -457,10 +466,11 @@ func (s *Surface) Present(texture uintptr) error {
 	return nil
 }
 
-func (s *Surface) wrap(texture uintptr) *frameViews {
+func (s *Surface) wrap(texture uintptr, slice, width, height int) *frameViews {
 	for i := range s.cache {
-		if s.cache[i].tex == texture && texture != 0 {
-			return &s.cache[i]
+		c := &s.cache[i]
+		if c.tex == texture && texture != 0 && c.slice == slice && c.width == width && c.height == height {
+			return c
 		}
 	}
 	if texture == 0 {
@@ -468,7 +478,10 @@ func (s *Surface) wrap(texture uintptr) *frameViews {
 	}
 	var td texture2DDesc
 	call(texture, texGetDesc, uintptr(unsafe.Pointer(&td)))
-	var f frameViews
+	if slice < 0 || uint32(slice) >= max(td.ArraySize, 1) || uint32(width) > td.Width || uint32(height) > td.Height {
+		return nil
+	}
+	f := frameViews{slice: slice, width: width, height: height}
 	var formats [2]uint32
 	switch td.Format {
 	case formatB8G8R8A8Unorm:
@@ -485,19 +498,74 @@ func (s *Surface) wrap(texture uintptr) *frameViews {
 			continue
 		}
 		d := srvDesc{Format: format, ViewDimension: dimensionTexture2D, MipLevels: 1}
+		if td.ArraySize > 1 {
+			d.ViewDimension, d.FirstArraySlice, d.ArraySize = dimensionTexture2DArr, uint32(slice), 1
+		}
 		if failed(call(s.device, devCreateShaderResourceView, texture, uintptr(unsafe.Pointer(&d)), uintptr(unsafe.Pointer(&f.srv[i])))) {
 			free(&f.srv[0])
 			free(&f.srv[1])
 			return nil
 		}
 	}
+	crop := uvScale{U: 1, V: 1}
+	if width > 0 && height > 0 {
+		crop = uvScale{U: float32(width) / float32(td.Width), V: float32(height) / float32(td.Height)}
+	}
+	bd := bufferDesc{ByteWidth: uint32(unsafe.Sizeof(crop)), Usage: usageImmutable, BindFlags: bindConstantBuffer}
+	data := subresourceData{SysMem: uintptr(unsafe.Pointer(&crop))}
+	if failed(call(s.device, devCreateBuffer, uintptr(unsafe.Pointer(&bd)), uintptr(unsafe.Pointer(&data)), uintptr(unsafe.Pointer(&f.crop)))) {
+		free(&f.srv[0])
+		free(&f.srv[1])
+		return nil
+	}
 	f.tex = texture
 	slot := &s.cache[s.nextSlot]
 	s.nextSlot = (s.nextSlot + 1) % wrapCache
 	free(&slot.srv[0])
 	free(&slot.srv[1])
+	free(&slot.crop)
 	*slot = f
 	return slot
+}
+
+// Resize resizes the swap chain's buffers to w x h pixels, as after the
+// window's client area changed; zero takes the client area's size. Call it
+// from the thread that presents.
+func (s *Surface) Resize(w, h int) error {
+	if w < 0 || h < 0 {
+		return fmt.Errorf("gpusurface: size %dx%d", w, h)
+	}
+	// The swap chain resizes only once nothing holds its back buffer.
+	fastCall(s.ctx, ctxOMSetRenderTargets, 0, 0, 0, 0, 0)
+	free(&s.rtv)
+	call(s.ctx, ctxFlush)
+	var flags uintptr
+	if s.tearing {
+		flags = swapChainTearing
+	}
+	if hr := call(s.swapChain, scResizeBuffers, 0, uintptr(w), uintptr(h), 0, flags); failed(hr) {
+		return fmt.Errorf("gpusurface: cannot resize the swap chain: %#x", uint32(hr))
+	}
+	return s.viewBackBuffer()
+}
+
+// viewBackBuffer makes the render target view of the back buffer and takes
+// its size.
+func (s *Surface) viewBackBuffer() error {
+	var back uintptr
+	if hr := call(s.swapChain, scGetBuffer, 0, uintptr(unsafe.Pointer(&iidID3D11Texture2D)), uintptr(unsafe.Pointer(&back))); failed(hr) {
+		return fmt.Errorf("gpusurface: no back buffer: %#x", uint32(hr))
+	}
+	var bd texture2DDesc
+	call(back, texGetDesc, uintptr(unsafe.Pointer(&bd)))
+	hr := call(s.device, devCreateRenderTargetView, back, 0, uintptr(unsafe.Pointer(&s.rtv)))
+	free(&back)
+	if failed(hr) {
+		return fmt.Errorf("gpusurface: cannot view the back buffer: %#x", uint32(hr))
+	}
+	s.width, s.height = int(bd.Width), int(bd.Height)
+	s.vp = viewport{W: float32(bd.Width), H: float32(bd.Height), MaxDepth: 1}
+	return nil
 }
 
 // Close frees the surface.
@@ -508,6 +576,7 @@ func (s *Surface) Close() {
 	for i := range s.cache {
 		free(&s.cache[i].srv[0])
 		free(&s.cache[i].srv[1])
+		free(&s.cache[i].crop)
 	}
 	for _, p := range []*uintptr{&s.params10, &s.params8, &s.sampler, &s.psYUV, &s.psRGB, &s.vs, &s.rtv, &s.swapChain, &s.factory, &s.ctx, &s.device} {
 		free(p)

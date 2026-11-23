@@ -51,6 +51,7 @@ const (
 	fnMapInputResource        = 208
 	fnUnmapInputResource      = 216
 	fnDestroyEncoder          = 224
+	fnInvalidateRefFrames     = 232
 	fnOpenEncodeSessionEx     = 240
 	fnRegisterResource        = 248
 	fnUnregisterResource      = 256

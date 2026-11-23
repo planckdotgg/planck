@@ -84,4 +84,5 @@ type Display struct {
 	Height  int
 	Refresh float64
 	HDR     bool
+	Primary bool
 }

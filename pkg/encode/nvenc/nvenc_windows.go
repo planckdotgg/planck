@@ -287,6 +287,7 @@ func Open(device win.Device, adapter gpu.Adapter, cfg encode.Config, opts Option
 		registered: map[uintptr]registration{},
 	}
 	e.caps = e.queryCaps()
+	e.caps.RefInvalidation = e.capValue(codec, capsSupportRefPicInvalidation) != 0
 	if err := e.initialize(); err != nil {
 		e.Close()
 		return nil, err
@@ -370,6 +371,9 @@ func (e *Encoder) initialize() error {
 			put32(cc, hevcSliceMode, 3)
 			put32(cc, hevcSliceModeData, uint32(cfg.Slices))
 		}
+		if e.caps.RefInvalidation {
+			put32(cc, hevcMaxRefDPB, refDPB)
+		}
 	case encode.AV1:
 		if cfg.Chroma.Full() {
 			return fmt.Errorf("%w: AV1 4:4:4 needs the high profile", encode.ErrUnsupported)
@@ -388,6 +392,9 @@ func (e *Encoder) initialize() error {
 		if cfg.Slices > 1 {
 			put32(cc, av1NumTileRows, uint32(cfg.Slices))
 			put32(cc, av1NumTileColumns, 1)
+		}
+		if e.caps.RefInvalidation {
+			put32(cc, av1MaxRefDPB, refDPB)
 		}
 	default:
 		return encode.ErrUnsupported
@@ -599,7 +606,24 @@ func (e *Encoder) pollSubFrame() error {
 	}
 }
 
+// refDPB is how many past pictures stay referable, so InvalidateRefs can
+// fall back to one the receiver still holds instead of a keyframe.
+const refDPB = 5
+
+// InvalidateRefs stops the encoder predicting from the picture with this
+// PTS and later ones, so the next picture references an older one that the
+// receiver still holds.
+func (e *Encoder) InvalidateRefs(pts int64) error {
+	if !e.caps.RefInvalidation {
+		return fmt.Errorf("%w: reference invalidation", encode.ErrUnsupported)
+	}
+	return e.call(fnInvalidateRefFrames, e.enc, uintptr(pts))
+}
+
 func (e *Encoder) SetBitrate(kbps int) error {
+	if kbps <= 0 {
+		return fmt.Errorf("nvenc: bitrate %d must be positive", kbps)
+	}
 	bitrate := uint32(kbps) * 1000
 	rc := e.config[cfgRC:]
 	put32(rc, rcAvgBitrate, bitrate)
@@ -637,3 +661,8 @@ func (e *Encoder) Close() error {
 	e.enc = 0
 	return nil
 }
+
+var (
+	_ encode.Encoder        = (*Encoder)(nil)
+	_ encode.RefInvalidator = (*Encoder)(nil)
+)

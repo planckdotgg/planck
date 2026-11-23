@@ -26,11 +26,21 @@ Every Planck change is a new file. No upstream file is modified.
 | `gpusurface/adapter_windows.go` | `Options.Adapter`: makes the device on a named DXGI adapter. |
 | `gpusurface/gpusurface_other.go` | Other platforms: `New` returns an error. |
 
+Phase 1B added, in the same files:
+
+| File | What |
+|---|---|
+| `gpusurface/gpusurface_windows.go` | `Resize(w, h)`: unbinds and frees the back buffer view, `ResizeBuffers` (keeping the tearing flag; 0 takes the window's client size), views the new back buffer. `PresentSlice(texture, slice, width, height)`: presents one slice of a texture array, as Media Foundation decoders write their pictures (`D3D11_SRV_DIMENSION_TEXTURE2DARRAY`), showing its top-left width x height through a per-frame UV scale in the vertex shader (decoder textures are aligned past the picture, as 1920x1088). The wrap cache is keyed by texture, slice and size. `Present(t)` is `PresentSlice(t, 0, 0, 0)`. |
+| `gpusurface/gpusurface_darwin.go` | `Resize(w, h)`: the layer's frame (in points) and drawable size (in pixels). |
+| `gpusurface/gpusurface_other.go` | `Resize` returns an error. |
+
 ### API
 
 ```go
 s, err := gpusurface.New(gpusurface.Options{Window: w.NativeHandle(), Timings: n})
 s.Present(frame) // IOSurfaceRef on macOS, ID3D11Texture2D* on Windows
+s.PresentSlice(tex, slice, w, h) // Windows: one slice of a decoder's texture array, cropped
+s.Resize(w, h)   // after the window's size changed
 s.Close()
 s.Timings()      // per frame: Submitted, Encoded, Presented (ns, gpusurface.Now's clock)
 ```
@@ -50,8 +60,8 @@ allocate, on Core Animation's thread.
      visual under the window's own.
    - The zero-allocation call path (`syscall6`) may belong in MyGo's
      `internal/darwin` for every hot path, not just this package.
-   - Window resizing is not handled: the drawable or buffers keep the size
-     they had at `New`.
+   - `Resize` is explicit: the app calls it from its resize event. MyGo's
+     window could call it itself once the surface sits in its view tree.
    - Windows present times: `GetFrameStatistics` read after each present on
      an RX 6700 XT and an RTX 4080 (Windows 11) gave `SyncQPCTime` values
      before the frame was submitted, so `Timings` leaves `Presented` at 0
