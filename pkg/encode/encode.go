@@ -1,0 +1,142 @@
+// Package encode defines the hardware video encoder contract shared by the
+// vendor backends: NVENC, AMF, oneVPL (Quick Sync), and VideoToolbox.
+package encode
+
+import (
+	"errors"
+	"fmt"
+
+	"github.com/watzon/planck/pkg/capture"
+	"github.com/watzon/planck/pkg/gpu"
+)
+
+type Codec uint8
+
+const (
+	H264 Codec = iota + 1
+	HEVC
+	AV1
+)
+
+func (c Codec) String() string {
+	switch c {
+	case H264:
+		return "H.264"
+	case HEVC:
+		return "HEVC"
+	case AV1:
+		return "AV1"
+	}
+	return "unknown"
+}
+
+// Chroma is the coded sample layout of the bitstream, independent of what
+// the capture surface holds.
+type Chroma uint8
+
+const (
+	NV12      Chroma = iota + 1 // 8-bit 4:2:0
+	P010                        // 10-bit 4:2:0, HDR10 capable
+	YUV444                      // 8-bit 4:4:4
+	YUV444P10                   // 10-bit 4:4:4
+)
+
+func (c Chroma) String() string {
+	switch c {
+	case NV12:
+		return "NV12"
+	case P010:
+		return "P010"
+	case YUV444:
+		return "YUV444"
+	case YUV444P10:
+		return "YUV444P10"
+	}
+	return "unknown"
+}
+
+func (c Chroma) TenBit() bool { return c == P010 || c == YUV444P10 }
+func (c Chroma) Full() bool   { return c == YUV444 || c == YUV444P10 }
+
+// Config is what the caller asks for. Backends refuse what the hardware
+// cannot do with ErrUnsupported rather than silently degrading.
+type Config struct {
+	Codec  Codec
+	Chroma Chroma
+	// Source is the surface format the encoder will be fed. Hardware fixes
+	// the input bit depth and color conversion when the session opens.
+	Source      capture.Format
+	Width       int
+	Height      int
+	FPS         int
+	BitrateKbps int
+	// IntraRefreshPeriod > 0 replaces periodic IDR frames with a rolling
+	// intra band that sweeps the picture every N frames.
+	IntraRefreshPeriod int
+	// Slices > 1 splits each picture so the packetizer can send the top of a
+	// frame while the bottom is still being encoded.
+	Slices int
+	// SubFrame asks the backend to expose slices as they finish instead of
+	// after the whole picture (NVENC subframe readback, VT not supported).
+	SubFrame bool
+	// Adapter selects the encoding GPU. Zero means the adapter that owns the
+	// captured surface (zero copy); any other LUID means cross-adapter offload.
+	Adapter gpu.LUID
+}
+
+var ErrUnsupported = errors.New("encode: unsupported by this encoder")
+
+func (c Config) Validate() error {
+	switch {
+	case c.Codec < H264 || c.Codec > AV1:
+		return fmt.Errorf("encode: unknown codec %d", c.Codec)
+	case c.Chroma < NV12 || c.Chroma > YUV444P10:
+		return fmt.Errorf("encode: unknown chroma %d", c.Chroma)
+	case c.Source == 0:
+		return errors.New("encode: source format is required")
+	case !c.Chroma.TenBit() && (c.Source == capture.FormatP010):
+		return fmt.Errorf("encode: %s source cannot feed an 8-bit %s encode", c.Source, c.Chroma)
+	case c.Width <= 0 || c.Height <= 0 || c.Width%2 != 0 || c.Height%2 != 0:
+		return fmt.Errorf("encode: size %dx%d must be positive and even", c.Width, c.Height)
+	case c.FPS <= 0:
+		return fmt.Errorf("encode: fps %d must be positive", c.FPS)
+	case c.BitrateKbps <= 0:
+		return fmt.Errorf("encode: bitrate %d must be positive", c.BitrateKbps)
+	case c.Slices < 0 || c.IntraRefreshPeriod < 0:
+		return errors.New("encode: slices and intra refresh period must not be negative")
+	case c.SubFrame && c.Slices < 2:
+		return errors.New("encode: sub-frame output needs at least 2 slices")
+	}
+	return nil
+}
+
+// Packet is one encoded picture. Data aliases the dst buffer given to Encode.
+type Packet struct {
+	Data     []byte
+	Keyframe bool
+	// SliceEnds holds the end offset of each slice in Data when the backend
+	// reports slice boundaries.
+	SliceEnds []int
+	PTS       int64
+}
+
+// Caps are what the opened device reports, not what the API documents.
+type Caps struct {
+	Adapter      gpu.Adapter
+	Codecs       []Codec
+	Chroma       map[Codec][]Chroma
+	MaxWidth     int
+	MaxHeight    int
+	IntraRefresh bool
+	SubFrame     bool
+	Engines      int
+}
+
+// Encoder turns captured GPU surfaces into packets.
+type Encoder interface {
+	Caps() Caps
+	// Encode consumes frame synchronously and appends the bitstream to dst.
+	Encode(frame capture.Frame, forceKey bool, dst []byte) (Packet, error)
+	SetBitrate(kbps int) error
+	Close() error
+}
