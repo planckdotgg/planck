@@ -86,6 +86,10 @@ type Config struct {
 
 var ErrUnsupported = errors.New("encode: unsupported by this encoder")
 
+// ErrDropped means the encoder discarded the frame to stay real time. The
+// session is still usable.
+var ErrDropped = errors.New("encode: frame dropped by the encoder")
+
 func (c Config) Validate() error {
 	switch {
 	case c.Codec < H264 || c.Codec > AV1:

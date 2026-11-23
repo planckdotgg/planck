@@ -6,7 +6,6 @@
 package vt
 
 import (
-	"errors"
 	"fmt"
 	"sync"
 	"unsafe"
@@ -239,8 +238,6 @@ func (e *Encoder) Caps() encode.Caps {
 		Chroma: map[encode.Codec][]encode.Chroma{encode.HEVC: {encode.NV12, encode.P010}}}
 }
 
-var errNoFrame = errors.New("vt: encoder produced no frame")
-
 // Encode submits a CVPixelBuffer (frame.Surface) and waits for its output.
 func (e *Encoder) Encode(f capture.Frame, forceKey bool, dst []byte) (encode.Packet, error) {
 	pts := apple.Time(e.frame, int32(e.cfg.FPS))
@@ -254,7 +251,7 @@ func (e *Encoder) Encode(f capture.Frame, forceKey bool, dst []byte) (encode.Pac
 		return encode.Packet{}, fmt.Errorf("vt: callback status %d", o.status)
 	}
 	if o.sbuf == 0 {
-		return encode.Packet{}, errNoFrame
+		return encode.Packet{}, encode.ErrDropped
 	}
 	bb := cmSampleBufferGetDataBuffer(o.sbuf)
 	n := cmBlockBufferGetDataLength(bb)

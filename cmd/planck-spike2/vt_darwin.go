@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -103,23 +104,28 @@ func runVTCase(c vtCase, frames int, pace bool) string {
 	var m0, m1 runtime.MemStats
 	const warmup = 30
 	interval := time.Second / time.Duration(c.fps)
-	next := apple.Now()
+	next := time.Now()
+	var dropped int
 	for i := 0; i < warmup+frames; i++ {
 		if i == warmup {
 			runtime.ReadMemStats(&m0)
 		}
 		if pace {
-			for apple.Now() < next {
-				if next-apple.Now() > int64(1500*time.Microsecond) {
+			for time.Now().Before(next) {
+				if time.Until(next) > 1500*time.Microsecond {
 					time.Sleep(500 * time.Microsecond)
 				}
 			}
-			next += int64(interval)
+			next = next.Add(interval)
 		}
 		f := capture.Frame{Surface: bufs[i%len(bufs)], Format: vtInputs[c.input].capture, Width: c.w, Height: c.h}
 		t0 := apple.Now()
 		pkt, err := enc.Encode(f, false, dst)
 		t1 := apple.Now()
+		if errors.Is(err, encode.ErrDropped) {
+			dropped++
+			continue
+		}
 		if err != nil {
 			return fmt.Sprintf("%s frame %d: %v |", head, i, err)
 		}
@@ -145,9 +151,9 @@ func runVTCase(c vtCase, frames int, pace bool) string {
 	}
 	runtime.ReadMemStats(&m1)
 	e, d := encMs.Summarize(), decMs.Summarize()
-	return fmt.Sprintf("%s %v | %.3f | %.3f | %.3f | %.3f | %.3f | %.3f | %.3f | %.0f | %.1f |", head, enc.LowLatency,
+	return fmt.Sprintf("%s %v | %.3f | %.3f | %.3f | %.3f | %.3f | %.3f | %.3f | %.0f | %d | %.1f |", head, enc.LowLatency,
 		e.P50, e.P95, e.P99, e.Max, d.P50, d.P95, d.P99,
-		float64(bytes)*8/1000/(float64(frames)/float64(c.fps)), float64(m1.Mallocs-m0.Mallocs)/float64(frames))
+		float64(bytes)*8/1000/(float64(frames)/float64(c.fps)), dropped, float64(m1.Mallocs-m0.Mallocs)/float64(frames))
 }
 
 var chromaByName = map[string]encode.Chroma{"nv12": encode.NV12, "p010": encode.P010, "yuv444": encode.YUV444}
@@ -167,8 +173,8 @@ func runVT(args []string) error {
 		fmt.Printf("soak: max RSS after %.1f MiB, goroutines %d\n", rssMB(), runtime.NumGoroutine())
 		return nil
 	}
-	fmt.Println("| chroma | input | res | fps | low-latency RC | encode p50 | p95 | p99 | max | decode p50 | p95 | p99 | kbps out | allocs/frame |")
-	fmt.Println("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+	fmt.Println("| chroma | input | res | fps | low-latency RC | encode p50 | p95 | p99 | max | decode p50 | p95 | p99 | kbps out | dropped | allocs/frame |")
+	fmt.Println("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
 	for _, s := range []struct{ w, h, kbps int }{{1920, 1080, 50000}, {2560, 1440, 80000}} {
 		for _, fps := range []int{120, 240} {
 			kbps := s.kbps * fps / 120
