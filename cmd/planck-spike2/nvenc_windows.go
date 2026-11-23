@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/watzon/planck/internal/bench"
-	"github.com/watzon/planck/internal/clock"
-	"github.com/watzon/planck/pkg/capture"
-	"github.com/watzon/planck/pkg/encode"
-	"github.com/watzon/planck/pkg/encode/nvenc"
+	"github.com/planckdotgg/planck/internal/bench"
+	"github.com/planckdotgg/planck/internal/clock"
+	"github.com/planckdotgg/planck/pkg/capture"
+	"github.com/planckdotgg/planck/pkg/encode"
+	"github.com/planckdotgg/planck/pkg/encode/nvenc"
 )
 
 var codecs = map[string]encode.Codec{"h264": encode.H264, "hevc": encode.HEVC, "av1": encode.AV1}

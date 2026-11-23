@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/watzon/planck/pkg/capture"
-	"github.com/watzon/planck/pkg/encode"
-	"github.com/watzon/planck/pkg/encode/encodetest"
+	"github.com/planckdotgg/planck/pkg/capture"
+	"github.com/planckdotgg/planck/pkg/encode"
+	"github.com/planckdotgg/planck/pkg/encode/encodetest"
 )
 
 func hevc(chroma encode.Chroma, src capture.Format) encode.Config {

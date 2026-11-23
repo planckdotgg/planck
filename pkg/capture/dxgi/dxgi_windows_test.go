@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/watzon/planck/internal/win"
-	"github.com/watzon/planck/pkg/capture"
+	"github.com/planckdotgg/planck/internal/win"
+	"github.com/planckdotgg/planck/pkg/capture"
 )
 
 func TestAdaptersAndDisplays(t *testing.T) {

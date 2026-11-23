@@ -8,12 +8,12 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/watzon/planck/internal/apple"
-	"github.com/watzon/planck/internal/bench"
-	"github.com/watzon/planck/pkg/capture"
-	"github.com/watzon/planck/pkg/capture/sck"
-	"github.com/watzon/planck/pkg/encode"
-	"github.com/watzon/planck/pkg/encode/vt"
+	"github.com/planckdotgg/planck/internal/apple"
+	"github.com/planckdotgg/planck/internal/bench"
+	"github.com/planckdotgg/planck/pkg/capture"
+	"github.com/planckdotgg/planck/pkg/capture/sck"
+	"github.com/planckdotgg/planck/pkg/encode"
+	"github.com/planckdotgg/planck/pkg/encode/vt"
 )
 
 // The main goroutine must stay on the main thread for AppKit.

@@ -9,11 +9,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/watzon/planck/pkg/capture"
-	"github.com/watzon/planck/pkg/capture/dxgi"
-	"github.com/watzon/planck/pkg/encode"
-	"github.com/watzon/planck/pkg/encode/encodetest"
-	"github.com/watzon/planck/pkg/gpu"
+	"github.com/planckdotgg/planck/pkg/capture"
+	"github.com/planckdotgg/planck/pkg/capture/dxgi"
+	"github.com/planckdotgg/planck/pkg/encode"
+	"github.com/planckdotgg/planck/pkg/encode/encodetest"
+	"github.com/planckdotgg/planck/pkg/gpu"
 )
 
 var guard *gpu.PowerGuard

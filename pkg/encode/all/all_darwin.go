@@ -2,4 +2,4 @@
 
 package all
 
-import _ "github.com/watzon/planck/pkg/encode/vt"
+import _ "github.com/planckdotgg/planck/pkg/encode/vt"

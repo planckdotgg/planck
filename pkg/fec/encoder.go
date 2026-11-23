@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/klauspost/reedsolomon"
-	"github.com/watzon/planck/pkg/wire"
+	"github.com/planckdotgg/planck/pkg/wire"
 )
 
 // MaxDataPerBlock caps data shards per Reed-Solomon block, leaving room in the

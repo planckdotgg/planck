@@ -5,9 +5,9 @@ package display
 import (
 	"unsafe"
 
-	"github.com/watzon/planck/pkg/capture"
-	"github.com/watzon/planck/pkg/capture/dxgi"
-	"github.com/watzon/planck/pkg/gpu"
+	"github.com/planckdotgg/planck/pkg/capture"
+	"github.com/planckdotgg/planck/pkg/capture/dxgi"
+	"github.com/planckdotgg/planck/pkg/gpu"
 )
 
 // List returns the displays attached to the desktop.

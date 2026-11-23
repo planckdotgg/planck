@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/watzon/planck/pkg/capture"
-	"github.com/watzon/planck/pkg/encode"
-	"github.com/watzon/planck/pkg/encode/encodetest"
-	"github.com/watzon/planck/pkg/encode/nvenc"
+	"github.com/planckdotgg/planck/pkg/capture"
+	"github.com/planckdotgg/planck/pkg/encode"
+	"github.com/planckdotgg/planck/pkg/encode/encodetest"
+	"github.com/planckdotgg/planck/pkg/encode/nvenc"
 )
 
 // The parsers run here on real NVENC streams; the decoder itself runs on

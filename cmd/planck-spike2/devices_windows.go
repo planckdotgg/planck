@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/watzon/planck/internal/synth"
-	"github.com/watzon/planck/internal/win"
-	"github.com/watzon/planck/pkg/capture"
-	"github.com/watzon/planck/pkg/gpu"
+	"github.com/planckdotgg/planck/internal/synth"
+	"github.com/planckdotgg/planck/internal/win"
+	"github.com/planckdotgg/planck/pkg/capture"
+	"github.com/planckdotgg/planck/pkg/gpu"
 )
 
 type device struct {

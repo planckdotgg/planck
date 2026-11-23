@@ -3,7 +3,7 @@ package fec
 import (
 	"errors"
 
-	"github.com/watzon/planck/pkg/wire"
+	"github.com/planckdotgg/planck/pkg/wire"
 )
 
 // ReassemblyWindow is how many frames stay open for late shards. When a frame

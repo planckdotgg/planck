@@ -6,10 +6,10 @@ import (
 	"flag"
 	"fmt"
 
-	"github.com/watzon/planck/pkg/encode"
-	"github.com/watzon/planck/pkg/encode/amf"
-	"github.com/watzon/planck/pkg/encode/nvenc"
-	"github.com/watzon/planck/pkg/encode/vpl"
+	"github.com/planckdotgg/planck/pkg/encode"
+	"github.com/planckdotgg/planck/pkg/encode/amf"
+	"github.com/planckdotgg/planck/pkg/encode/nvenc"
+	"github.com/planckdotgg/planck/pkg/encode/vpl"
 )
 
 func runVendors(args []string) error {

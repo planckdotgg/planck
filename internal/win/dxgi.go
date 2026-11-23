@@ -7,7 +7,7 @@ import (
 	"syscall"
 	"unsafe"
 
-	"github.com/watzon/planck/pkg/gpu"
+	"github.com/planckdotgg/planck/pkg/gpu"
 )
 
 var (

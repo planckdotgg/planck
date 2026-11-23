@@ -3,8 +3,8 @@
 package vt
 
 import (
-	"github.com/watzon/planck/pkg/encode"
-	"github.com/watzon/planck/pkg/gpu"
+	"github.com/planckdotgg/planck/pkg/encode"
+	"github.com/planckdotgg/planck/pkg/gpu"
 )
 
 func init() {

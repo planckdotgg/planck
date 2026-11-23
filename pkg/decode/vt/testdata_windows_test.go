@@ -7,10 +7,10 @@ import (
 	"os"
 	"testing"
 
-	"github.com/watzon/planck/pkg/capture"
-	"github.com/watzon/planck/pkg/encode"
-	"github.com/watzon/planck/pkg/encode/encodetest"
-	"github.com/watzon/planck/pkg/encode/nvenc"
+	"github.com/planckdotgg/planck/pkg/capture"
+	"github.com/planckdotgg/planck/pkg/encode"
+	"github.com/planckdotgg/planck/pkg/encode/encodetest"
+	"github.com/planckdotgg/planck/pkg/encode/nvenc"
 )
 
 // TestWriteAV1Clip regenerates testdata/av1_640x360.tus, the AV1 clip the

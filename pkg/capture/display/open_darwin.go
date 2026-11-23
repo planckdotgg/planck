@@ -5,9 +5,9 @@ package display
 import (
 	"strconv"
 
-	"github.com/watzon/planck/pkg/capture"
-	"github.com/watzon/planck/pkg/capture/sck"
-	"github.com/watzon/planck/pkg/gpu"
+	"github.com/planckdotgg/planck/pkg/capture"
+	"github.com/planckdotgg/planck/pkg/capture/sck"
+	"github.com/planckdotgg/planck/pkg/gpu"
 )
 
 const (

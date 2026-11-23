@@ -7,8 +7,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/watzon/planck/pkg/capture"
-	"github.com/watzon/planck/pkg/encode"
+	"github.com/planckdotgg/planck/pkg/capture"
+	"github.com/planckdotgg/planck/pkg/encode"
 )
 
 // Frame is a decoded picture owned by the decoder until Release.

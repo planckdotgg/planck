@@ -5,9 +5,9 @@ package player
 import (
 	"github.com/egoist/mygo/gpusurface"
 
-	"github.com/watzon/planck/pkg/decode"
-	"github.com/watzon/planck/pkg/decode/d3d11"
-	"github.com/watzon/planck/pkg/gpu"
+	"github.com/planckdotgg/planck/pkg/decode"
+	"github.com/planckdotgg/planck/pkg/decode/d3d11"
+	"github.com/planckdotgg/planck/pkg/gpu"
 )
 
 func openDecoder(surf *gpusurface.Surface, cfg decode.Config) (decode.Decoder, error) {

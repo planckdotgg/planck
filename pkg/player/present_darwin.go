@@ -5,8 +5,8 @@ package player
 import (
 	"github.com/egoist/mygo/gpusurface"
 
-	"github.com/watzon/planck/pkg/decode"
-	"github.com/watzon/planck/pkg/decode/vt"
+	"github.com/planckdotgg/planck/pkg/decode"
+	"github.com/planckdotgg/planck/pkg/decode/vt"
 )
 
 // openDecoder makes a VideoToolbox decoder: its IOSurfaces are shared with

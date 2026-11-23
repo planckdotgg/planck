@@ -4,7 +4,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/watzon/planck/pkg/wire"
+	"github.com/planckdotgg/planck/pkg/wire"
 )
 
 const clockWindow = 16

@@ -9,9 +9,9 @@ import (
 	"syscall"
 	"unsafe"
 
-	"github.com/watzon/planck/internal/win"
-	"github.com/watzon/planck/pkg/capture"
-	"github.com/watzon/planck/pkg/gpu"
+	"github.com/planckdotgg/planck/internal/win"
+	"github.com/planckdotgg/planck/pkg/capture"
+	"github.com/planckdotgg/planck/pkg/gpu"
 )
 
 // Device is a D3D11 device on one adapter. Capture, encode, decode and

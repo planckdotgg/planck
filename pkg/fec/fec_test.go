@@ -5,7 +5,7 @@ import (
 	"math/rand/v2"
 	"testing"
 
-	"github.com/watzon/planck/pkg/wire"
+	"github.com/planckdotgg/planck/pkg/wire"
 )
 
 const testShard = 1091

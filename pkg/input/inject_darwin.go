@@ -10,7 +10,7 @@ import (
 
 	"github.com/ebitengine/purego"
 
-	"github.com/watzon/planck/internal/apple"
+	"github.com/planckdotgg/planck/internal/apple"
 )
 
 type cgPoint struct{ X, Y float64 }

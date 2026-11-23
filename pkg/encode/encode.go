@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/watzon/planck/pkg/capture"
-	"github.com/watzon/planck/pkg/gpu"
+	"github.com/planckdotgg/planck/pkg/capture"
+	"github.com/planckdotgg/planck/pkg/gpu"
 )
 
 type Codec uint8

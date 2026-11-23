@@ -6,7 +6,7 @@ import (
 	"math"
 	"sync/atomic"
 
-	"github.com/watzon/planck/pkg/wire"
+	"github.com/planckdotgg/planck/pkg/wire"
 )
 
 // ParityPolicy chooses the parity shard count for a block of data shards.

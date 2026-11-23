@@ -13,12 +13,12 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/watzon/planck/internal/clock"
-	"github.com/watzon/planck/internal/win"
-	"github.com/watzon/planck/pkg/capture"
-	"github.com/watzon/planck/pkg/decode"
-	"github.com/watzon/planck/pkg/encode"
-	"github.com/watzon/planck/pkg/gpu"
+	"github.com/planckdotgg/planck/internal/clock"
+	"github.com/planckdotgg/planck/internal/win"
+	"github.com/planckdotgg/planck/pkg/capture"
+	"github.com/planckdotgg/planck/pkg/decode"
+	"github.com/planckdotgg/planck/pkg/encode"
+	"github.com/planckdotgg/planck/pkg/gpu"
 )
 
 const attrGetBlob = 15

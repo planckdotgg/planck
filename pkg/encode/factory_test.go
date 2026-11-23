@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/watzon/planck/pkg/capture"
-	"github.com/watzon/planck/pkg/gpu"
+	"github.com/planckdotgg/planck/pkg/capture"
+	"github.com/planckdotgg/planck/pkg/gpu"
 )
 
 type fake struct{ dev gpu.Device }

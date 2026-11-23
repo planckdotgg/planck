@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
-	"github.com/watzon/planck/pkg/wire"
+	"github.com/planckdotgg/planck/pkg/wire"
 )
 
 var ErrHostPINMismatch = errors.New("transport: host could not prove the pairing PIN")

@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"unsafe"
 
-	"github.com/watzon/planck/internal/win"
+	"github.com/planckdotgg/planck/internal/win"
 )
 
 var (

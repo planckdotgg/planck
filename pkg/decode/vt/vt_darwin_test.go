@@ -10,13 +10,13 @@ import (
 	"testing"
 	"unsafe"
 
-	"github.com/watzon/planck/internal/apple"
-	"github.com/watzon/planck/internal/bench"
-	"github.com/watzon/planck/internal/synth"
-	"github.com/watzon/planck/pkg/capture"
-	"github.com/watzon/planck/pkg/decode"
-	"github.com/watzon/planck/pkg/encode"
-	encvt "github.com/watzon/planck/pkg/encode/vt"
+	"github.com/planckdotgg/planck/internal/apple"
+	"github.com/planckdotgg/planck/internal/bench"
+	"github.com/planckdotgg/planck/internal/synth"
+	"github.com/planckdotgg/planck/pkg/capture"
+	"github.com/planckdotgg/planck/pkg/decode"
+	"github.com/planckdotgg/planck/pkg/encode"
+	encvt "github.com/planckdotgg/planck/pkg/encode/vt"
 )
 
 var (

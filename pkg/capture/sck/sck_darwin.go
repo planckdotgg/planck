@@ -16,9 +16,9 @@ import (
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
 
-	"github.com/watzon/planck/internal/apple"
-	"github.com/watzon/planck/pkg/capture"
-	"github.com/watzon/planck/pkg/gpu"
+	"github.com/planckdotgg/planck/internal/apple"
+	"github.com/planckdotgg/planck/pkg/capture"
+	"github.com/planckdotgg/planck/pkg/gpu"
 )
 
 var (

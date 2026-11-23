@@ -9,11 +9,11 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/watzon/planck/internal/bench"
-	"github.com/watzon/planck/internal/clock"
-	"github.com/watzon/planck/internal/win"
-	"github.com/watzon/planck/pkg/capture"
-	"github.com/watzon/planck/pkg/capture/dxgi"
+	"github.com/planckdotgg/planck/internal/bench"
+	"github.com/planckdotgg/planck/internal/clock"
+	"github.com/planckdotgg/planck/internal/win"
+	"github.com/planckdotgg/planck/pkg/capture"
+	"github.com/planckdotgg/planck/pkg/capture/dxgi"
 )
 
 // openCapture finds the first output of the matching adapter and duplicates it.

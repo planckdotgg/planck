@@ -11,12 +11,12 @@ import (
 
 	"github.com/egoist/mygo/gpusurface"
 
-	"github.com/watzon/planck/internal/bench"
-	"github.com/watzon/planck/pkg/capture"
-	"github.com/watzon/planck/pkg/decode"
-	"github.com/watzon/planck/pkg/encode"
-	"github.com/watzon/planck/pkg/encode/encodetest"
-	"github.com/watzon/planck/pkg/encode/nvenc"
+	"github.com/planckdotgg/planck/internal/bench"
+	"github.com/planckdotgg/planck/pkg/capture"
+	"github.com/planckdotgg/planck/pkg/decode"
+	"github.com/planckdotgg/planck/pkg/encode"
+	"github.com/planckdotgg/planck/pkg/encode/encodetest"
+	"github.com/planckdotgg/planck/pkg/encode/nvenc"
 )
 
 var (

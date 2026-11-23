@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
-	"github.com/watzon/planck/pkg/transport"
+	"github.com/planckdotgg/planck/pkg/transport"
 )
 
 const firstSliceRing = 64

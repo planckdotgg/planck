@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/watzon/planck/pkg/gpu"
+	"github.com/planckdotgg/planck/pkg/gpu"
 )
 
 // Backend opens one vendor's hardware encoder on a device of that vendor.

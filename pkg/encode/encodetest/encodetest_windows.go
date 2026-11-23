@@ -10,14 +10,14 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/watzon/planck/internal/bench"
-	"github.com/watzon/planck/internal/clock"
-	"github.com/watzon/planck/internal/synth"
-	"github.com/watzon/planck/internal/win"
-	"github.com/watzon/planck/pkg/capture"
-	"github.com/watzon/planck/pkg/capture/dxgi"
-	"github.com/watzon/planck/pkg/encode"
-	"github.com/watzon/planck/pkg/gpu"
+	"github.com/planckdotgg/planck/internal/bench"
+	"github.com/planckdotgg/planck/internal/clock"
+	"github.com/planckdotgg/planck/internal/synth"
+	"github.com/planckdotgg/planck/internal/win"
+	"github.com/planckdotgg/planck/pkg/capture"
+	"github.com/planckdotgg/planck/pkg/capture/dxgi"
+	"github.com/planckdotgg/planck/pkg/encode"
+	"github.com/planckdotgg/planck/pkg/gpu"
 )
 
 // Device opens a D3D11 device on the first adapter whose name contains

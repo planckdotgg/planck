@@ -9,8 +9,8 @@ import (
 
 	"github.com/egoist/mygo/gpusurface"
 
-	"github.com/watzon/planck/pkg/capture"
-	"github.com/watzon/planck/pkg/decode"
+	"github.com/planckdotgg/planck/pkg/capture"
+	"github.com/planckdotgg/planck/pkg/decode"
 )
 
 // Timing is one picture's way through the player.

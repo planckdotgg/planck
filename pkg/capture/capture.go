@@ -7,7 +7,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/watzon/planck/pkg/gpu"
+	"github.com/planckdotgg/planck/pkg/gpu"
 )
 
 // Format is the pixel layout of a captured surface.

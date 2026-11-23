@@ -7,7 +7,7 @@ import (
 
 	"github.com/egoist/mygo/gpusurface"
 
-	"github.com/watzon/planck/pkg/decode"
+	"github.com/planckdotgg/planck/pkg/decode"
 )
 
 var errNoBackend = errors.New("player: no hardware decoder on this platform")

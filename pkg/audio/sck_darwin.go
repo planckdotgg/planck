@@ -14,7 +14,7 @@ import (
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
 
-	"github.com/watzon/planck/internal/apple"
+	"github.com/planckdotgg/planck/internal/apple"
 )
 
 var (

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"unsafe"
 
-	"github.com/watzon/planck/internal/bench"
-	"github.com/watzon/planck/internal/clock"
-	"github.com/watzon/planck/internal/win"
+	"github.com/planckdotgg/planck/internal/bench"
+	"github.com/planckdotgg/planck/internal/clock"
+	"github.com/planckdotgg/planck/internal/win"
 )
 
 type xferResult struct {

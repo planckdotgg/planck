@@ -11,10 +11,10 @@ import (
 
 	"github.com/ebitengine/purego"
 
-	"github.com/watzon/planck/internal/apple"
-	"github.com/watzon/planck/pkg/capture"
-	"github.com/watzon/planck/pkg/decode"
-	"github.com/watzon/planck/pkg/encode"
+	"github.com/planckdotgg/planck/internal/apple"
+	"github.com/planckdotgg/planck/pkg/capture"
+	"github.com/planckdotgg/planck/pkg/decode"
+	"github.com/planckdotgg/planck/pkg/encode"
 )
 
 const (

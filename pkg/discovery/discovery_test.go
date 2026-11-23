@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/watzon/planck/pkg/tailscale"
+	"github.com/planckdotgg/planck/pkg/tailscale"
 )
 
 var testBeacon = Beacon{

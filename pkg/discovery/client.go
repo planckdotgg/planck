@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/watzon/planck/pkg/tailscale"
-	"github.com/watzon/planck/pkg/transport"
+	"github.com/planckdotgg/planck/pkg/tailscale"
+	"github.com/planckdotgg/planck/pkg/transport"
 )
 
 type PathKind uint8

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"syscall"
 
-	"github.com/watzon/planck/internal/win"
+	"github.com/planckdotgg/planck/internal/win"
 )
 
 func runEnum(args []string) error {

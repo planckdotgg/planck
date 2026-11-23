@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
-	"github.com/watzon/planck/pkg/fec"
-	"github.com/watzon/planck/pkg/ratectl"
-	"github.com/watzon/planck/pkg/wire"
+	"github.com/planckdotgg/planck/pkg/fec"
+	"github.com/planckdotgg/planck/pkg/ratectl"
+	"github.com/planckdotgg/planck/pkg/wire"
 )
 
 const defaultHandshakeTimeout = 10 * time.Second

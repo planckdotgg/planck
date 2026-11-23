@@ -9,13 +9,13 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/watzon/planck/internal/bench"
-	"github.com/watzon/planck/internal/clock"
-	"github.com/watzon/planck/internal/win"
-	"github.com/watzon/planck/pkg/capture"
-	"github.com/watzon/planck/pkg/encode"
-	"github.com/watzon/planck/pkg/encode/amf"
-	"github.com/watzon/planck/pkg/encode/nvenc"
+	"github.com/planckdotgg/planck/internal/bench"
+	"github.com/planckdotgg/planck/internal/clock"
+	"github.com/planckdotgg/planck/internal/win"
+	"github.com/planckdotgg/planck/pkg/capture"
+	"github.com/planckdotgg/planck/pkg/encode"
+	"github.com/planckdotgg/planck/pkg/encode/amf"
+	"github.com/planckdotgg/planck/pkg/encode/nvenc"
 )
 
 // runPipeline measures display present → encoded packet on the real desktop:

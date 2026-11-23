@@ -1,4 +1,4 @@
-module github.com/watzon/planck
+module github.com/planckdotgg/planck
 
 go 1.27.4
 

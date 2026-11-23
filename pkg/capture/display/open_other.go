@@ -5,7 +5,7 @@ package display
 import (
 	"errors"
 
-	"github.com/watzon/planck/pkg/capture"
+	"github.com/planckdotgg/planck/pkg/capture"
 )
 
 var errNoBackend = errors.New("display: no capture backend on this platform")
