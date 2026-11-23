@@ -1,0 +1,26 @@
+# Binaries and build outputs
+/bin/
+/dist/
+/build/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.*
+
+# Go
+*.prof
+*.trace
+
+# OS & editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+.env
+.env.local
