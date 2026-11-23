@@ -190,7 +190,7 @@ func Open(width, height, fps int, format uint32) (*Source, error) {
 	cfg.Send(sel("setWidth:"), uint(width))
 	cfg.Send(sel("setHeight:"), uint(height))
 	cfg.Send(sel("setMinimumFrameInterval:"), apple.Time(1, int32(fps)))
-	cfg.Send(sel("setPixelFormatType:"), format)
+	cfg.Send(sel("setPixelFormat:"), format)
 	cfg.Send(sel("setQueueDepth:"), 4)
 	cfg.Send(sel("setShowsCursor:"), false)
 	stream := objc.ID(objc.GetClass("SCStream")).Send(sel("alloc")).Send(sel("initWithFilter:configuration:delegate:"), filter, cfg, objc.ID(0))
