@@ -44,15 +44,44 @@ func splitAnnexB(au []byte) [][]byte {
 
 func hevcType(nal []byte) int { return int(nal[0]>>1) & 0x3f }
 
-// hevcParams holds an access unit's parameter sets.
+// hevcParams holds an access unit's parameter sets in stream order. A
+// stream can carry several of each (VideoToolbox's Main 10 output has four
+// PPSs), and slices may refer to any of them.
 type hevcParams struct {
-	vps, sps, pps []byte
+	sets [][]byte
+	sps  []byte // the first SPS
+	has  [3]bool
 }
 
-func (p hevcParams) complete() bool { return p.vps != nil && p.sps != nil && p.pps != nil }
+func (p *hevcParams) add(nal []byte) {
+	p.sets = append(p.sets, nal)
+	t := hevcType(nal)
+	p.has[t-nalVPS] = true
+	if t == nalSPS && p.sps == nil {
+		p.sps = nal
+	}
+}
+
+func (p hevcParams) complete() bool { return p.has[0] && p.has[1] && p.has[2] }
 
 func (p hevcParams) equal(q hevcParams) bool {
-	return string(p.vps) == string(q.vps) && string(p.sps) == string(q.sps) && string(p.pps) == string(q.pps)
+	if len(p.sets) != len(q.sets) {
+		return false
+	}
+	for i := range p.sets {
+		if string(p.sets[i]) != string(q.sets[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func (p hevcParams) clone() hevcParams {
+	var c hevcParams
+	for _, s := range p.sets {
+		c.add(append([]byte(nil), s...))
+	}
+	return c
 }
 
 // tenBit reads general_profile_idc from the SPS: Main 10 (2) carries 10-bit
@@ -69,12 +98,8 @@ func hevcSample(au []byte, dst []byte) (hevcParams, []byte, error) {
 			continue
 		}
 		switch hevcType(nal) {
-		case nalVPS:
-			p.vps = nal
-		case nalSPS:
-			p.sps = nal
-		case nalPPS:
-			p.pps = nal
+		case nalVPS, nalSPS, nalPPS:
+			p.add(nal)
 		default:
 			dst = binary.BigEndian.AppendUint32(dst, uint32(len(nal)))
 			dst = append(dst, nal...)

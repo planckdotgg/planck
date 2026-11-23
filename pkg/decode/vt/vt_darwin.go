@@ -211,13 +211,16 @@ func (d *Decoder) sampleBuffer(data []byte, pts int64) (uintptr, error) {
 }
 
 func (d *Decoder) reformatHEVC(p hevcParams) error {
-	sets := [3]unsafe.Pointer{unsafe.Pointer(&p.vps[0]), unsafe.Pointer(&p.sps[0]), unsafe.Pointer(&p.pps[0])}
-	sizes := [3]uint{uint(len(p.vps)), uint(len(p.sps)), uint(len(p.pps))}
+	sets := make([]unsafe.Pointer, len(p.sets))
+	sizes := make([]uint, len(p.sets))
+	for i, s := range p.sets {
+		sets[i], sizes[i] = unsafe.Pointer(&s[0]), uint(len(s))
+	}
 	var f uintptr
-	if st := cmVideoFormatDescriptionCreateFromHEVCParameterSets(0, 3, unsafe.Pointer(&sets[0]), unsafe.Pointer(&sizes[0]), 4, 0, &f); st != 0 {
+	if st := cmVideoFormatDescriptionCreateFromHEVCParameterSets(0, uint(len(sets)), unsafe.Pointer(&sets[0]), unsafe.Pointer(&sizes[0]), 4, 0, &f); st != 0 {
 		return fmt.Errorf("vt: HEVC format description: %d", st)
 	}
-	d.hevc = hevcParams{vps: clone(p.vps), sps: clone(p.sps), pps: clone(p.pps)}
+	d.hevc = p.clone()
 	return d.reopen(f, p.tenBit())
 }
 

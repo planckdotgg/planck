@@ -85,15 +85,16 @@ func hevcStream(t *testing.T, tenBit bool, n int) [][]byte {
 	return out
 }
 
-// parameterSets returns the VPS, SPS and PPS VideoToolbox keeps in the
-// sample's format description, in Annex B, as a host puts them before a
-// keyframe.
+// parameterSets returns every parameter set VideoToolbox keeps in the
+// sample's format description (its Main 10 output has four PPSs), in
+// Annex B, as a host puts them before a keyframe.
 func parameterSets(t *testing.T, sbuf uintptr) []byte {
 	f := getFormat(sbuf)
 	var out []byte
-	for i := uint(0); i < 3; i++ {
+	count := uint(1)
+	for i := uint(0); i < count; i++ {
 		var p uintptr
-		var size, count uint
+		var size uint
 		var nalLen int32
 		if st := getParameterSet(f, i, &p, &size, &count, &nalLen); st != 0 {
 			t.Fatalf("parameter set %d: %d", i, st)
@@ -186,7 +187,9 @@ func TestDecodeAV1(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer dec.Close()
-	for i := 0; len(clip) > 4; i++ {
+	lat := bench.NewSamples(10)
+	i := 0
+	for ; len(clip) > 4; i++ {
 		n := int(binary.BigEndian.Uint32(clip))
 		f, err := dec.Decode(clip[4:4+n], int64(i))
 		clip = clip[4+n:]
@@ -196,9 +199,11 @@ func TestDecodeAV1(t *testing.T) {
 		if err != nil {
 			t.Fatalf("temporal unit %d: %v", i, err)
 		}
-		if f.Format != capture.FormatP010 || f.Width != 640 || f.Height != 360 {
-			t.Fatalf("temporal unit %d: %s %dx%d", i, f.Format, f.Width, f.Height)
+		if f.Format != capture.FormatP010 || f.Width != 640 || f.Height != 360 || f.PTS != int64(i) {
+			t.Fatalf("temporal unit %d: %s %dx%d pts %d", i, f.Format, f.Width, f.Height, f.PTS)
 		}
+		lat.Add(float64(f.Latency) / 1e6)
 		dec.Release(f)
 	}
+	t.Logf("%d AV1 10-bit pictures, decode %s", i, lat.Summarize())
 }

@@ -100,6 +100,13 @@ func TestSplitAnnexB(t *testing.T) {
 	if fmt.Sprint(got) != "[[64 1 2] [66 3] [68 4]]" {
 		t.Fatalf("%v", got)
 	}
+	// Two PPSs, as VideoToolbox's Main 10 output has: both must reach the
+	// format description.
+	au = append(au, 0, 0, 1, 0x44, 5, 0, 0, 1, 0x26, 1, 9)
+	p, sample, err := hevcSample(au, nil)
+	if err != nil || !p.complete() || len(p.sets) != 4 || len(sample) != 7 {
+		t.Fatalf("sets %v sample % x err %v", p.sets, sample, err)
+	}
 	if _, err := splitOBUs([]byte{0x12, 0x05, 1}); err == nil {
 		t.Fatal("truncated OBU accepted")
 	}
