@@ -19,11 +19,15 @@ type MediaKeys struct {
 // the control connection. Both peers derive identical keys; the suite is bound
 // into the exporter context so a suite mismatch yields unrelated keys.
 func DeriveMediaKeys(export Exporter, suite Suite) (MediaKeys, error) {
+	return deriveMediaKeysLabel(export, suite, MediaExporterLabel)
+}
+
+func deriveMediaKeysLabel(export Exporter, suite Suite, label string) (MediaKeys, error) {
 	kl := suite.keyLen()
 	if kl == 0 {
 		return MediaKeys{}, fmt.Errorf("transport: unsupported suite %v", suite)
 	}
-	material, err := export(MediaExporterLabel, []byte{byte(suite)}, 2*(kl+ivLen))
+	material, err := export(label, []byte{byte(suite)}, 2*(kl+ivLen))
 	if err != nil {
 		return MediaKeys{}, fmt.Errorf("transport: export keying material: %w", err)
 	}

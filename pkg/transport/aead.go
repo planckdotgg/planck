@@ -1,7 +1,9 @@
-// Package transport implements Planck's media transport primitives: AEAD
-// packet framing keyed from a TLS 1.3 exporter, sub-frame slice
-// packetization with Reed-Solomon FEC, reassembly, pacing and network
-// impairment for benchmarks.
+// Package transport carries Planck sessions. Listen and Dial run the
+// production session layer: a pinned-certificate QUIC control stream
+// (ALPN planck-v1) and an AEAD-sealed raw UDP media plane with adaptive FEC,
+// rate control and clock sync. Under it are the primitives: AEAD packet
+// framing keyed from a TLS 1.3 exporter, pacing, network impairment, and the
+// Phase 0 spike packetizer and reassembler used by cmd/spike-transport.
 package transport
 
 import (
