@@ -14,9 +14,12 @@ require (
 )
 
 require (
+	github.com/go-text/typesetting v0.3.5 // indirect
 	github.com/jfreymuth/pulse v0.1.3 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
+	golang.org/x/image v0.46.0 // indirect
 	golang.org/x/net v0.62.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
 )
 
 replace github.com/egoist/mygo => ./third_party/mygo
