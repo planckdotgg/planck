@@ -41,3 +41,13 @@ type Adapter struct {
 	VRAMBytes uint64
 	Software  bool
 }
+
+// Device is a GPU device that frames live on, shared by capture, encode,
+// decode and presentation so a frame never leaves its GPU.
+type Device struct {
+	Adapter Adapter
+	// Handle is the ID3D11Device* on Windows. It is 0 on macOS, where
+	// IOSurfaces move between Metal, VideoToolbox and ScreenCaptureKit on
+	// their own.
+	Handle uintptr
+}

@@ -61,6 +61,7 @@ var keys struct {
 	maxKeyInterval, prioritizeSpeed, maxFrameDelay, dataRateLimits, notSync,
 	ioSurfaceProps, pixelFormat, width, height uintptr
 	hevcMain, hevcMain10, hevcMain42210 uintptr
+	forceKeyFrame                       uintptr
 }
 
 func init() {
@@ -106,6 +107,7 @@ func init() {
 	if apple.HasSym(vt, "kVTProfileLevel_HEVC_Main42210_AutoLevel") {
 		keys.hevcMain42210 = apple.Const(vt, "kVTProfileLevel_HEVC_Main42210_AutoLevel")
 	}
+	keys.forceKeyFrame = apple.Const(vt, "kVTEncodeFrameOptionKey_ForceKeyFrame")
 	keys.notSync = apple.Const(cm, "kCMSampleAttachmentKey_NotSync")
 	keys.ioSurfaceProps = apple.Const(cv, "kCVPixelBufferIOSurfacePropertiesKey")
 	keys.pixelFormat = apple.Const(cv, "kCVPixelBufferPixelFormatTypeKey")
@@ -149,6 +151,8 @@ type Encoder struct {
 	cfg     encode.Config
 	out     chan output
 	frame   int64
+	// forceKey is the frame properties dictionary that forces a keyframe.
+	forceKey uintptr
 	// Keep is set by callers that want the CMSampleBuffer of the last packet
 	// (to feed a decoder); they release it.
 	Keep       bool
@@ -158,7 +162,8 @@ type Encoder struct {
 }
 
 // Open creates a hardware HEVC compression session. 4:4:4 is refused: Apple
-// silicon exposes HEVC 4:2:0 and 4:2:2 only.
+// silicon exposes HEVC 4:2:0 and 4:2:2 only. Frames passed to Encode are
+// CVPixelBuffers backed by IOSurfaces.
 func Open(cfg encode.Config) (*Encoder, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -169,8 +174,12 @@ func Open(cfg encode.Config) (*Encoder, error) {
 	if cfg.Chroma.Full() {
 		return nil, fmt.Errorf("%w: no HEVC 4:4:4 encoder on Apple silicon", encode.ErrUnsupported)
 	}
+	if cfg.IntraRefreshPeriod > 0 || cfg.SubFrame || cfg.Slices > 1 {
+		return nil, fmt.Errorf("%w: VideoToolbox intra refresh, slices and sub-frame output", encode.ErrUnsupported)
+	}
 	cbOnce.Do(func() { encodeCB = purego.NewCallback(encodeCallback) })
 	e := &Encoder{cfg: cfg, out: make(chan output, 8)}
+	e.forceKey = apple.Dict(keys.forceKeyFrame, apple.KCFBooleanTrue)
 	sessionsMu.Lock()
 	nextRef++
 	e.ref = nextRef
@@ -243,7 +252,11 @@ func (e *Encoder) Encode(f capture.Frame, forceKey bool, dst []byte) (encode.Pac
 	pts := apple.Time(e.frame, int32(e.cfg.FPS))
 	e.frame++
 	var flags uint32
-	if st := vtCompressionSessionEncodeFrame(e.session, f.Surface, pts, apple.CMTime{}, 0, 0, &flags); st != 0 {
+	var props uintptr
+	if forceKey {
+		props = e.forceKey
+	}
+	if st := vtCompressionSessionEncodeFrame(e.session, f.Surface, pts, apple.CMTime{}, props, 0, &flags); st != 0 {
 		return encode.Packet{}, fmt.Errorf("vt: encode frame: %d", st)
 	}
 	o := <-e.out
@@ -281,6 +294,9 @@ func isKey(sbuf uintptr) bool {
 }
 
 func (e *Encoder) SetBitrate(kbps int) error {
+	if kbps <= 0 {
+		return fmt.Errorf("vt: bitrate %d must be positive", kbps)
+	}
 	b := apple.Int(int64(kbps) * 1000)
 	defer apple.CFRelease(b)
 	if st := vtSessionSetProperty(e.session, keys.avgBitrate, b); st != 0 {
@@ -294,6 +310,10 @@ func (e *Encoder) Close() error {
 		vtCompressionSessionInvalidate(e.session)
 		apple.CFRelease(e.session)
 		e.session = 0
+	}
+	if e.forceKey != 0 {
+		apple.CFRelease(e.forceKey)
+		e.forceKey = 0
 	}
 	sessionsMu.Lock()
 	delete(sessions, e.ref)

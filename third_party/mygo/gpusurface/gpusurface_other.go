@@ -15,5 +15,8 @@ func New(Options) (*Surface, error) {
 func (s *Surface) Present(uintptr) error {
 	return errors.New("gpusurface: not supported on this platform")
 }
+func (s *Surface) Resize(w, h int) error {
+	return errors.New("gpusurface: not supported on this platform")
+}
 func (s *Surface) Size() (w, h int) { return 0, 0 }
 func (s *Surface) Close()           {}

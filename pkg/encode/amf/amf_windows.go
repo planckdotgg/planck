@@ -44,6 +44,9 @@ const (
 	ioGetNumOfFormats       = 6
 	ioGetFormatAt           = 7
 
+	dataSetPts = 19
+	dataGetPts = 20
+
 	bufGetSize   = 24
 	bufGetNative = 25
 )
@@ -81,9 +84,16 @@ func (o *iface) call(i int, args ...uintptr) uintptr {
 	return r
 }
 
+// call3 is call for the per-frame path: a fixed argument count keeps it
+// free of allocations. Pointers passed must be to the heap.
+func (o *iface) call3(i int, a, b, c uintptr) uintptr {
+	r, _, _ := syscall.SyscallN(o.vtbl[i], uintptr(unsafe.Pointer(o)), a, b, c)
+	return r
+}
+
 func (o *iface) release() {
 	if o != nil {
-		o.call(ifRelease)
+		o.call3(ifRelease, 0, 0, 0)
 	}
 }
 
@@ -291,10 +301,22 @@ type Encoder struct {
 	comp    *iface
 	cfg     encode.Config
 	adapter gpu.Adapter
-	surface *iface
-	data    *iface
-	buffer  *iface
+	frame   int64
+
+	// Out parameters and property arguments of the per-frame calls, on the
+	// heap so the calls do not allocate.
+	surface, data, buffer *iface
+	forceIDR, outType     *variant
+	nameForce, nameType   *uint16
+	pts                   *int64
 }
+
+// AMF_VIDEO_ENCODER_HEVC_PICTURE_TYPE_IDR and the output data types.
+const (
+	pictureIDR    = 2
+	outputDataIDR = 0
+	outputDataI   = 1
+)
 
 func surfaceFormat(f capture.Format) (int, error) {
 	switch f {
@@ -315,10 +337,13 @@ func Open(device win.Device, adapter gpu.Adapter, cfg encode.Config) (*Encoder, 
 		return nil, err
 	}
 	if cfg.Codec != encode.HEVC {
-		return nil, fmt.Errorf("%w: this spike drives AMF HEVC only", encode.ErrUnsupported)
+		return nil, fmt.Errorf("%w: Planck drives AMF HEVC only", encode.ErrUnsupported)
 	}
 	if cfg.Chroma.Full() {
 		return nil, fmt.Errorf("%w: AMF has no 4:4:4 encode", encode.ErrUnsupported)
+	}
+	if cfg.IntraRefreshPeriod > 0 || cfg.SubFrame {
+		return nil, fmt.Errorf("%w: AMF intra refresh and sub-frame output", encode.ErrUnsupported)
 	}
 	format, err := surfaceFormat(cfg.Source)
 	if err != nil {
@@ -333,7 +358,9 @@ func Open(device win.Device, adapter gpu.Adapter, cfg encode.Config) (*Encoder, 
 		s.close()
 		return nil, err
 	}
-	e := &Encoder{s: s, comp: comp, cfg: cfg, adapter: adapter}
+	e := &Encoder{s: s, comp: comp, cfg: cfg, adapter: adapter,
+		forceIDR: int64Var(pictureIDR), outType: new(variant),
+		nameForce: wstr("HevcForcePictureType"), nameType: wstr("HevcOutputDataType"), pts: new(int64)}
 	bitrate := int64(cfg.BitrateKbps) * 1000
 	profile, depth := int64(1), int64(8)
 	if cfg.Chroma.TenBit() {
@@ -388,18 +415,28 @@ func (e *Encoder) Caps() encode.Caps {
 var errNoOutput = errors.New("amf: no output within the query timeout")
 
 func (e *Encoder) Encode(f capture.Frame, forceKey bool, dst []byte) (encode.Packet, error) {
-	if err := check("CreateSurfaceFromDX11Native", e.s.ctx.call(ctxCreateSurfaceFromDX11Native, f.Surface,
+	if err := check("CreateSurfaceFromDX11Native", e.s.ctx.call3(ctxCreateSurfaceFromDX11Native, f.Surface,
 		uintptr(unsafe.Pointer(&e.surface)), 0)); err != nil {
 		return encode.Packet{}, err
 	}
-	r := e.comp.call(compSubmitInput, uintptr(unsafe.Pointer(e.surface)))
+	e.surface.call3(dataSetPts, uintptr(e.frame), 0, 0)
+	e.frame++
+	if forceKey {
+		if err := check("SetProperty HevcForcePictureType", e.surface.call3(psSetProperty,
+			uintptr(unsafe.Pointer(e.nameForce)), uintptr(unsafe.Pointer(e.forceIDR)), 0)); err != nil {
+			e.surface.release()
+			e.surface = nil
+			return encode.Packet{}, err
+		}
+	}
+	r := e.comp.call3(compSubmitInput, uintptr(unsafe.Pointer(e.surface)), 0, 0)
 	e.surface.release()
 	e.surface = nil
 	if err := check("SubmitInput", r); err != nil {
 		return encode.Packet{}, err
 	}
 	for tries := 0; ; tries++ {
-		e.comp.call(compQueryOutput, uintptr(unsafe.Pointer(&e.data)))
+		e.comp.call3(compQueryOutput, uintptr(unsafe.Pointer(&e.data)), 0, 0)
 		if e.data != nil {
 			break
 		}
@@ -411,24 +448,38 @@ func (e *Encoder) Encode(f capture.Frame, forceKey bool, dst []byte) (encode.Pac
 		e.data.release()
 		e.data = nil
 	}()
-	if err := check("QueryInterface AMFBuffer", e.data.call(ifQueryInterface, uintptr(unsafe.Pointer(&iidAMFBuffer)),
-		uintptr(unsafe.Pointer(&e.buffer)))); err != nil {
+	if err := check("QueryInterface AMFBuffer", e.data.call3(ifQueryInterface, uintptr(unsafe.Pointer(&iidAMFBuffer)),
+		uintptr(unsafe.Pointer(&e.buffer)), 0)); err != nil {
 		return encode.Packet{}, err
 	}
-	size := int(e.buffer.call(bufGetSize))
-	ptr := e.buffer.call(bufGetNative)
-	pkt := encode.Packet{Data: append(dst[:0], unsafe.Slice((*byte)(win.Ptr(ptr)), size)...)}
+	size := int(e.buffer.call3(bufGetSize, 0, 0, 0))
+	ptr := e.buffer.call3(bufGetNative, 0, 0, 0)
+	pkt := encode.Packet{Data: append(dst[:0], unsafe.Slice((*byte)(win.Ptr(ptr)), size)...), PTS: int64(e.data.call3(dataGetPts, 0, 0, 0))}
+	if e.data.call3(psGetProperty, uintptr(unsafe.Pointer(e.nameType)), uintptr(unsafe.Pointer(e.outType)), 0) == resultOK {
+		t := *(*int64)(unsafe.Pointer(&e.outType.value[0]))
+		pkt.Keyframe = t == outputDataIDR || t == outputDataI
+	}
 	e.buffer.release()
 	e.buffer = nil
 	return pkt, nil
 }
 
 func (e *Encoder) SetBitrate(kbps int) error {
-	b := int64(kbps) * 1000
-	if err := setProp(e.comp, "HevcTargetBitrate", int64Var(b)); err != nil {
-		return err
+	if kbps <= 0 {
+		return fmt.Errorf("amf: bitrate %d must be positive", kbps)
 	}
-	return setProp(e.comp, "HevcPeakBitrate", int64Var(b))
+	b := int64(kbps) * 1000
+	for _, p := range []string{"HevcTargetBitrate", "HevcPeakBitrate", "HevcVBVBufferSize"} {
+		v := b
+		if p == "HevcVBVBufferSize" {
+			v = b / int64(e.cfg.FPS)
+		}
+		if err := setProp(e.comp, p, int64Var(v)); err != nil {
+			return err
+		}
+	}
+	e.cfg.BitrateKbps = kbps
+	return nil
 }
 
 func (e *Encoder) Close() error {

@@ -133,7 +133,9 @@ type Caps struct {
 	MaxHeight    int
 	IntraRefresh bool
 	SubFrame     bool
-	Engines      int
+	// RefInvalidation means the encoder implements RefInvalidator.
+	RefInvalidation bool
+	Engines         int
 }
 
 // Encoder turns captured GPU surfaces into packets.
@@ -143,4 +145,12 @@ type Encoder interface {
 	Encode(frame capture.Frame, forceKey bool, dst []byte) (Packet, error)
 	SetBitrate(kbps int) error
 	Close() error
+}
+
+// RefInvalidator is an Encoder that can stop predicting from pictures the
+// receiver lost, so the stream recovers without a keyframe.
+type RefInvalidator interface {
+	// InvalidateRefs marks the picture with this Packet.PTS, and every later
+	// one, as unusable references.
+	InvalidateRefs(pts int64) error
 }

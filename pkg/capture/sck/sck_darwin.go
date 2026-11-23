@@ -8,6 +8,7 @@ package sck
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 	"unsafe"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/watzon/planck/internal/apple"
 	"github.com/watzon/planck/pkg/capture"
+	"github.com/watzon/planck/pkg/gpu"
 )
 
 var (
@@ -33,6 +35,11 @@ var (
 	cmSampleBufferGetSampleAttachmentsArray func(sbuf uintptr, create bool) uintptr
 	cgPreflightScreenCaptureAccess          func() bool
 	cgMainDisplayID                         func() uint32
+	cgDisplayCopyDisplayMode                func(display uint32) uintptr
+	cgDisplayModeGetPixelWidth              func(mode uintptr) uint
+	cgDisplayModeGetPixelHeight             func(mode uintptr) uint
+	cgDisplayModeGetRefreshRate             func(mode uintptr) float64
+	cgDisplayModeRelease                    func(mode uintptr)
 
 	keyStatus, keyDisplayTime uintptr
 )
@@ -43,6 +50,11 @@ func init() {
 	apple.Register(&cmSampleBufferGetSampleAttachmentsArray, apple.CoreMedia, "CMSampleBufferGetSampleAttachmentsArray")
 	apple.Register(&cgPreflightScreenCaptureAccess, apple.CoreGraphics, "CGPreflightScreenCaptureAccess")
 	apple.Register(&cgMainDisplayID, apple.CoreGraphics, "CGMainDisplayID")
+	apple.Register(&cgDisplayCopyDisplayMode, apple.CoreGraphics, "CGDisplayCopyDisplayMode")
+	apple.Register(&cgDisplayModeGetPixelWidth, apple.CoreGraphics, "CGDisplayModeGetPixelWidth")
+	apple.Register(&cgDisplayModeGetPixelHeight, apple.CoreGraphics, "CGDisplayModeGetPixelHeight")
+	apple.Register(&cgDisplayModeGetRefreshRate, apple.CoreGraphics, "CGDisplayModeGetRefreshRate")
+	apple.Register(&cgDisplayModeRelease, apple.CoreGraphics, "CGDisplayModeRelease")
 	keyStatus = apple.Const(sckLib, "SCStreamFrameInfoStatus")
 	keyDisplayTime = apple.Const(sckLib, "SCStreamFrameInfoDisplayTime")
 }
@@ -160,9 +172,43 @@ func didOutput(self objc.ID, _ objc.SEL, _ objc.ID, sbuf uintptr, kind int) {
 	}
 }
 
+// ErrNoDisplay means the display is not in ScreenCaptureKit's shareable
+// content (disconnected, or the process lacks Screen Recording permission).
+var ErrNoDisplay = errors.New("sck: display not in shareable content")
+
+// Displays lists the displays ScreenCaptureKit can capture, in pixels at
+// their current mode. ID is the CGDirectDisplayID in decimal.
+func Displays() ([]capture.Display, error) {
+	content, err := shareableContent()
+	if err != nil {
+		return nil, err
+	}
+	defer content.Send(sel("release"))
+	displays := content.Send(sel("displays"))
+	main := cgMainDisplayID()
+	var out []capture.Display
+	for i := 0; i < objc.Send[int](displays, sel("count")); i++ {
+		id := objc.Send[uint32](displays.Send(sel("objectAtIndex:"), i), sel("displayID"))
+		d := capture.Display{ID: strconv.FormatUint(uint64(id), 10), Name: "display " + strconv.FormatUint(uint64(id), 10),
+			Adapter: gpu.Adapter{Vendor: gpu.VendorApple, Name: "Apple GPU"}, Primary: id == main}
+		if mode := cgDisplayCopyDisplayMode(id); mode != 0 {
+			d.Width, d.Height = int(cgDisplayModeGetPixelWidth(mode)), int(cgDisplayModeGetPixelHeight(mode))
+			d.Refresh = cgDisplayModeGetRefreshRate(mode)
+			cgDisplayModeRelease(mode)
+		}
+		out = append(out, d)
+	}
+	return out, nil
+}
+
 // Open starts capturing the main display scaled to width x height at up to
 // fps, in pixel format (vt.PixelBGRA or vt.Pixel420v).
 func Open(width, height, fps int, format uint32) (*Source, error) {
+	return OpenDisplay(cgMainDisplayID(), width, height, fps, format)
+}
+
+// OpenDisplay is Open for the display with this CGDirectDisplayID.
+func OpenDisplay(id uint32, width, height, fps int, format uint32) (*Source, error) {
 	classOnce.Do(registerClass)
 	if classErr != nil {
 		return nil, classErr
@@ -173,16 +219,15 @@ func Open(width, height, fps int, format uint32) (*Source, error) {
 	}
 	defer content.Send(sel("release"))
 	displays := content.Send(sel("displays"))
-	main := cgMainDisplayID()
 	var display objc.ID
 	for i := 0; i < objc.Send[int](displays, sel("count")); i++ {
 		d := displays.Send(sel("objectAtIndex:"), i)
-		if objc.Send[uint32](d, sel("displayID")) == main {
+		if objc.Send[uint32](d, sel("displayID")) == id {
 			display = d
 		}
 	}
 	if display == 0 {
-		return nil, errors.New("sck: main display not in shareable content")
+		return nil, ErrNoDisplay
 	}
 	empty := objc.ID(objc.GetClass("NSArray")).Send(sel("array"))
 	filter := objc.ID(objc.GetClass("SCContentFilter")).Send(sel("alloc")).Send(sel("initWithDisplay:excludingWindows:"), display, empty)
