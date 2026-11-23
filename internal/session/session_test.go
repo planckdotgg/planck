@@ -463,3 +463,35 @@ func TestInputRoundTrip(t *testing.T) {
 		t.Error("rumble sent as input")
 	}
 }
+
+// TestColdStartDecode: a decoder whose first access unit takes long, as
+// VideoToolbox's does, must never get a frame whose reference the client
+// dropped meanwhile: after a gap the next unit it decodes is a keyframe.
+func TestColdStartDecode(t *testing.T) {
+	hs := startHost(t, t.TempDir(), "127.0.0.1:0", nil, "off")
+	r := newClient(t, t.TempDir(), hs.host.PIN())
+	var orphans atomic.Int64
+	last, broken := int64(-1), false
+	r.sink.OnUnit = func(au []byte, pts int64) {
+		if last < 0 {
+			time.Sleep(300 * time.Millisecond)
+		}
+		switch key := len(au) == 40_000; {
+		case key:
+			broken = false
+		case broken || pts != last+1:
+			broken = true
+			orphans.Add(1)
+		}
+		last = pts
+	}
+	if err := connect(t, r, hs.host.Addr().String()); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "video frames", func() bool { return r.sink.Units.Load() >= 120 })
+	cs := r.client.Stats()
+	t.Logf("%d units decoded, %d frames dropped, %d orphaned", r.sink.Units.Load(), cs.FramesDropped, orphans.Load())
+	if n := orphans.Load(); n != 0 {
+		t.Fatalf("the decoder got %d frames after a gap, not a keyframe", n)
+	}
+}

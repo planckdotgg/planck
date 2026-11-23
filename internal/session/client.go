@@ -196,6 +196,10 @@ type conn struct {
 
 	lastPLI                             atomic.Int64
 	dropped, sinkErr, audioPkts, inputs atomic.Uint64
+	// decoding is set once the sink gave its first picture; until then the
+	// queue may grow to warmupQueue. needKey discards frames until the next
+	// keyframe, after one was lost.
+	decoding, needKey atomic.Bool
 }
 
 type frameBuf struct {
@@ -205,7 +209,10 @@ type frameBuf struct {
 }
 
 const (
-	frameQueue    = 3
+	frameQueue = 3
+	// warmupQueue holds the frames that arrive while the decoder makes its
+	// first picture: VideoToolbox takes tens of milliseconds for it.
+	warmupQueue   = 16
 	latencyWindow = 600
 	minPLIGap     = 100 * time.Millisecond
 )
@@ -287,12 +294,13 @@ func (c *Client) connect(ctx context.Context, t Target) (*conn, error) {
 		req.AudioSampleRate, req.AudioChannels = audio.SampleRate, audio.Channels
 	}
 
-	cc := &conn{hostID: hostID, name: r.name, path: path.String(), addr: addr, frames: make(chan *frameBuf, frameQueue),
-		free: make(chan *frameBuf, frameQueue+2), e2e: newWindow(latencyWindow), network: newWindow(latencyWindow),
+	cc := &conn{hostID: hostID, name: r.name, path: path.String(), addr: addr, frames: make(chan *frameBuf, warmupQueue),
+		free: make(chan *frameBuf, warmupQueue+2), e2e: newWindow(latencyWindow), network: newWindow(latencyWindow),
 		encodeW: newWindow(latencyWindow), decodeW: newWindow(latencyWindow), presentW: newWindow(latencyWindow)}
-	for range frameQueue + 2 {
+	for range warmupQueue + 2 {
 		cc.free <- &frameBuf{}
 	}
+	cc.needKey.Store(true)
 	if !cfg.NoAudio {
 		cc.jb = audio.NewJitterBuffer(audio.JitterConfig{})
 	}
@@ -402,18 +410,35 @@ func (c *Client) pin(stored config.ClientConfig, key, addr string, fp [32]byte) 
 }
 
 // onFrame runs on the receive goroutine: it copies the frame out and never
-// blocks. A full queue drops the frame and asks for a keyframe, since later
-// frames would reference it.
+// blocks. A full queue drops the frame and asks for a keyframe, and the
+// frames up to it are dropped too: they would reference the lost one, and a
+// decoder fed them fails on each.
 func (cc *conn) onFrame(info wire.VideoInfo, frame []byte) {
 	now := transport.Mono()
 	sess := cc.live.Load()
 	if sess == nil {
 		return
 	}
+	if cc.needKey.Load() {
+		if !info.Keyframe {
+			cc.drop()
+			return
+		}
+		cc.needKey.Store(false)
+	}
+	limit := frameQueue
+	if !cc.decoding.Load() {
+		limit = warmupQueue
+	}
 	var fb *frameBuf
 	select {
 	case fb = <-cc.free:
 	default:
+		cc.drop()
+		return
+	}
+	if len(cc.frames) >= limit {
+		cc.free <- fb
 		cc.drop()
 		return
 	}
@@ -440,6 +465,7 @@ func (cc *conn) onFrame(info wire.VideoInfo, frame []byte) {
 
 func (cc *conn) drop() {
 	cc.dropped.Add(1)
+	cc.needKey.Store(true)
 	cc.requestKey()
 }
 
@@ -472,8 +498,12 @@ func (cc *conn) decodeLoop(sink Sink, logf func(string, ...any)) {
 			if cc.sinkErr.Add(1) == 1 {
 				logf("planck: video sink: %v", err)
 			}
+			cc.needKey.Store(true)
 			cc.requestKey()
 			continue
+		}
+		if err == nil {
+			cc.decoding.Store(true)
 		}
 		cc.mu.Lock()
 		cc.encodeMs = ms(info.EncodeTS - info.CaptureTS)
