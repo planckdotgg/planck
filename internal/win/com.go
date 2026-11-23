@@ -35,6 +35,10 @@ func hr(r uintptr) error {
 	return nil
 }
 
+// call keeps what pointer arguments point to on the heap and alive until it
+// returns.
+//
+//go:uintptrescapes
 func (o *Object) call(index int, args ...uintptr) uintptr {
 	all := make([]uintptr, 0, 8)
 	all = append(all, uintptr(unsafe.Pointer(o)))

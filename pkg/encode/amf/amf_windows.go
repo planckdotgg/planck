@@ -78,6 +78,11 @@ var (
 
 type iface struct{ vtbl *[64]uintptr }
 
+// call keeps what pointer arguments point to on the heap and alive until
+// it returns. Without it a stack move between the conversion to uintptr and
+// the C call leaves AMF writing out parameters to a dead stack.
+//
+//go:uintptrescapes
 func (o *iface) call(i int, args ...uintptr) uintptr {
 	all := append([]uintptr{uintptr(unsafe.Pointer(o))}, args...)
 	r, _, _ := syscall.SyscallN(o.vtbl[i], all...)

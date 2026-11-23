@@ -155,6 +155,10 @@ func (o obj) vt(i int) uintptr {
 	return *(*uintptr)(unsafe.Add(win.Ptr(*(*uintptr)(win.Ptr(uintptr(o)))), i*8))
 }
 
+// call keeps what pointer arguments point to on the heap and alive until it
+// returns.
+//
+//go:uintptrescapes
 func (o obj) call(i int, args ...uintptr) win.HRESULT {
 	a := make([]uintptr, 0, 8)
 	a = append(a, uintptr(o))

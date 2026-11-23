@@ -77,6 +77,43 @@ func TestSetBitrate(t *testing.T) {
 	}
 }
 
+//go:noinline
+func atDepth(n int, f func()) {
+	var pad [64]byte
+	if n > 0 {
+		atDepth(n-1, f)
+	} else {
+		f()
+	}
+	_ = pad
+}
+
+// TestComponentAcrossStackMoves calls CreateComponent at every stack depth
+// up to a few KiB, so some calls hit a stack growth between taking the out
+// pointer's address and AMF writing through it.
+func TestComponentAcrossStackMoves(t *testing.T) {
+	d := encodetest.Device(t, "Radeon")
+	s, err := openContext(d.D3D)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.close()
+	for depth := 0; depth < 160; depth++ {
+		done := make(chan error)
+		go atDepth(depth, func() {
+			comp, err := s.component(encode.HEVC)
+			if err == nil && comp == nil {
+				err = errors.New("CreateComponent returned AMF_OK and a nil component")
+			}
+			comp.release()
+			done <- err
+		})
+		if err := <-done; err != nil {
+			t.Fatalf("depth %d: %v", depth, err)
+		}
+	}
+}
+
 func TestRefuses444(t *testing.T) {
 	d := encodetest.Device(t, "Radeon")
 	if _, err := Open(d.D3D, d.Info, hevc(encode.YUV444, capture.FormatBGRA8)); !errors.Is(err, encode.ErrUnsupported) {

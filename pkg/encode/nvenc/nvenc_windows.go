@@ -130,8 +130,19 @@ type Encoder struct {
 	caps         encode.Caps
 }
 
+// call keeps what pointer arguments point to on the heap and alive until
+// it returns, so a stack move cannot leave NVENC writing to a dead stack.
+//
+//go:uintptrescapes
 func (e *Encoder) call(offset int, args ...uintptr) error {
 	r, _, _ := syscall.SyscallN(e.api.fn(offset), args...)
+	return e.status(offset, r)
+}
+
+// call2 is call for the per-frame path, free of allocations. Pointers passed
+// must be to the heap.
+func (e *Encoder) call2(offset int, a, b uintptr) error {
+	r, _, _ := syscall.SyscallN(e.api.fn(offset), a, b)
 	return e.status(offset, r)
 }
 
@@ -505,12 +516,12 @@ func (e *Encoder) Encode(f capture.Frame, forceKey bool, dst []byte) (encode.Pac
 	clear(m)
 	put32(m, 0, verMapInput)
 	put64(m, mapRegistered, uint64(reg.ptr))
-	if err := e.call(fnMapInputResource, e.enc, uintptr(unsafe.Pointer(&m[0]))); err != nil {
+	if err := e.call2(fnMapInputResource, e.enc, uintptr(unsafe.Pointer(&m[0]))); err != nil {
 		return encode.Packet{}, err
 	}
 	mapped := uintptr(get64(m, mapMapped))
 	pkt, err := e.encodeMapped(f, mapped, get32(m, mapMappedFormat), forceKey, dst)
-	if uerr := e.call(fnUnmapInputResource, e.enc, mapped); err == nil {
+	if uerr := e.call2(fnUnmapInputResource, e.enc, mapped); err == nil {
 		err = uerr
 	}
 	return pkt, err
@@ -536,7 +547,7 @@ func (e *Encoder) encodeMapped(f capture.Frame, mapped uintptr, format uint32, f
 	e.frame++
 
 	e.submitted = clock.Now()
-	if err := e.call(fnEncodePicture, e.enc, uintptr(unsafe.Pointer(&p[0]))); err != nil {
+	if err := e.call2(fnEncodePicture, e.enc, uintptr(unsafe.Pointer(&p[0]))); err != nil {
 		return encode.Packet{}, err
 	}
 	l := e.lock
@@ -553,7 +564,7 @@ func (e *Encoder) encodeMapped(f capture.Frame, mapped uintptr, format uint32, f
 		if err != nil || ev != windows.WAIT_OBJECT_0 {
 			return encode.Packet{}, fmt.Errorf("nvenc: frame not done in 2 s (wait=%d err=%v)", ev, err)
 		}
-		if err := e.call(fnLockBitstream, e.enc, uintptr(unsafe.Pointer(&l[0]))); err != nil {
+		if err := e.call2(fnLockBitstream, e.enc, uintptr(unsafe.Pointer(&l[0]))); err != nil {
 			return encode.Packet{}, err
 		}
 	}
@@ -573,7 +584,7 @@ func (e *Encoder) encodeMapped(f capture.Frame, mapped uintptr, format uint32, f
 		e.sliceEnds = append(e.sliceEnds, size)
 		pkt.SliceEnds = e.sliceEnds
 	}
-	err := e.call(fnUnlockBitstream, e.enc, e.output)
+	err := e.call2(fnUnlockBitstream, e.enc, e.output)
 	return pkt, err
 }
 
@@ -600,7 +611,7 @@ func (e *Encoder) pollSubFrame() error {
 		if get32(l, lockHWStatus) == 2 || n >= want {
 			return nil
 		}
-		if err := e.call(fnUnlockBitstream, e.enc, e.output); err != nil {
+		if err := e.call2(fnUnlockBitstream, e.enc, e.output); err != nil {
 			return err
 		}
 	}
@@ -617,7 +628,7 @@ func (e *Encoder) InvalidateRefs(pts int64) error {
 	if !e.caps.RefInvalidation {
 		return fmt.Errorf("%w: reference invalidation", encode.ErrUnsupported)
 	}
-	return e.call(fnInvalidateRefFrames, e.enc, uintptr(pts))
+	return e.call2(fnInvalidateRefFrames, e.enc, uintptr(pts))
 }
 
 func (e *Encoder) SetBitrate(kbps int) error {

@@ -105,6 +105,7 @@ func loadNVAPI() error {
 	return nvapiErr
 }
 
+//go:uintptrescapes
 func nvCall(id uint32, args ...uintptr) int32 {
 	fn, _, _ := syscall.SyscallN(nvapiQuery, uintptr(id))
 	if fn == 0 {
