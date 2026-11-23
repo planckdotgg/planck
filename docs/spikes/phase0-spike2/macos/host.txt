@@ -1,0 +1,13 @@
+ProductName:		macOS
+ProductVersion:		27.0
+BuildVersion:		26A428
+Apple M5 Pro
+      Chipset Model: Apple M5 Pro
+      Total Number of Cores: 20
+      Metal Support: Metal 4
+          Resolution: 5120 x 1440
+          Main Display: Yes
+          Resolution: 3440 x 1440 (UWQHD - Ultra-Wide Quad HD)
+/tmp/s2:
+	/usr/lib/libSystem.B.dylib (compatibility version 0.0.0, current version 0.0.0)
+	/usr/lib/libresolv.9.dylib (compatibility version 0.0.0, current version 0.0.0)
