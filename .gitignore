@@ -1,26 +1,8 @@
-# Binaries and build outputs
-/bin/
-/dist/
-/build/
+# Built spike/app binaries
+/spike-mygo-surface
+/planck-spike2
+/spike-transport
 *.exe
-*.exe~
-*.dll
-*.so
-*.dylib
-*.test
 *.out
-coverage.*
-
-# Go
-*.prof
-*.trace
-
-# OS & editor
+*.test
 .DS_Store
-Thumbs.db
-.idea/
-.vscode/
-*.swp
-*.swo
-.env
-.env.local
