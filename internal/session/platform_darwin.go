@@ -183,3 +183,5 @@ func OpenDecodeSink(cfg decode.Config) (Sink, error) {
 	}
 	return &decodeSink{dec: d}, nil
 }
+
+func boostVideoThread() (func(), error) { return func() {}, nil }

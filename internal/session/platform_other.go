@@ -20,3 +20,4 @@ func newInjector() (input.Injector, error)       { return nil, errNoBackend }
 func newAudioPlayer() (audio.Player, error)      { return nil, errNoBackend }
 func playerQueued(audio.Player) time.Duration    { return 0 }
 func OpenDecodeSink(decode.Config) (Sink, error) { return nil, errNoBackend }
+func boostVideoThread() (func(), error)          { return func() {}, nil }

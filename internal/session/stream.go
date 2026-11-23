@@ -112,6 +112,11 @@ func (st *stream) invalidate(frameID uint32) {
 func (st *stream) videoLoop() {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	if revert, err := boostVideoThread(); err != nil {
+		st.h.logf("planck: video thread priority unchanged: %v", err)
+	} else {
+		defer revert()
+	}
 	var pipe VideoPipe
 	defer func() {
 		if pipe != nil {

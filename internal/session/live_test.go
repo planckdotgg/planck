@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -13,16 +14,25 @@ import (
 
 // TestLiveSynthHardware streams the synthetic pattern through this
 // machine's hardware encoder and decoder. It needs a GPU, so it runs only
-// with PLANCK_LIVE_VIDEO_TEST=1; PLANCK_LIVE_ADAPTER picks the encoding GPU.
+// with PLANCK_LIVE_VIDEO_TEST=1; PLANCK_LIVE_ADAPTER picks the encoding GPU,
+// PLANCK_LIVE_FPS the rate (120) and PLANCK_LIVE_SECONDS the run (4).
 // It never captures the screen or injects input.
 func TestLiveSynthHardware(t *testing.T) {
 	if os.Getenv("PLANCK_LIVE_VIDEO_TEST") != "1" {
 		t.Skip("set PLANCK_LIVE_VIDEO_TEST=1 to run on the GPU")
 	}
 	adapter := os.Getenv("PLANCK_LIVE_ADAPTER")
+	fps, _ := strconv.Atoi(os.Getenv("PLANCK_LIVE_FPS"))
+	if fps <= 0 {
+		fps = 120
+	}
+	secs, _ := strconv.Atoi(os.Getenv("PLANCK_LIVE_SECONDS"))
+	if secs <= 0 {
+		secs = 4
+	}
 	h, err := NewHost(HostConfig{
 		ConfigDir: t.TempDir(), Name: "live-host", ListenAddr: "127.0.0.1:0", DiscoveryAddr: "off",
-		Synth: true, Adapter: adapter, Width: 1920, Height: 1080, FPS: 120, BitrateKbps: 40_000, Slices: 4,
+		Synth: true, Adapter: adapter, Width: 1920, Height: 1080, FPS: fps, BitrateKbps: 40_000, Slices: 4,
 		Codec: encode.HEVC, Chroma: encode.NV12, NoAudio: true, NoTailscale: true, Logf: t.Logf,
 	})
 	if err != nil {
@@ -36,7 +46,7 @@ func TestLiveSynthHardware(t *testing.T) {
 	var sink Sink
 	c, err := NewClient(ClientConfig{
 		ConfigDir: t.TempDir(), Name: "live-client", PIN: h.PIN(), NoAudio: true, Tailscale: noTailscale{},
-		Quality: Quality{FPS: 120},
+		Quality: Quality{FPS: fps},
 		OpenSink: func(cfg decode.Config) (Sink, error) {
 			s, err := OpenDecodeSink(cfg)
 			sink = s
@@ -54,7 +64,7 @@ func TestLiveSynthHardware(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Disconnect()
-	time.Sleep(4 * time.Second)
+	time.Sleep(time.Duration(secs) * time.Second)
 	cs, hs := c.Stats(), h.Stats()
 	t.Logf("host: %s on %s (power %s) %.0f fps encode p50 %.2f p99 %.2f ms %.0f kbps",
 		hs.Video.Source, hs.Video.Adapter.Name, hs.Video.Power, hs.FPS, hs.EncodeMs.P50, hs.EncodeMs.P99, hs.SentKbps)
