@@ -202,7 +202,9 @@ func (s *micSink) Device() string { return "Fake Mic" }
 func TestHeadlessMicTone(t *testing.T) {
 	sink := &micSink{}
 	h := startFakeHost(t, "off", func(c *session.HostConfig) {
-		c.FindVirtualMic = func(string) (audio.VirtualMic, error) { return audio.VirtualMic{ID: "fake", Name: "Fake Mic", Input: "Fake Mic"}, nil }
+		c.FindVirtualMic = func(string) (audio.VirtualMic, error) {
+			return audio.VirtualMic{ID: "fake", Name: "Fake Mic", Input: "Fake Mic"}, nil
+		}
 		c.OpenMicSink = func(audio.VirtualMic) (audio.MicSink, error) { return sink, nil }
 	})
 	deps := headlessDeps{openSink: (&countSink{}).open(), tailscale: noTailnet{}, logf: t.Logf}
