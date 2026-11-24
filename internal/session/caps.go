@@ -131,11 +131,14 @@ func (h *Host) resolve(r transport.ResolveRequest) (transport.ResolveResult, err
 	}, nil
 }
 
+// routeLink is linkinfo.Route; tests give it a link of their own.
+var routeLink = linkinfo.Route
+
 // resolveProfile settles a stream from both ends' capabilities, on the
 // route to remote.
 func (h *Host) resolveProfile(cc clientCaps, remote netip.Addr, path ratectl.Path, lanDatagram bool) defaults.ResolvedProfile {
 	caps := h.capabilities()
-	if name, link, err := linkinfo.Route(remote); err == nil {
+	if name, link, err := routeLink(remote); err == nil {
 		caps.Link = link
 		h.logf("planck: route to %v via %s: wired %v, %d Mbps", remote, name, link.Wired, link.SpeedMbps)
 	}
@@ -150,13 +153,19 @@ func (h *Host) resolveProfile(cc clientCaps, remote netip.Addr, path ratectl.Pat
 // profileConfig is a profile's legacy SessionConfig, which SessionReady
 // carries.
 func (h *Host) profileConfig(p *defaults.ResolvedProfile, req wire.SessionConfig) wire.SessionConfig {
+	acc := profileVideoConfig(p)
+	if !h.cfg.NoAudio && req.AudioChannels > 0 {
+		acc.AudioSampleRate, acc.AudioChannels = audio.SampleRate, audio.Channels
+	}
+	return acc
+}
+
+// profileVideoConfig is the video part of a profile's SessionConfig.
+func profileVideoConfig(p *defaults.ResolvedProfile) wire.SessionConfig {
 	acc := wire.SessionConfig{Codec: wire.Codec(p.Codec), Chroma: wire.Chroma420, Width: uint16(p.Width), Height: uint16(p.Height),
 		FPS: uint16(p.FPS), BitrateKbps: uint32(p.MaxBitrateKbps), Slices: uint8(max(1, p.Slices)), SubFrame: p.SubFrame && p.Slices > 1}
 	if p.Chroma444 {
 		acc.Chroma = wire.Chroma444
-	}
-	if !h.cfg.NoAudio && req.AudioChannels > 0 {
-		acc.AudioSampleRate, acc.AudioChannels = audio.SampleRate, audio.Channels
 	}
 	return acc
 }

@@ -45,6 +45,9 @@ type stream struct {
 	once   sync.Once
 
 	invalid chan uint32
+	// epoch counts the streams a resize switched to; every frame carries
+	// it. Only the video loop touches it.
+	epoch uint8
 	// resize holds the client window's latest size, in pixels, for the
 	// video loop.
 	resize chan [2]int
@@ -172,18 +175,23 @@ func (st *stream) requestResize(w, h int) {
 	}
 }
 
-// resizeTo moves a stream on a virtual display to the size the profile
-// resolves for a w x h client window: the pipeline closes, the display
-// takes the new size, the client hears of it in a new Profile, and the
-// loop opens the pipeline again with a keyframe. A display that fails to
-// resize is gone; the loop makes a new one.
-func (st *stream) resizeTo(w, h int, pipe *VideoPipe, vd *VirtualDisplay) {
-	if st.profile == nil || !st.params.VirtualDisplay || st.params.Codec == encode.PyroWave {
-		return
+// resizeTo moves a stream on a virtual display to the profile resolved
+// for a w x h client window. A client that follows stream switches gets
+// the whole profile resolved anew, which may change the codec (PyroWave
+// on a small window, HEVC on a large one); an older client keeps its
+// codec and only takes the new size. Either way the pipeline closes, the
+// display takes the new size (or is made anew on another GPU or rate),
+// the client hears of it, and the loop opens the pipeline again with a
+// keyframe. A display that fails to resize is gone; the loop makes a new
+// one. It reports whether the stream changed.
+func (st *stream) resizeTo(w, h int, pipe *VideoPipe, vd *VirtualDisplay) bool {
+	switches := st.sess.PeerFeatures()&wire.FeatureStreamSwitch != 0
+	if st.profile == nil || !st.params.VirtualDisplay || (st.params.Codec == encode.PyroWave && !switches) {
+		return false
 	}
 	var cc clientCaps
 	if err := json.Unmarshal(st.sess.PeerCapabilities(), &cc); err != nil || cc.V != clientCapsVersion {
-		return
+		return false
 	}
 	cc.Client.Display.ViewWidthPx, cc.Client.Display.ViewHeightPx = w, h
 	var remote netip.Addr
@@ -192,8 +200,67 @@ func (st *stream) resizeTo(w, h int, pipe *VideoPipe, vd *VirtualDisplay) {
 	}
 	cc.Route.Kind = st.profile.Route
 	p := st.h.resolveProfile(cc, remote, st.path, st.sess.MaxDatagram() > wire.MaxDatagram)
-	if !p.VirtualDisplay || (p.Width == st.params.Width && p.Height == st.params.Height) {
-		return
+	if !p.VirtualDisplay {
+		return false
+	}
+	if !switches {
+		return st.resizeLegacy(w, h, &p, pipe, vd)
+	}
+	if sameStream(st.profile, &p) {
+		return false
+	}
+	if *pipe != nil {
+		(*pipe).Close()
+		*pipe = nil
+	}
+	from := st.profile
+	next := paramsFromProfile(st.params, &p, st.sess.ShardSize())
+	if *vd != nil {
+		switch {
+		case next.Adapter != st.params.Adapter || next.FPS != st.params.FPS:
+			st.closeVirtualDisplay(*vd)
+			*vd = nil
+		case next.Width != st.params.Width || next.Height != st.params.Height:
+			if err := (*vd).Resize(next.Width, next.Height); err != nil {
+				st.h.fail("virtual display resize to %dx%d: %v", next.Width, next.Height, err)
+				st.closeVirtualDisplay(*vd)
+				*vd = nil
+			}
+		}
+	}
+	st.params = next
+	if *vd != nil {
+		st.useVirtualDisplay(*vd)
+	}
+	st.epoch++
+	start := 0
+	if p.Codec != from.Codec || p.Codec == defaults.CodecPyroWave {
+		start = p.BitrateKbps
+	}
+	st.sess.SetStream(st.h.profileConfig(&p, st.sess.Config()), start, p.MaxBitrateKbps, transport.ParityProfile{
+		MinPercent: p.FEC.MinParityPercent, KeyframePercent: p.FEC.KeyframeParityPercent, CriticalPercent: p.FEC.CriticalParityPercent})
+	st.mu.Lock()
+	st.profile = &p
+	st.mu.Unlock()
+	if js, err := json.Marshal(&p); err == nil {
+		_ = st.sess.SendControl(&wire.Stream{Epoch: st.epoch, Profile: js})
+	}
+	st.h.logf("planck: stream %d moved from %s %dx%d to %s %dx%d@%d for a %dx%d window", st.epoch, from.Codec, from.Width, from.Height,
+		p.Codec, p.Width, p.Height, p.FPS, w, h)
+	return true
+}
+
+// sameStream reports whether b would stream exactly as a does.
+func sameStream(a, b *defaults.ResolvedProfile) bool {
+	return a.Codec == b.Codec && a.Chroma444 == b.Chroma444 && a.BitDepth == b.BitDepth && a.Width == b.Width && a.Height == b.Height &&
+		a.FPS == b.FPS && a.EncodeAdapter.LUID == b.EncodeAdapter.LUID && a.Slices == b.Slices && a.SubFrame == b.SubFrame && a.Split == b.Split
+}
+
+// resizeLegacy gives a client that cannot follow a codec change the new
+// size only, in a Profile.
+func (st *stream) resizeLegacy(w, h int, p *defaults.ResolvedProfile, pipe *VideoPipe, vd *VirtualDisplay) bool {
+	if p.Width == st.params.Width && p.Height == st.params.Height {
+		return false
 	}
 	if *pipe != nil {
 		(*pipe).Close()
@@ -224,6 +291,7 @@ func (st *stream) resizeTo(w, h int, pipe *VideoPipe, vd *VirtualDisplay) {
 		_ = st.sess.SendControl(&wire.Profile{JSON: js})
 	}
 	st.h.logf("planck: stream resized from %s to %dx%d for a %dx%d window", from, p.Width, p.Height, w, h)
+	return true
 }
 
 func (st *stream) run(parent context.Context) {
@@ -343,7 +411,11 @@ func (st *stream) videoLoop() {
 	for st.ctx.Err() == nil {
 		select {
 		case sz := <-st.resize:
-			st.resizeTo(sz[0], sz[1], &pipe, &vd)
+			if st.resizeTo(sz[0], sz[1], &pipe, &vd) {
+				kbps = st.sess.TargetBitrateKbps()
+				slices = max(1, int(st.sess.Config().Slices))
+				out.slices, out.epoch = uint8(slices), st.epoch
+			}
 		default:
 		}
 		if pipe == nil && st.params.VirtualDisplay && vd == nil {
@@ -428,7 +500,7 @@ func (st *stream) videoLoop() {
 			forceKey = false
 			st.keyframes.Add(1)
 		}
-		info := wire.VideoInfo{FrameID: frameID, Keyframe: pkt.Keyframe, CaptureTS: captureTS, EncodeTS: transport.Mono()}
+		info := wire.VideoInfo{FrameID: frameID, Keyframe: pkt.Keyframe, CaptureTS: captureTS, EncodeTS: transport.Mono(), Epoch: st.epoch}
 		slot := &st.pts[frameID%ptsRingSize]
 		slot.id, slot.pts = frameID, pkt.PTS
 		switch {
@@ -491,6 +563,7 @@ type slicePipe interface {
 type sliceSender struct {
 	sess   *transport.Session
 	slices uint8
+	epoch  uint8
 	frame  uint32
 	info   wire.VideoInfo
 	begun  bool
@@ -500,7 +573,7 @@ func (s *sliceSender) start(frame uint32) { s.frame, s.begun = frame, false }
 
 func (s *sliceSender) emit(captureTS int64, index int, slice []byte, key bool) error {
 	if !s.begun {
-		s.info = wire.VideoInfo{FrameID: s.frame, Keyframe: key, CaptureTS: captureTS, EncodeTS: transport.Mono(), SliceCount: s.slices}
+		s.info = wire.VideoInfo{FrameID: s.frame, Keyframe: key, CaptureTS: captureTS, EncodeTS: transport.Mono(), SliceCount: s.slices, Epoch: s.epoch}
 		s.begun = true
 	}
 	return s.sess.SendVideoSlice(s.info, index, slice)

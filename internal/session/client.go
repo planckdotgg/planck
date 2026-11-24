@@ -28,7 +28,6 @@ import (
 	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/encode"
 	"github.com/planckdotgg/planck/pkg/input"
-	"github.com/planckdotgg/planck/pkg/linkinfo"
 	"github.com/planckdotgg/planck/pkg/player"
 	"github.com/planckdotgg/planck/pkg/ratectl"
 	"github.com/planckdotgg/planck/pkg/tailscale"
@@ -258,17 +257,16 @@ type conn struct {
 	live   atomic.Pointer[route]
 	hostID string
 	name   string
-	codec  encode.Codec
-	// video is the accepted config the sink was opened for; a new route
-	// must accept the same.
-	video    wire.SessionConfig
+	// stream is the stream being decoded: its epoch and the sink it
+	// needs. A new route must carry the same.
+	stream   atomic.Pointer[streamState]
 	switches atomic.Uint64
 	// intra marks a PyroWave stream: frames decode alone, so loss never
 	// waits for a keyframe.
 	intra   atomic.Bool
 	profile atomic.Pointer[defaults.ResolvedProfile]
-	// sinkCfg is what the sink was opened for; a new route must match it.
-	sinkCfg decode.Config
+	// openSink makes the sink of each stream.
+	openSink SinkOpener
 	// asked is the window size last offered the host, in pixels, width
 	// in the high half.
 	asked atomic.Uint64
@@ -314,6 +312,13 @@ type conn struct {
 	decoding, needKey atomic.Bool
 
 	trace *tracer[clientTraceRow]
+}
+
+// streamState is one stream of a session: the one it started with, epoch
+// 0, or one a wire.Stream switched to. Only frames of its epoch decode.
+type streamState struct {
+	epoch uint8
+	sink  decode.Config
 }
 
 // route is one transport session of a stream and the path it runs on.
@@ -414,33 +419,23 @@ func (c *Client) connect(ctx context.Context, t Target) (*conn, error) {
 		cc.asked.Store(packView(defaults.ViewSize(cfg.ViewSize())))
 	}
 	acc := sess.Config()
-	cc.video = acc
-	cc.codec = codecFromWire(acc.Codec)
-	cc.intra.Store(cc.codec == encode.PyroWave)
+	cc.intra.Store(acc.Codec == wire.CodecPyroWave)
 	dcfg, prof := c.streamConfig(sess)
-	cc.sinkCfg = dcfg
+	cc.stream.Store(&streamState{sink: dcfg})
 	cc.profile.Store(prof)
-	open := cfg.OpenSink
-	if open == nil {
-		open = OpenDecodeSink
+	cc.openSink = cfg.OpenSink
+	if cc.openSink == nil {
+		cc.openSink = OpenDecodeSink
 	}
-	sink, err := open(dcfg)
+	sink, err := cc.newSink(dcfg)
 	if err != nil {
 		sess.Close()
-		return nil, fmt.Errorf("session: video sink: %w", err)
-	}
-	if ps, ok := sink.(interface {
-		SetProfile(*defaults.ResolvedProfile)
-	}); ok && prof != nil {
-		ps.SetProfile(prof)
-	}
-	if o, ok := sink.(interface{ SetObserver(player.Observer) }); ok {
-		o.SetObserver(viewObserver{cc})
+		return nil, err
 	}
 	cc.ctx, cc.cancel = context.WithCancel(context.Background())
 	cc.mic = newMicSender(cc, cfg.OpenMic, c.logf)
 	c.startClipboard(cfg)
-	cc.wg.Go(func() { cc.decodeLoop(sink, c.logf) })
+	cc.wg.Go(func() { cc.decodeLoop(sink, dcfg, c.logf) })
 	if cc.jb != nil && acc.AudioChannels > 0 {
 		openPlayer := cfg.OpenAudioPlayer
 		if openPlayer == nil {
@@ -455,6 +450,25 @@ func (c *Client) connect(ctx context.Context, t Target) (*conn, error) {
 	}
 	cc.wg.Go(cc.reportLoop)
 	return cc, nil
+}
+
+// newSink opens the sink for one stream, told its profile and observed.
+func (cc *conn) newSink(dcfg decode.Config) (Sink, error) {
+	sink, err := cc.openSink(dcfg)
+	if err != nil {
+		return nil, fmt.Errorf("session: video sink: %w", err)
+	}
+	if ps, ok := sink.(interface {
+		SetProfile(*defaults.ResolvedProfile)
+	}); ok {
+		if prof := cc.profile.Load(); prof != nil {
+			ps.SetProfile(prof)
+		}
+	}
+	if o, ok := sink.(interface{ SetObserver(player.Observer) }); ok {
+		o.SetObserver(viewObserver{cc})
+	}
+	return sink, nil
 }
 
 // dialRoute opens a session to the host on r for cc, checking the host's
@@ -532,7 +546,7 @@ func (c *Client) dialRoute(ctx context.Context, cc *conn, r resolved) (*route, e
 	sess, err := transport.Dial(ctx, r.addr, transport.ClientConfig{
 		Certificate: cert, Name: cfg.Name, VerifyHost: verify, Auth: method, PIN: cfg.PIN, Session: req,
 		HandshakeTimeout: cfg.HandshakeTimeout, SimulateLoss: cfg.SimulateLoss, LANPath: r.kind == discovery.PathLANDirect,
-		Capabilities: capsJSON,
+		Capabilities: capsJSON, StreamSwitch: true,
 		Handlers: transport.Handlers{
 			VideoFrame: cc.onFrame,
 			Audio:      cc.onAudio,
@@ -542,6 +556,8 @@ func (c *Client) dialRoute(ctx context.Context, cc *conn, r resolved) (*route, e
 					rt.bye.Store(true)
 				case *wire.Profile:
 					cc.resized(m.JSON, c.logf)
+				case *wire.Stream:
+					cc.switchStream(rt, m, c.logf)
 				case *wire.HostStats:
 					cc.mu.Lock()
 					cc.host = *m
@@ -672,7 +688,7 @@ func (c *Client) capabilities(cfg ClientConfig, addr string, path discovery.Path
 		caps.Display.ViewWidthPx, caps.Display.ViewHeightPx = cfg.ViewSize()
 	}
 	if ap, err := netip.ParseAddrPort(addr); err == nil {
-		if name, link, err := linkinfo.Route(ap.Addr().Unmap()); err == nil {
+		if name, link, err := routeLink(ap.Addr().Unmap()); err == nil {
 			caps.Link = link
 			c.logf("planck: route to %v via %s: wired %v, %d Mbps", ap.Addr(), name, link.Wired, link.SpeedMbps)
 		}
@@ -862,19 +878,20 @@ func (c *Client) switchRoute(cc *conn, r resolved) error {
 	if err != nil {
 		return err
 	}
-	acc := rt.sess.Config()
 	dcfg, prof := c.streamConfig(rt.sess)
-	dcfg.FPS = cc.sinkCfg.FPS
+	cur := cc.stream.Load().sink
+	dcfg.FPS = cur.FPS
 	if dcfg.Codec != encode.PyroWave {
 		// The hardware decoders take a new size from the stream itself,
 		// which a resize or the window's size on this route may give.
-		dcfg.Width, dcfg.Height = cc.sinkCfg.Width, cc.sinkCfg.Height
+		dcfg.Width, dcfg.Height = cur.Width, cur.Height
 	}
-	if acc.Codec != cc.video.Codec || dcfg != cc.sinkCfg {
+	if dcfg != cur {
 		rt.sess.Close()
 		return fmt.Errorf("session: the host changed the stream to %dx%d %v chroma %v chunk %d on %s", dcfg.Width, dcfg.Height, dcfg.Codec, dcfg.Chroma, dcfg.ChunkLen, r.kind)
 	}
 	cc.profile.Store(prof)
+	cc.stream.Store(&streamState{sink: cur})
 	if cc.jb != nil {
 		cc.jb.Restart()
 	}
@@ -896,6 +913,11 @@ func (cc *conn) onFrame(info wire.VideoInfo, frame []byte) {
 		return
 	}
 	sess := rt.sess
+	if info.Epoch != cc.stream.Load().epoch {
+		// A frame of the stream before a switch, or of the next one
+		// before its wire.Stream: neither decodes on this sink.
+		return
+	}
 	if cc.needKey.Load() && !cc.intra.Load() {
 		if !info.Keyframe {
 			cc.drop()
@@ -963,8 +985,12 @@ func (cc *conn) requestKey() {
 
 // decodeLoop runs on a thread of its own at a raised class, which ends
 // with it.
-func (cc *conn) decodeLoop(sink Sink, logf func(string, ...any)) {
-	defer sink.Close()
+func (cc *conn) decodeLoop(sink Sink, sinkCfg decode.Config, logf func(string, ...any)) {
+	defer func() {
+		if sink != nil {
+			sink.Close()
+		}
+	}()
 	if err := rtprio.Boost(); err != nil {
 		logf("planck: decode thread priority: %v", err)
 	}
@@ -974,6 +1000,21 @@ func (cc *conn) decodeLoop(sink Sink, logf func(string, ...any)) {
 		case <-cc.ctx.Done():
 			return
 		case fb = <-cc.frames:
+		}
+		if st := cc.stream.Load(); fb.info.Epoch != st.epoch {
+			cc.free <- fb
+			continue
+		} else if newSinkFor(sinkCfg, st.sink) {
+			sink.Close()
+			sink = nil
+			var err error
+			if sink, err = cc.newSink(st.sink); err != nil {
+				cc.free <- fb
+				cc.end(err)
+				return
+			}
+			sinkCfg = st.sink
+			logf("planck: decoding %v %dx%d", sinkCfg.Codec, sinkCfg.Width, sinkCfg.Height)
 		}
 		clock := cc.session().Clock()
 		dequeued := transport.Mono()
@@ -1018,6 +1059,16 @@ func (cc *conn) decodeLoop(sink Sink, logf func(string, ...any)) {
 		}
 		cc.mu.Unlock()
 	}
+}
+
+// newSinkFor reports whether a sink opened for cur cannot decode next:
+// another codec or format, or another PyroWave size. The hardware
+// decoders take a new size from the stream itself.
+func newSinkFor(cur, next decode.Config) bool {
+	if next.Codec != encode.PyroWave {
+		next.Width, next.Height = cur.Width, cur.Height
+	}
+	return cur != next
 }
 
 // viewObserver takes a presenting sink's present and glass times, from
@@ -1122,7 +1173,7 @@ func (cc *conn) stats() ClientStats {
 	s := ClientStats{
 		Connected: true, HostName: cc.name, HostID: cc.hostID, Identity: sess.Identity(), Addr: rt.addr, Path: rt.kind.String(),
 		DatagramBytes: sess.MaxDatagram(), MaxBitrateKbps: int(acc.BitrateKbps), RouteSwitches: cc.switches.Load(),
-		Codec: cc.codec.String(), Width: int(acc.Width), Height: int(acc.Height),
+		Codec: cc.stream.Load().sink.Codec.String(), Width: int(acc.Width), Height: int(acc.Height),
 		RTTMs:          ms(int64(sess.RTT())),
 		FramesReceived: ss.FramesComplete, FramesLost: ss.FramesLost, SlicesRecovered: ss.SlicesRecovered,
 		FramesDropped: cc.dropped.Load(), FramesPartial: ss.FramesPartial, Profile: cc.profile.Load(), SinkErrors: cc.sinkErr.Load(), AudioPackets: cc.audioPkts.Load(), InputSent: cc.inputs.Load(),
@@ -1400,9 +1451,9 @@ func (c *Client) Close() {
 
 // Resize offers the host a w x h pixel window to stream at. It sends
 // nothing unless the stream is on a virtual display at Resolution auto,
-// the host takes Resize, the codec decodes a new size mid-stream (not
-// PyroWave), and the size, made even and in bounds, is not the last one
-// offered.
+// the host takes Resize, and the size, made even and in bounds, is not
+// the last one offered. The host may answer with a new stream in another
+// codec (switchStream).
 func (c *Client) Resize(w, h int) error {
 	c.mu.Lock()
 	cc, res := c.conn, c.cfg.Overrides.Resolution
@@ -1411,7 +1462,7 @@ func (c *Client) Resize(w, h int) error {
 		return nil
 	}
 	rt, p := cc.live.Load(), cc.profile.Load()
-	if rt == nil || p == nil || !p.VirtualDisplay || p.Codec == defaults.CodecPyroWave || rt.sess.PeerFeatures()&wire.FeatureResize == 0 {
+	if rt == nil || p == nil || !p.VirtualDisplay || rt.sess.PeerFeatures()&wire.FeatureResize == 0 {
 		return nil
 	}
 	w, h = defaults.ViewSize(w, h)
@@ -1434,6 +1485,34 @@ func (cc *conn) resized(js []byte, logf func(string, ...any)) {
 	cc.profile.Store(p)
 	cc.decoding.Store(false)
 	logf("planck: the host streams at %dx%d", p.Width, p.Height)
+}
+
+// switchStream takes a stream the host settled after a Resize, on rt: the
+// session carries it from now on, and the decode loop moves to a sink for
+// it at its first frame, a keyframe.
+func (cc *conn) switchStream(rt *route, m *wire.Stream, logf func(string, ...any)) {
+	if cc.live.Load() != rt {
+		return
+	}
+	p, err := ParseProfile(m.Profile)
+	if err != nil || p == nil {
+		logf("planck: stream %d: %v", m.Epoch, err)
+		return
+	}
+	acc := profileVideoConfig(p)
+	old := rt.sess.Config()
+	acc.AudioSampleRate, acc.AudioChannels = old.AudioSampleRate, old.AudioChannels
+	rt.sess.SetStream(acc, 0, 0, transport.ParityProfile{})
+	dcfg := decode.Config{Codec: encode.Codec(p.Codec), Width: p.Width, Height: p.Height, FPS: p.FPS, Chroma: streamChroma(p)}
+	if dcfg.Codec == encode.PyroWave {
+		dcfg.ChunkLen = rt.sess.ShardSize()
+	}
+	cc.profile.Store(p)
+	cc.intra.Store(dcfg.Codec == encode.PyroWave)
+	cc.needKey.Store(true)
+	cc.decoding.Store(false)
+	cc.stream.Store(&streamState{epoch: m.Epoch, sink: dcfg})
+	logf("planck: the host streams %v at %dx%d@%d (stream %d)", p.Codec, p.Width, p.Height, p.FPS, m.Epoch)
 }
 
 // Disconnect says goodbye to the host and stops playback.
