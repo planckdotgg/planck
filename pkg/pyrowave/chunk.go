@@ -198,69 +198,106 @@ func (w *chunkWriter) record(rec []byte) error {
 // splitMin is the least room worth starting a split record in.
 const splitMin = 64
 
-// blockGeometry returns, for each 8x8 block of a record in ballot order,
-// its plane byte count and sign bit count.
-func blockGeometry(rec []byte, nb int, planes, signs *[16]int) (planeTotal, signTotal int, ok bool) {
-	cwOff, qsOff := 8, 8+2*nb
-	off := 8 + 3*nb
-	for i := 0; i < nb; i++ {
-		cw := binary.LittleEndian.Uint16(rec[cwOff+2*i:])
-		qs := rec[qsOff+i]
-		p, s := 0, 0
-		for sb := 0; sb < 8; sb++ {
-			np := SubblockPlanes(cw, qs, sb)
-			if off+np > len(rec) {
-				return 0, 0, false
-			}
-			var or byte
-			for _, v := range rec[off : off+np] {
-				or |= v
-			}
-			s += bits.OnesCount8(or)
-			off += np
-			p += np
+// signCount is the number of nonzero coefficients of an 8x8 block whose
+// planes start at rec[off]: its sign bit count.
+func signCount(rec []byte, off int, cw uint16, qs uint8) (int, bool) {
+	n := 0
+	for sb := 0; sb < 8; sb++ {
+		np := SubblockPlanes(cw, qs, sb)
+		if off+np > len(rec) {
+			return 0, false
 		}
-		planes[i], signs[i] = p, s
-		planeTotal += p
-		signTotal += s
+		var or byte
+		for _, v := range rec[off : off+np] {
+			or |= v
+		}
+		n += bits.OnesCount8(or)
+		off += np
 	}
-	return planeTotal, signTotal, off+(signTotal+7)/8 <= len(rec)
+	return n, true
 }
 
 func recordLen(n, planes, signs int) int { return (8 + 3*n + planes + (signs+7)/8 + 3) &^ 3 }
 
-func (w *chunkWriter) split(rec []byte, h BlockHeader) error {
-	nb := bits.OnesCount16(h.Ballot)
-	var planes, signs [16]int
-	pt, _, ok := blockGeometry(rec, nb, &planes, &signs)
-	if !ok {
-		return fmt.Errorf("pyrowave: encoder block %d is malformed", h.BlockIndex)
-	}
-	var idx [16]int
-	k := 0
-	for b := 0; b < 16; b++ {
-		if h.Ballot&(1<<b) != 0 {
-			idx[k] = b
-			k++
+// copyBits copies n bits starting at bit srcBit of src (LSB first) to the
+// start of dst.
+func copyBits(dst, src []byte, srcBit, n int) {
+	sb, sh := srcBit>>3, uint(srcBit&7)
+	nbytes := (n + 7) / 8
+	if sh == 0 {
+		copy(dst[:nbytes], src[sb:sb+nbytes])
+	} else {
+		for i := 0; i < nbytes; i++ {
+			v := src[sb+i] >> sh
+			if sb+i+1 < len(src) {
+				v |= src[sb+i+1] << (8 - sh)
+			}
+			dst[i] = v
 		}
 	}
+	if r := n & 7; r != 0 {
+		dst[nbytes-1] &= byte(1)<<r - 1
+	}
+}
+
+// split writes a block record that does not fit the open chunk as several
+// records with disjoint ballots: the first fills the open chunk, the rest
+// go to fresh chunks. Sign counts are only scanned for 8x8 blocks of a part
+// that does not reach the record's end.
+func (w *chunkWriter) split(rec []byte, h BlockHeader) error {
+	nb := bits.OnesCount16(h.Ballot)
+	var idx, planes [16]int
+	var cws [16]uint16
+	var qss [16]uint8
+	pt, k := 0, 0
+	for b := 0; b < 16; b++ {
+		if h.Ballot&(1<<b) == 0 {
+			continue
+		}
+		idx[k] = b
+		cws[k] = binary.LittleEndian.Uint16(rec[8+2*k:])
+		qss[k] = rec[8+2*nb+k]
+		for sb := 0; sb < 8; sb++ {
+			planes[k] += SubblockPlanes(cws[k], qss[k], sb)
+		}
+		pt += planes[k]
+		k++
+	}
 	planeBase := 8 + 3*nb
-	signBase := (planeBase + pt) * 8
+	signBase := planeBase + pt
+	if signBase > len(rec) {
+		return fmt.Errorf("pyrowave: encoder block %d is malformed", h.BlockIndex)
+	}
+	signAvail := (len(rec) - signBase) * 8
 	planeOff, signOff := 0, 0
 	for first := 0; first < nb; {
 		room := w.free()
-		if room < splitMin || recordLen(1, planes[first], signs[first]) > room {
+		if room < splitMin {
 			w.close()
 			room = w.p.cap - 8
 		}
-		last, p, s := first, 0, 0
-		for last < nb && recordLen(last-first+1, p+planes[last], s+signs[last]) <= room {
-			p += planes[last]
-			s += signs[last]
-			last++
+		last, p, s := nb, pt-planeOff, signAvail-signOff
+		if recordLen(nb-first, p, s) > room {
+			last, p, s = first, 0, 0
+			for last < nb {
+				sc, ok := signCount(rec, planeBase+planeOff+p, cws[last], qss[last])
+				if !ok {
+					return fmt.Errorf("pyrowave: encoder block %d is malformed", h.BlockIndex)
+				}
+				if recordLen(last-first+1, p+planes[last], s+sc) > room {
+					break
+				}
+				p += planes[last]
+				s += sc
+				last++
+			}
 		}
 		if last == first {
-			return fmt.Errorf("pyrowave: an 8x8 block of block %d does not fit a %d-byte chunk", h.BlockIndex, w.p.chunkLen)
+			if w.free() == w.p.cap-8 || room == w.p.cap-8 {
+				return fmt.Errorf("pyrowave: an 8x8 block of block %d does not fit a %d-byte chunk", h.BlockIndex, w.p.chunkLen)
+			}
+			w.close()
+			continue
 		}
 		n := last - first
 		size := recordLen(n, p, s)
@@ -274,13 +311,8 @@ func (w *chunkWriter) split(rec []byte, h BlockHeader) error {
 		copy(out[8:], rec[8+2*first:8+2*last])
 		copy(out[8+2*n:], rec[8+2*nb+first:8+2*nb+last])
 		copy(out[8+3*n:], rec[planeBase+planeOff:planeBase+planeOff+p])
-		dst := (8 + 3*n + p) * 8
-		for i := 0; i < s; i++ {
-			src := signBase + signOff + i
-			if rec[src>>3]>>(src&7)&1 != 0 {
-				d := dst + i
-				out[d>>3] |= 1 << (d & 7)
-			}
+		if s > 0 {
+			copyBits(out[8+3*n+p:], rec[signBase:], signOff, s)
 		}
 		planeOff += p
 		signOff += s
@@ -311,7 +343,7 @@ type Parser struct {
 }
 
 func NewParser(l *Layout, chunkLen int) *Parser {
-	return &Parser{layout: l, chunkLen: chunkLen, ballots: make([]uint16, l.TotalBlocks), Recs: make([]Rec, 0, 2*l.TotalBlocks)}
+	return &Parser{layout: l, chunkLen: chunkLen, ballots: make([]uint16, l.TotalBlocks), Recs: make([]Rec, 0, 16*l.TotalBlocks)}
 }
 
 // ErrNoHeader means no chunk of the frame arrived with a sequence header.
