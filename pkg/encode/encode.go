@@ -16,6 +16,8 @@ const (
 	H264 Codec = iota + 1
 	HEVC
 	AV1
+	// PyroWave is the intra-only wavelet codec for LAN links (pkg/pyrowave).
+	PyroWave
 )
 
 func (c Codec) String() string {
@@ -26,6 +28,8 @@ func (c Codec) String() string {
 		return "HEVC"
 	case AV1:
 		return "AV1"
+	case PyroWave:
+		return "PyroWave"
 	}
 	return "unknown"
 }
@@ -85,6 +89,9 @@ type Config struct {
 	// Split chooses whether a GPU with two or more encode engines splits
 	// each picture between them; see SplitFrame.
 	Split Split
+	// ChunkLen is the transport shard size PyroWave packets are framed in
+	// (Session.ShardSize); PyroWave needs at least 256.
+	ChunkLen int
 }
 
 // Split is a choice of split-frame encode: each picture divided between a
@@ -132,7 +139,7 @@ var ErrDropped = errors.New("encode: frame dropped by the encoder")
 
 func (c Config) Validate() error {
 	switch {
-	case c.Codec < H264 || c.Codec > AV1:
+	case c.Codec < H264 || c.Codec > PyroWave:
 		return fmt.Errorf("encode: unknown codec %d", c.Codec)
 	case c.Chroma < NV12 || c.Chroma > YUV444P10:
 		return fmt.Errorf("encode: unknown chroma %d", c.Chroma)
@@ -150,6 +157,23 @@ func (c Config) Validate() error {
 		return errors.New("encode: slices and intra refresh period must not be negative")
 	case c.SubFrame && c.Slices < 2:
 		return errors.New("encode: sub-frame output needs at least 2 slices")
+	case c.Codec == PyroWave:
+		return c.validatePyroWave()
+	}
+	return nil
+}
+
+// validatePyroWave: Chroma.Full picks 4:4:4 and Chroma.TenBit the output
+// depth; the input is an RGB desktop surface. Every PyroWave picture is
+// intra, so slices, sub-frame output and intra refresh do not apply.
+func (c Config) validatePyroWave() error {
+	switch {
+	case c.Source != capture.FormatBGRA8 && c.Source != capture.FormatRGB10A2:
+		return fmt.Errorf("encode: PyroWave takes BGRA8 or RGB10A2 surfaces, not %s", c.Source)
+	case c.Slices > 1 || c.SubFrame || c.IntraRefreshPeriod > 0:
+		return errors.New("encode: PyroWave has no codec slices, sub-frame output or intra refresh")
+	case c.ChunkLen < 256:
+		return fmt.Errorf("encode: PyroWave chunk length %d below 256", c.ChunkLen)
 	}
 	return nil
 }
@@ -162,6 +186,9 @@ type Packet struct {
 	// reports slice boundaries.
 	SliceEnds []int
 	PTS       int64
+	// Critical is the number of leading slices whose loss costs more than
+	// local blur (PyroWave's coarse levels), which deserve more parity.
+	Critical int
 }
 
 // Caps are what the opened device reports, not what the API documents.
