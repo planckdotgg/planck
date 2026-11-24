@@ -57,6 +57,10 @@ const (
 	// MsgStream goes host to client, only to a client whose Hello carries
 	// FeatureStreamSwitch, when a Resize settled a new stream.
 	MsgStream MsgType = 18
+	// MsgCursorShape goes host to client, only to a client whose Hello
+	// carries FeatureCursorShape: as a stream starts and whenever the
+	// host's cursor changes shape.
+	MsgCursorShape MsgType = 19
 )
 
 // Message is a control-stream message. The set is closed: only types in this
@@ -117,6 +121,8 @@ const (
 	// Resize.Display. A client sends Display only to such a host: an
 	// older one refuses the longer message.
 	FeatureResizeDisplay uint32 = 1 << 11
+	// FeatureCursorShape, from a client, says it reads CursorShape.
+	FeatureCursorShape uint32 = 1 << 12
 )
 
 type AuthMethod uint8
@@ -279,11 +285,12 @@ type HostStats struct {
 
 // CursorState is the host's system cursor. Neither capture path draws the
 // cursor into the picture, so the client's own cursor stands in for a
-// Visible one.
+// Visible one, drawn as the CursorShape a host sends.
 type CursorState struct {
 	Visible bool
-	// Captured is set while an app holds the mouse: the cursor is hidden,
-	// or confined to less than the desktop, as a game does.
+	// Captured is set while an app holds the mouse, as a game does: it
+	// confines the cursor to less than the desktop, or warps it back. A
+	// cursor hidden alone, as over a playing video, is not captured.
 	Captured bool
 	// HasPos says X and Y hold the cursor's place on the streamed display,
 	// from 0 at its left or top edge to 65535 at its right or bottom edge.
@@ -649,6 +656,8 @@ func newMessage(t MsgType) Message {
 		return &CursorState{}
 	case MsgStream:
 		return &Stream{}
+	case MsgCursorShape:
+		return &CursorShape{}
 	}
 	return nil
 }

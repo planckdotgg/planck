@@ -38,6 +38,7 @@ func allMessages() []Message {
 		&HostStats{CaptureMicros: 2900, EncodeMicros: 1410},
 		&CursorState{Visible: true, Captured: true, HasPos: true, X: 32768, Y: 65535},
 		&Stream{Epoch: 3, Profile: []byte(`{"route":1,"codec":2,"width":5120,"height":1440}`)},
+		&CursorShape{ID: 0x0123456789abcdef, Width: 2, Height: 1, HotX: 1, DPI: 144, RGBA: []byte{0, 0, 0, 255, 255, 255, 255, 128}},
 	}
 }
 
