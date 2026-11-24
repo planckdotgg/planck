@@ -11,6 +11,12 @@ import (
 // Serve answers probes on conn with the host's beacon until ctx ends. Replies
 // go to the probe's source address, so conn must not be connected.
 func Serve(ctx context.Context, conn net.PacketConn, b Beacon) error {
+	return ServeFunc(ctx, conn, func() Beacon { return b })
+}
+
+// ServeFunc is Serve with the beacon read at each reply, so a renamed host
+// answers with its new name at once.
+func ServeFunc(ctx context.Context, conn net.PacketConn, beacon func() Beacon) error {
 	stop := context.AfterFunc(ctx, func() { conn.SetReadDeadline(time.Unix(1, 0)) })
 	defer stop()
 	buf := make([]byte, maxMessageLen+1)
@@ -31,6 +37,7 @@ func Serve(ctx context.Context, conn net.PacketConn, b Beacon) error {
 		if err != nil || m.Type != msgProbe {
 			continue
 		}
+		b := beacon()
 		reply, err := encode(message{Type: msgReply, Nonce: m.Nonce, Beacon: &b})
 		if err != nil {
 			return err
@@ -43,13 +50,19 @@ func Serve(ctx context.Context, conn net.PacketConn, b Beacon) error {
 // interval until ctx ends. Send errors on one address do not stop the others;
 // interfaces come and go.
 func Announce(ctx context.Context, conn net.PacketConn, b Beacon, dst []netip.AddrPort, interval time.Duration) error {
-	pkt, err := encode(message{Type: msgBeacon, Beacon: &b})
-	if err != nil {
-		return err
-	}
+	return AnnounceFunc(ctx, conn, func() Beacon { return b }, dst, interval)
+}
+
+// AnnounceFunc is Announce with the beacon read before each round.
+func AnnounceFunc(ctx context.Context, conn net.PacketConn, beacon func() Beacon, dst []netip.AddrPort, interval time.Duration) error {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
+		b := beacon()
+		pkt, err := encode(message{Type: msgBeacon, Beacon: &b})
+		if err != nil {
+			return err
+		}
 		for _, d := range dst {
 			conn.WriteTo(pkt, net.UDPAddrFromAddrPort(d))
 		}

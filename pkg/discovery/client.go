@@ -177,6 +177,68 @@ func Probe(ctx context.Context, addr netip.AddrPort) (Beacon, time.Duration, err
 	}
 }
 
+// ProbeAll probes every address in dst at once, such as the LAN's
+// BroadcastAddrs, and reports each reply until ctx ends: every host that
+// answers, from the address it answered from. Each probe goes out three
+// times, as broadcasts are easily lost on Wi-Fi.
+func ProbeAll(ctx context.Context, dst []netip.AddrPort, found func(Announcement)) error {
+	if len(dst) == 0 {
+		return nil
+	}
+	conn, err := net.ListenUDP("udp4", nil)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	stop := context.AfterFunc(ctx, func() { conn.SetReadDeadline(time.Unix(1, 0)) })
+	defer stop()
+
+	var mu sync.Mutex
+	sent := map[uint64]int64{}
+	go func() {
+		for i := 0; i < 3; i++ {
+			for _, d := range dst {
+				nonce := rand.Uint64() | 1
+				pkt, err := encode(message{Type: msgProbe, Nonce: nonce})
+				if err != nil {
+					return
+				}
+				mu.Lock()
+				sent[nonce] = transport.Mono()
+				mu.Unlock()
+				conn.WriteTo(pkt, net.UDPAddrFromAddrPort(d))
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Duration(i+1) * probeRetry):
+			}
+		}
+	}()
+
+	buf := make([]byte, maxMessageLen+1)
+	for {
+		n, from, err := conn.ReadFromUDPAddrPort(buf)
+		if err != nil {
+			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			continue
+		}
+		m, err := decode(buf[:n])
+		if err != nil || m.Type != msgReply {
+			continue
+		}
+		mu.Lock()
+		at, ok := sent[m.Nonce]
+		mu.Unlock()
+		if ok {
+			found(Announcement{Beacon: *m.Beacon, Addr: netip.AddrPortFrom(from.Addr().Unmap(), from.Port()),
+				Kind: PathLANDirect, RTT: time.Duration(transport.Mono() - at)})
+		}
+	}
+}
+
 // StatusSource is satisfied by *tailscale.Client.
 type StatusSource interface {
 	Status(ctx context.Context) (*tailscale.Status, error)
