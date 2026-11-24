@@ -86,6 +86,9 @@ func parseOptions(args []string, out io.Writer) (options, error) {
 	fs.BoolVar(&cfg.SubFrame, "subframe", false, "send slices as the encoder finishes them (needs -slices >= 2)")
 	fs.StringVar(&cfg.PIN, "pin", "", "fixed 6-digit pairing PIN (default: a random one that changes after each pairing)")
 	fs.BoolVar(&cfg.NoAudio, "no-audio", false, "do not capture or stream audio")
+	excludePIDs := fs.String("audio-exclude-pids", "", "comma-separated processes, such as a voice chat app, left out of the streamed audio (macOS; Windows leaves out only Planck)")
+	fs.StringVar(&cfg.MicDevice, "mic-device", "", `virtual input device the client's microphone plays into, by part of its name (default: Steam Streaming Microphone, VB-Cable or BlackHole); "off" refuses the microphone`)
+	clip := fs.String("clipboard", "both", "share the clipboard: both, host-to-client, client-to-host or off")
 	fs.BoolVar(&cfg.Synth, "synth", false, "stream a generated test pattern at -width x -height and -fps instead of a display")
 	if err := fs.Parse(args); err != nil {
 		return o, err
@@ -136,6 +139,27 @@ func parseOptions(args []string, out io.Writer) (options, error) {
 		cfg.DiscoveryAddr = fmt.Sprintf(":%d", *discoveryPort)
 	}
 	cfg.InjectInput = !*noInput
+	if cfg.MicDevice == "off" {
+		cfg.MicDevice, cfg.NoMic = "", true
+	}
+	switch *clip {
+	case "both":
+		cfg.Clipboard = session.ClipboardConfig{Send: true, Receive: true}
+	case "host-to-client":
+		cfg.Clipboard = session.ClipboardConfig{Send: true}
+	case "client-to-host":
+		cfg.Clipboard = session.ClipboardConfig{Receive: true}
+	case "off":
+	default:
+		return o, fmt.Errorf("-clipboard %q: want both, host-to-client, client-to-host or off", *clip)
+	}
+	for _, f := range strings.FieldsFunc(*excludePIDs, func(r rune) bool { return r == ',' || r == ' ' }) {
+		pid, err := strconv.Atoi(f)
+		if err != nil || pid <= 0 {
+			return o, fmt.Errorf("-audio-exclude-pids: %q is not a process ID", f)
+		}
+		cfg.AudioExcludePIDs = append(cfg.AudioExcludePIDs, pid)
+	}
 	switch {
 	case cfg.PIN != "" && (len(cfg.PIN) != 6 || strings.Trim(cfg.PIN, "0123456789") != ""):
 		return o, fmt.Errorf("-pin %q: want 6 digits", cfg.PIN)
@@ -244,7 +268,7 @@ func run(o options) error {
 				fmt.Printf("pairing PIN is now %s\n", pin)
 			}
 			if s := h.Stats(); s.Connected {
-				fmt.Println(statsLine(s))
+				fmt.Println(statsLine(s) + duplexLine(s))
 			}
 		}
 	}
@@ -274,6 +298,16 @@ func policyLine(o defaults.UserOverrides) string {
 		return "auto"
 	}
 	return strings.Join(parts, " ")
+}
+
+// duplexLine reports the client's microphone and the clipboard counts,
+// never what the clipboard holds.
+func duplexLine(s session.HostStats) string {
+	mic := s.Mic.Hint
+	if s.Mic.Device != "" {
+		mic = fmt.Sprintf("%s, %d packets, %d concealed", s.Mic.Device, s.Mic.Packets, s.Mic.Concealed)
+	}
+	return fmt.Sprintf(" | mic %s | clipboard sent %d received %d skipped %d", mic, s.Clipboard.Sent, s.Clipboard.Received, s.Clipboard.Skipped)
 }
 
 func statsLine(s session.HostStats) string {

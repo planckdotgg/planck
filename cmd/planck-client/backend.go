@@ -109,7 +109,7 @@ func newBackend(c backendConfig) (*backend, error) {
 // settingsFrom reads the stored preferences; the UI's other settings
 // start at their defaults each run.
 func settingsFrom(c config.ClientConfig) ui.Settings {
-	return ui.Settings{AudioEnabled: c.AudioEnabled}
+	return ui.Settings{AudioEnabled: c.AudioEnabled, ClipboardSend: c.ClipboardSend, ClipboardReceive: c.ClipboardReceive}
 }
 
 func (b *backend) Subscribe(fn func()) {
@@ -353,7 +353,7 @@ func (b *backend) dial(ctx context.Context, t session.Target, pin string) error 
 	b.client = nil
 	b.mu.Unlock()
 	if old != nil {
-		old.Disconnect()
+		old.Close()
 	}
 	ov := b.overridesFor(targetKey(t))
 	routes, err := routeAllowed(t, ov.RoutePolicy)
@@ -362,7 +362,7 @@ func (b *backend) dial(ctx context.Context, t session.Target, pin string) error 
 	}
 	c, err := session.NewClient(session.ClientConfig{
 		ConfigDir: b.dir, Name: b.name, PIN: pin, NoAudio: !s.AudioEnabled, Quality: legacyQuality(ov), Overrides: ov,
-		OpenSink: b.openSink, Tailscale: b.ts, Logf: b.logf, Route: b.route(ov),
+		OpenSink: b.openSink, Tailscale: b.ts, Logf: b.logf, Route: b.route(ov), Clipboard: clipboardOf(s),
 	})
 	if err != nil {
 		return err
@@ -505,7 +505,7 @@ func telemetry(s session.ClientStats) ui.Telemetry {
 		Connected: s.Connected, HostName: s.HostName, HostID: hostKey(s), Profile: s.Profile, FPS: s.FPS, Width: s.Width, Height: s.Height,
 		EncodeMs: s.Encode.P50, NetMs: s.Network.P50, DecodeMs: s.Decode.P50, PresentMs: s.Present.P50, TotalMs: s.E2E.P50,
 		BitrateMbps: s.Kbps / 1000, FECPct: s.FECParityPct, LossPct: s.LossPct, AudioBufMs: s.AudioBufferMs,
-		DatagramBytes: s.DatagramBytes,
+		DatagramBytes: s.DatagramBytes, MicMuted: s.Mic.Muted, MicDevice: s.Mic.Device, MicHint: s.Mic.Hint,
 	}
 	if s.E2EGlass.Samples > 0 {
 		t.PresentMs, t.TotalMs = s.Glass.P50, s.E2EGlass.P50
@@ -533,9 +533,29 @@ func (b *backend) Disconnect() {
 	b.client, b.tel, b.connected = nil, ui.Telemetry{}, ""
 	b.mu.Unlock()
 	if c != nil {
-		go c.Disconnect()
+		go c.Close()
 	}
 	b.changed()
+}
+
+// SetMicMuted mutes or unmutes this client's microphone on the host.
+func (b *backend) SetMicMuted(muted bool) error {
+	c := b.current()
+	if c == nil {
+		return session.ErrNotConnected
+	}
+	err := c.SetMicMuted(muted)
+	b.mu.Lock()
+	if b.client == c {
+		b.tel = telemetry(c.Stats())
+	}
+	b.mu.Unlock()
+	b.changed()
+	return err
+}
+
+func clipboardOf(s ui.Settings) session.ClipboardConfig {
+	return session.ClipboardConfig{Send: s.ClipboardSend, Receive: s.ClipboardReceive}
 }
 
 func (b *backend) Telemetry() ui.Telemetry {
@@ -580,7 +600,9 @@ func (b *backend) SetHosting(ctx context.Context, on bool) error {
 	state := ui.HostingState{Encoder: encoderLabel(s.Encoder, b.encoders)}
 	var err error
 	if on {
-		h, err = session.NewHost(b.hostConfig(s))
+		cfg := b.hostConfig(s)
+		cfg.Clipboard = clipboardOf(s)
+		h, err = session.NewHost(cfg)
 		if err == nil {
 			err = h.Start(context.Background())
 		}
@@ -639,6 +661,7 @@ func (b *backend) SaveSettings(s ui.Settings) error {
 	}
 	err := config.UpdateClientConfig(b.dir, func(stored *config.ClientConfig) error {
 		stored.AudioEnabled = s.AudioEnabled
+		stored.ClipboardSend, stored.ClipboardReceive = s.ClipboardSend, s.ClipboardReceive
 		return nil
 	})
 	if err != nil {
@@ -647,7 +670,16 @@ func (b *backend) SaveSettings(s ui.Settings) error {
 	b.mu.Lock()
 	before = b.settings
 	b.settings = s
+	c, h := b.client, b.host
 	b.mu.Unlock()
+	if clipboardOf(before) != clipboardOf(s) {
+		if c != nil {
+			c.SetClipboard(clipboardOf(s))
+		}
+		if h != nil {
+			h.SetClipboard(clipboardOf(s))
+		}
+	}
 	if before.AudioEnabled != s.AudioEnabled {
 		b.redial()
 	}
@@ -797,7 +829,7 @@ func (b *backend) close() {
 	b.client, b.host = nil, nil
 	b.mu.Unlock()
 	if c != nil {
-		c.Disconnect()
+		c.Close()
 	}
 	if h != nil {
 		h.Stop()

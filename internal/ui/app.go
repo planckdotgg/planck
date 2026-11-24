@@ -105,6 +105,8 @@ type App struct {
 	// hotkey just made it.
 	hudVisible bool
 	onDrawer   func(open bool)
+	// micErr is why the last unmute failed.
+	micErr string
 }
 
 // NewApp returns the UI driving backend, and subscribes to its changes.
@@ -220,6 +222,7 @@ func (a *App) View(c *mui.Context) {
 	a.mu.Unlock()
 
 	c.OnWindowShortcut(mui.Ctrl|mui.Alt, mui.KeyH, a.CycleHUD)
+	c.OnWindowShortcut(mui.Ctrl|mui.Alt, mui.KeyM, a.ToggleMic)
 
 	tel := a.backend.Telemetry()
 	// A stream, even one started from Pairing, ends on Hosts.
@@ -343,6 +346,23 @@ func (a *App) pairing(step func(ctx context.Context) error) {
 		a.mu.Unlock()
 		a.Notify()
 	}()
+}
+
+// ToggleMic mutes or unmutes the microphone of a live stream, for the
+// Ctrl+Alt+M hotkey and the stream drawer. Safe from any goroutine.
+func (a *App) ToggleMic() {
+	t := a.backend.Telemetry()
+	if !t.Connected {
+		return
+	}
+	msg := ""
+	if err := a.backend.SetMicMuted(!t.MicMuted); err != nil {
+		msg = err.Error()
+	}
+	a.mu.Lock()
+	a.micErr = msg
+	a.mu.Unlock()
+	a.Notify()
 }
 
 // saveSettings stores s if the controls changed it, keeping the error to

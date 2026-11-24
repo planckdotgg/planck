@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -60,10 +61,18 @@ func (f *fakeBackend) Hosts() []HostInfo {
 	defer f.lock()()
 	return append([]HostInfo(nil), f.hosts...)
 }
-func (f *fakeBackend) RefreshHosts()         { defer f.lock()(); f.refreshes++ }
-func (f *fakeBackend) Disconnect()           { defer f.lock()(); f.disconnects++; f.tel = Telemetry{} }
-func (f *fakeBackend) Telemetry() Telemetry  { defer f.lock()(); return f.tel }
-func (f *fakeBackend) RequestKeyframe()      { defer f.lock()(); f.keyframes++ }
+func (f *fakeBackend) RefreshHosts()        { defer f.lock()(); f.refreshes++ }
+func (f *fakeBackend) Disconnect()          { defer f.lock()(); f.disconnects++; f.tel = Telemetry{} }
+func (f *fakeBackend) Telemetry() Telemetry { defer f.lock()(); return f.tel }
+func (f *fakeBackend) RequestKeyframe()     { defer f.lock()(); f.keyframes++ }
+func (f *fakeBackend) SetMicMuted(muted bool) error {
+	defer f.lock()()
+	if !muted && f.tel.MicDevice == "" {
+		return errors.New(f.tel.MicHint)
+	}
+	f.tel.MicMuted = muted
+	return nil
+}
 func (f *fakeBackend) Hosting() HostingState { defer f.lock()(); return f.hosting }
 func (f *fakeBackend) Tailnet() TailnetStatus {
 	defer f.lock()()

@@ -71,12 +71,22 @@ type Telemetry struct {
 	AudioBufMs                                    float64
 	// DatagramBytes is the largest media datagram on the route.
 	DatagramBytes int
+	// MicMuted is whether this client's microphone is muted on the host,
+	// as every stream starts. MicDevice is the host's virtual mic it plays
+	// into; MicHint says why there is none.
+	MicMuted  bool
+	MicDevice string
+	MicHint   string
 }
 
 // Settings are the client's preferences other than the stream's format,
 // which the overrides hold. SaveSettings applies them to a live stream.
 type Settings struct {
-	AudioEnabled      bool
+	AudioEnabled bool
+	// ClipboardSend shares this device's clipboard with the other end of
+	// a stream; ClipboardReceive applies the other end's here.
+	ClipboardSend     bool
+	ClipboardReceive  bool
 	SystemKeysCapture bool
 	RelativeMouse     bool
 	// Encoder is the GPU this machine encodes on while hosting, by
@@ -154,6 +164,8 @@ type Backend interface {
 	Disconnect()
 	Telemetry() Telemetry
 	RequestKeyframe()
+	// SetMicMuted mutes or unmutes this client's microphone on the host.
+	SetMicMuted(muted bool) error
 
 	Hosting() HostingState
 	SetHosting(ctx context.Context, on bool) error

@@ -68,13 +68,18 @@ type HostConfig struct {
 }
 
 type ClientConfig struct {
-	PreferredCodec  string                `json:"preferredCodec"`
-	PreferredChroma string                `json:"preferredChroma"`
-	TargetFPS       int                   `json:"targetFPS"`
-	MaxBitrateKbps  int                   `json:"maxBitrateKbps"`
-	AudioEnabled    bool                  `json:"audioEnabled"`
-	ThemeName       string                `json:"themeName"`
-	PinnedHosts     map[string]PinnedHost `json:"pinnedHosts"`
+	PreferredCodec  string `json:"preferredCodec"`
+	PreferredChroma string `json:"preferredChroma"`
+	TargetFPS       int    `json:"targetFPS"`
+	MaxBitrateKbps  int    `json:"maxBitrateKbps"`
+	AudioEnabled    bool   `json:"audioEnabled"`
+	// ClipboardSend shares this device's clipboard with the other end of
+	// a stream, and ClipboardReceive applies the other end's here. Both
+	// start off.
+	ClipboardSend    bool                  `json:"clipboardSend"`
+	ClipboardReceive bool                  `json:"clipboardReceive"`
+	ThemeName        string                `json:"themeName"`
+	PinnedHosts      map[string]PinnedHost `json:"pinnedHosts"`
 	// HostAliases are names the user gave hosts on this client, by host
 	// ID; they replace the name the host advertises.
 	HostAliases map[string]string `json:"hostAliases,omitempty"`

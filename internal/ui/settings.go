@@ -206,6 +206,10 @@ func audioInputPanel(c *mui.Context, s *Settings) {
 	panel(c, "Audio and input", "", func() {
 		switchRow(c, "Stream audio", "", &s.AudioEnabled, true)
 		divider(c)
+		switchRow(c, "Share this device's clipboard", "Text and images up to 16 MiB go to the other end of a stream. Copies a password manager marks never do.", &s.ClipboardSend, true)
+		divider(c)
+		switchRow(c, "Accept the other end's clipboard", "", &s.ClipboardReceive, true)
+		divider(c)
 		switchRow(c, "Send system keys to the host", "Windows key, Alt+Tab and Cmd shortcuts go to the stream.", &s.SystemKeysCapture, true)
 		divider(c)
 		switchRow(c, "Lock the mouse to the stream", "Relative motion, for games that turn the camera with the mouse.", &s.RelativeMouse, true)

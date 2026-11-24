@@ -229,9 +229,23 @@ func (a *App) hudDrawer(c *mui.Context, t Telemetry) mui.Element {
 			mui.Box(c).Grow(1).Basis(0).Children(func() { switchRow(c, "System keys", "", &s.SystemKeysCapture, false) })
 			mui.Box(c).Grow(1).Basis(0).Children(func() { switchRow(c, "Pin HUD", "", &a.hudPinned, false) })
 		})
+		mui.Row(c).FillWidth().Gap(theme.Space6).Children(func() {
+			mui.Box(c).Grow(1).Basis(0).Children(func() { switchRow(c, "Share clipboard", "", &s.ClipboardSend, false) })
+			mui.Box(c).Grow(1).Basis(0).Children(func() { switchRow(c, "Accept clipboard", "", &s.ClipboardReceive, false) })
+			mui.Box(c).Grow(1).Basis(0)
+		})
+		drawerRow(c, "Microphone", a.micHint(t), func() {
+			text := "Unmute"
+			if !t.MicMuted {
+				text = "Mute"
+			}
+			if button(c, buttonSecondary, text, false).Clicked() {
+				go a.ToggleMic()
+			}
+		})
 		divider(c)
 		mui.Row(c).FillWidth().AlignItems(mui.Center).Gap(theme.Space2).Children(func() {
-			caption(c, "Cycle HUD: Ctrl Alt H").Grow(1)
+			caption(c, "HUD: Ctrl Alt H. Mic: Ctrl Alt M.").Grow(1)
 			if button(c, buttonGhost, "Reset to Auto", false).Clicked() {
 				e.resetToAuto()
 			}
@@ -246,6 +260,22 @@ func (a *App) hudDrawer(c *mui.Context, t Telemetry) mui.Element {
 	a.saveSettings(before, s)
 	a.saveOverrides(e)
 	return d
+}
+
+// micHint says where the microphone goes, or why it cannot.
+func (a *App) micHint(t Telemetry) string {
+	a.mu.Lock()
+	err := a.micErr
+	a.mu.Unlock()
+	switch {
+	case t.MicDevice != "" && t.MicMuted:
+		return "Muted. Plays into " + t.MicDevice + " on the host when on."
+	case t.MicDevice != "":
+		return "Live in " + t.MicDevice + " on the host."
+	case err != "":
+		return err
+	}
+	return t.MicHint
 }
 
 // drawerRow is a control with its name and, when set, a hint under it.
