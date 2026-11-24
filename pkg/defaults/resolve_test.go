@@ -398,3 +398,48 @@ func TestResolveDecisionsCoverEveryKnob(t *testing.T) {
 		t.Errorf("codec why %q should say why PyroWave lost", d.Why)
 	}
 }
+
+func windowed(w, h int) ClientCapabilities {
+	c := m5Pro()
+	c.Display.ViewWidthPx, c.Display.ViewHeightPx = w, h
+	return c
+}
+
+// TestResolveVirtualDisplayTakesWindowSize: with Resolution auto a
+// virtual display is the stream window's size, even and in bounds; a
+// headless client, an override or a physical display ignore the window.
+func TestResolveVirtualDisplayTakesWindowSize(t *testing.T) {
+	for _, c := range []struct {
+		name         string
+		client       ClientCapabilities
+		o            UserOverrides
+		w, h         int
+		vdd          bool
+		resolutionBy string
+	}{
+		{"window", windowed(2560, 1600), UserOverrides{}, 2560, 1600, true, "client window"},
+		{"odd window", windowed(2561, 1415), UserOverrides{}, 2560, 1414, true, "client window"},
+		{"tiny window", windowed(300, 200), UserOverrides{}, MinCustomWidth, MinCustomHeight, true, "client window"},
+		{"headless", m5Pro(), UserOverrides{}, 3024, 1964, true, "client native"},
+		{"1440p override", windowed(2560, 1600), UserOverrides{Resolution: "1440p"}, 2216, 1440, true, "override at the client aspect"},
+		{"custom override", windowed(2560, 1600), UserOverrides{Resolution: "custom", CustomWidth: 1920, CustomHeight: 1200}, 1920, 1200, true, "override"},
+		{"physical display", windowed(2560, 1600), UserOverrides{VirtualDisplay: ToggleOff}, 1920, 1080, false, "capture display size"},
+	} {
+		p := Resolve(bigboi(), c.client, lan, c.o)
+		if p.VirtualDisplay != c.vdd || p.Width != c.w || p.Height != c.h {
+			t.Errorf("%s: virtual display %v %dx%d, want %v %dx%d", c.name, p.VirtualDisplay, p.Width, p.Height, c.vdd, c.w, c.h)
+		}
+		if d := decision(p, "resolution"); d.Why != c.resolutionBy {
+			t.Errorf("%s: resolution decided by %q, want %q", c.name, d.Why, c.resolutionBy)
+		}
+	}
+}
+
+// TestResolveWindowStepsDownAtItsShape: a window too large for the route
+// steps down keeping the window's shape, not the display's.
+func TestResolveWindowStepsDownAtItsShape(t *testing.T) {
+	p := Resolve(bigboi(), windowed(5120, 1440), wanRelay, UserOverrides{})
+	if !p.VirtualDisplay || p.Height >= 1440 || p.Width != (p.Height*5120/1440)&^1 {
+		t.Fatalf("32:9 window over a relay: %dx%d, want fewer lines at 32:9", p.Width, p.Height)
+	}
+}

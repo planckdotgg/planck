@@ -75,6 +75,12 @@ func checkEnum(knob, v string, allowed []string) error {
 	return fmt.Errorf("defaults: %s %q: want auto or one of %v", knob, v, allowed)
 }
 
+// ViewSize is the virtual display size for a w x h pixel stream window:
+// even, and within the custom size bounds.
+func ViewSize(w, h int) (int, int) {
+	return min(max(w, MinCustomWidth), MaxCustomWidth) &^ 1, min(max(h, MinCustomHeight), MaxCustomHeight) &^ 1
+}
+
 func validCustomSize(w, h int) bool {
 	return w%2 == 0 && h%2 == 0 && w >= MinCustomWidth && w <= MaxCustomWidth && h >= MinCustomHeight && h <= MaxCustomHeight
 }

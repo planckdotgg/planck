@@ -118,6 +118,11 @@ type ClientDisplay struct {
 	MaxHz    int     `json:"maxHz"` // ProMotion: 120
 	MinHz    int     `json:"minHz"` // ProMotion: 24
 	HDR      bool    `json:"hdr"`
+	// ViewWidthPx and ViewHeightPx are the stream window's size in pixels;
+	// 0 = no window, as a headless client. A virtual display with
+	// Resolution auto takes this size.
+	ViewWidthPx  int `json:"viewWidthPx,omitempty"`
+	ViewHeightPx int `json:"viewHeightPx,omitempty"`
 }
 
 type ClientCapabilities struct {
