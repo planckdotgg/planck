@@ -83,6 +83,8 @@ type Player struct {
 	// shown is the present thread's: the picture on screen, kept from the
 	// decoder until a newer one replaces it.
 	shown decode.Frame
+
+	hud hud
 }
 
 // New shows pictures from dec, which must decode onto surf's device (see
@@ -91,6 +93,7 @@ type Player struct {
 func New(surf *gpusurface.Surface, dec decode.Decoder, keep int) *Player {
 	p := start(dec, keep, func(f decode.Frame) error { return present(surf, f) }, surf.Resize)
 	p.surf = surf
+	p.hud.sink = surf
 	return p
 }
 
@@ -187,6 +190,7 @@ func (p *Player) presentLoop() {
 			p.mu.Unlock()
 			if f.Surface != 0 {
 				p.present(f)
+				p.hudResized()
 			}
 		}
 	}
@@ -273,7 +277,7 @@ func (p *Player) Timings() []Timing {
 }
 
 // Close stops the present thread, gives every picture it holds back and
-// closes the decoder. The surface stays open.
+// closes the decoder. The surface stays open, without the HUD.
 func (p *Player) Close() error {
 	select {
 	case <-p.quit:
@@ -281,5 +285,6 @@ func (p *Player) Close() error {
 		close(p.quit)
 	}
 	<-p.done
+	p.hud.stop()
 	return p.dec.Close()
 }

@@ -31,6 +31,9 @@ const (
 	// FormatP010 is NV12's layout with 10 bits a sample in the high bits
 	// of 16, BT.709 video range.
 	FormatP010
+	// FormatBGR10A2 is 10-bit RGB in 32 bits, as an IOSurface 'l10r' holds
+	// it.
+	FormatBGR10A2
 )
 
 func (f Format) String() string {
@@ -41,6 +44,8 @@ func (f Format) String() string {
 		return "NV12"
 	case FormatP010:
 		return "P010"
+	case FormatBGR10A2:
+		return "BGR10A2"
 	}
 	return "unknown"
 }
@@ -71,6 +76,8 @@ type Options struct {
 	// view. Without Composite the layer is added to the content view's own
 	// layer, which suits a window holding nothing else.
 	Composite bool
+	// Drawable10Bit makes the drawables BGR10A2 instead of BGRA8, on macOS.
+	Drawable10Bit bool
 }
 
 // Timing is the way of one frame from Present to the screen, in
@@ -84,6 +91,9 @@ type Timing struct {
 	// the next refresh, or the platform could not tell.
 	Presented int64
 }
+
+// ErrUnsupported is the error of a feature the platform's surface lacks.
+var ErrUnsupported = errors.New("gpusurface: not supported on this platform")
 
 // ErrFormat is Present's error for a frame in a format the surface does
 // not take.
