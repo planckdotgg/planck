@@ -35,5 +35,8 @@ func routeMTU(remote netip.Addr) int {
 }
 
 // lanDatagramOK reports whether media datagrams of wire.MaxLANDatagram
-// reach remote unfragmented from this end.
-func lanDatagramOK(remote netip.Addr) bool { return routeMTU(remote) >= 1500 }
+// reach remote unfragmented from this end. Loopback takes any size;
+// Windows reports its MTU as -1.
+func lanDatagramOK(remote netip.Addr) bool {
+	return remote.Unmap().IsLoopback() || routeMTU(remote) >= 1500
+}
