@@ -128,6 +128,9 @@ func (st *stream) videoLoop() {
 		if err := st.trace.flush(); err != nil {
 			st.h.logf("planck: trace: %v", err)
 		}
+		if err := st.h.inputTrace.flush(); err != nil {
+			st.h.logf("planck: trace: %v", err)
+		}
 	}()
 	buf := make([]byte, 0, 2<<20)
 	kbps := st.params.BitrateKbps

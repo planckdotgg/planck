@@ -160,6 +160,8 @@ type Host struct {
 	sessions atomic.Uint64
 	inputs   atomic.Uint64
 	inputErr atomic.Uint64
+
+	inputTrace *tracer[inputTraceRow]
 }
 
 // NewHost loads or creates the host's identity and paired clients.
@@ -199,7 +201,7 @@ func NewHost(cfg HostConfig) (*Host, error) {
 	if cfg.FPS <= 0 && cfg.Synth {
 		cfg.FPS = 60
 	}
-	h := &Host{cfg: cfg, hostID: stored.HostID, cert: cert, fp: transport.CertFingerprint(cert), pairs: pairs,
+	h := &Host{inputTrace: newTracer[inputTraceRow](traceInputEnv), cfg: cfg, hostID: stored.HostID, cert: cert, fp: transport.CertFingerprint(cert), pairs: pairs,
 		whois: cfg.WhoIs, open: cfg.OpenVideo, logf: cfg.Logf, pin: cfg.PIN}
 	if h.logf == nil {
 		h.logf = log.Printf
@@ -469,6 +471,10 @@ func (h *Host) chroma(acc wire.SessionConfig) encode.Chroma {
 }
 
 func (h *Host) onInput(in wire.Input) {
+	recv := transport.Mono()
+	if h.inputTrace != nil {
+		defer h.traceInput(in, recv)
+	}
 	ev, err := fromWire(in)
 	if err != nil {
 		h.inputErr.Add(1)
@@ -483,6 +489,17 @@ func (h *Host) onInput(in wire.Input) {
 			h.inputErr.Add(1)
 		}
 	}
+}
+
+func (h *Host) traceInput(in wire.Input, recv int64) {
+	h.mu.Lock()
+	st := h.cur
+	h.mu.Unlock()
+	if st == nil {
+		return
+	}
+	c := st.sess.Clock()
+	h.inputTrace.add(inputTraceRow{Seq: in.Seq, Sent: c.ToLocal(in.Timestamp), Recv: recv, Injected: transport.Mono(), RTTNs: int64(c.RTT())})
 }
 
 func (h *Host) onControl(m wire.Message) {

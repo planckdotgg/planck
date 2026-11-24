@@ -185,7 +185,7 @@ func headless(ctx context.Context, o options, d headlessDeps) (Summary, error) {
 	var rtts, audioBuf []float64
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
-	probe := time.NewTicker(time.Second)
+	probe := time.NewTicker(max(o.inputEvery, time.Millisecond))
 	defer probe.Stop()
 	end := time.After(o.duration)
 	start := time.Now()

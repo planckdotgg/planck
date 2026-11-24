@@ -17,6 +17,7 @@ import (
 const (
 	traceHostEnv   = "PLANCK_TRACE_HOST"
 	traceClientEnv = "PLANCK_TRACE_CLIENT"
+	traceInputEnv  = "PLANCK_TRACE_INPUT"
 	traceCap       = 1 << 17
 )
 
@@ -55,6 +56,16 @@ type clientTraceRow struct {
 	OffsetNs  int64 // host clock minus client clock
 	RTTNs     int64
 	Err       bool
+}
+
+// inputTraceRow is one input event received by the host. Sent is the
+// client's stamp mapped onto the host clock.
+type inputTraceRow struct {
+	Seq      uint32
+	Sent     int64
+	Recv     int64
+	Injected int64
+	RTTNs    int64
 }
 
 type tracer[T any] struct {
