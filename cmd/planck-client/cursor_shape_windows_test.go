@@ -2,6 +2,7 @@ package main
 
 import (
 	"runtime"
+	"sync"
 	"syscall"
 	"testing"
 	"unsafe"
@@ -78,6 +79,30 @@ func TestHCursorSizeAndHotspot(t *testing.T) {
 	}
 }
 
+// A window class keeps the procedure it was first registered with, so
+// every run's windows share one, which reads the run's child and records
+// its messages here.
+var (
+	cursorTestChild uintptr
+	cursorTestSeen  []uintptr
+	cursorTestOnce  sync.Once
+	cursorTestCB    uintptr
+)
+
+// cursorTestProc records the messages of cursorTestChild.
+func cursorTestProc() uintptr {
+	cursorTestOnce.Do(func() {
+		cursorTestCB = syscall.NewCallback(func(hwnd, msg, wp, lp uintptr) uintptr {
+			if hwnd == cursorTestChild {
+				cursorTestSeen = append(cursorTestSeen, msg)
+			}
+			r, _, _ := procDefWindowProcW.Call(hwnd, msg, wp, lp)
+			return r
+		})
+	})
+	return cursorTestCB
+}
+
 // TestCursorProcTakesSetCursor: on a window like MyGo's, the hook answers
 // WM_SETCURSOR over the client area while the host's cursor shows, passes
 // every other message and every WM_SETCURSOR otherwise to the window's own
@@ -85,15 +110,8 @@ func TestHCursorSizeAndHotspot(t *testing.T) {
 func TestCursorProcTakesSetCursor(t *testing.T) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
-	var seen []uintptr
-	var child uintptr
-	proc := syscall.NewCallback(func(hwnd, msg, wp, lp uintptr) uintptr {
-		if hwnd == child {
-			seen = append(seen, msg)
-		}
-		r, _, _ := procDefWindowProcW.Call(hwnd, msg, wp, lp)
-		return r
-	})
+	cursorTestSeen = nil
+	proc := cursorTestProc()
 	reg := func(name string) *uint16 {
 		cls, _ := syscall.UTF16PtrFromString(name)
 		wc := struct {
@@ -113,12 +131,13 @@ func TestCursorProcTakesSetCursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	const wsChild = 0x40000000
-	child, _, err = procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(reg("MyGoSurface"))), 0, wsChild, 0, 0, 100, 100, top, 0, 0, 0)
+	child, _, err := procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(reg("MyGoSurface"))), 0, wsChild, 0, 0, 100, 100, top, 0, 0, 0)
 	if child == 0 {
 		t.Fatal(err)
 	}
 	c := &winCursor{cache: cursorCache[cursorKey, uintptr]{free: func(h uintptr) { procDestroyIcon.Call(h) }}}
 	c.hook(top)
+	cursorTestChild = child
 	if _, ok := cursorNext[child]; !ok {
 		t.Fatal("the MyGo child was not hooked")
 	}
@@ -129,14 +148,14 @@ func TestCursorProcTakesSetCursor(t *testing.T) {
 	}
 	hostCursorHandle.Store(0)
 	hostCursorShowing.Store(true)
-	seen = nil
-	if r := setCursor(); r != 1 || len(seen) != 0 {
-		t.Fatalf("showing: returned %d, the window saw %#x", r, seen)
+	cursorTestSeen = nil
+	if r := setCursor(); r != 1 || len(cursorTestSeen) != 0 {
+		t.Fatalf("showing: returned %d, the window saw %#x", r, cursorTestSeen)
 	}
 	hostCursorShowing.Store(false)
 	setCursor()
-	if len(seen) != 1 || seen[0] != wmSetCursor {
-		t.Fatalf("not showing: the window saw %#x", seen)
+	if len(cursorTestSeen) != 1 || cursorTestSeen[0] != wmSetCursor {
+		t.Fatalf("not showing: the window saw %#x", cursorTestSeen)
 	}
 	procDestroyWindow.Call(top)
 	if _, ok := cursorNext[child]; ok {
