@@ -71,19 +71,37 @@ func TestFingerprintLines(t *testing.T) {
 	}
 }
 
-func TestFeaturedHost(t *testing.T) {
-	hosts := sampleHosts()
-	hosts[0].Online = false
-	if got := featuredHost(hosts); got != 1 {
-		t.Fatalf("featured = %d, want the first online (1)", got)
+func TestSortHosts(t *testing.T) {
+	hosts := []HostInfo{
+		{ID: "offline", Paired: true},
+		{ID: "unpaired", Online: true, RTTMs: 0.1},
+		{ID: "slow", Online: true, Paired: true, RTTMs: 18},
+		{ID: "unmeasured", Online: true, Paired: true},
+		{ID: "fast", Online: true, Paired: true, RTTMs: 0.4},
+		{ID: "active", Online: true, Paired: true, Connected: true, RTTMs: 30},
 	}
-	for i := range hosts {
-		hosts[i].Online = false
+	sortHosts(hosts)
+	var got []string
+	for _, h := range hosts {
+		got = append(got, h.ID)
 	}
-	if got := featuredHost(hosts); got != 0 {
-		t.Fatalf("featured with none online = %d, want 0", got)
+	if want := []string{"active", "fast", "slow", "unmeasured", "unpaired", "offline"}; !slices.Equal(got, want) {
+		t.Fatalf("order = %q, want %q", got, want)
 	}
-	if got := featuredHost(nil); got != -1 {
-		t.Fatalf("featured of none = %d", got)
+}
+
+func TestHardwareLine(t *testing.T) {
+	for _, c := range []struct {
+		h    HostInfo
+		want string
+	}{
+		{HostInfo{GPU: "RTX 4080", Height: 1080, RefreshHz: 60}, "RTX 4080 · 1080p 60"},
+		{HostInfo{GPU: "RTX 4080", Height: 1440}, "RTX 4080 · 1440p"},
+		{HostInfo{GPU: "M5 Pro"}, "M5 Pro"},
+		{HostInfo{}, ""},
+	} {
+		if got := hardwareLine(c.h); got != c.want {
+			t.Errorf("hardwareLine(%+v) = %q, want %q", c.h, got, c.want)
+		}
 	}
 }

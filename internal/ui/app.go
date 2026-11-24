@@ -7,6 +7,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"os"
 	"runtime"
 	"sync"
 	"time"
@@ -64,6 +65,18 @@ type App struct {
 	pin          string
 	streaming    bool
 	hudPinned    bool
+	// renaming is the HostID whose card shows the rename body; renameOpen
+	// selects its text on the frame it opens.
+	renaming   string
+	renameText string
+	renameOpen bool
+	renameErr  string
+	focusQuick bool
+	// hostNameDraft is the Host name field while it has the focus; it is
+	// saved on Enter or when the focus leaves.
+	hostNameDraft   string
+	hostNameFocused bool
+	machineName     string
 	// hudUntil is when the unpinned pill hides, once nothing holds it;
 	// hudHeld is whether the drawer, the pin or the pointer held it last
 	// frame; hudRects are where the pill and drawer were drawn.
@@ -92,6 +105,7 @@ type App struct {
 // NewApp returns the UI driving backend, and subscribes to its changes.
 func NewApp(backend Backend) *App {
 	a := &App{backend: backend, theme: theme.Planck(), goos: runtime.GOOS}
+	a.machineName, _ = os.Hostname()
 	backend.Subscribe(a.Notify)
 	return a
 }
@@ -190,7 +204,11 @@ func (a *App) View(c *mui.Context) {
 	mui.Row(c).Fill().Background(theme.RoleGround).Children(func() {
 		a.rail(c)
 		mui.Scroll(c).Grow(1).FillHeight().Children(func() {
-			mui.Column(c).FillWidth().Padding(theme.Space7, theme.Space7, theme.Space6).Gap(theme.Space6).Children(func() {
+			top, bottom := theme.Space7, theme.Space6
+			if a.screen == ScreenHosts {
+				top, bottom = theme.Space5, theme.Space5
+			}
+			mui.Column(c).FillWidth().Padding(top, theme.Space7, bottom).Gap(theme.Space6).Children(func() {
 				switch a.screen {
 				case ScreenHosts:
 					a.hostsScreen(c)

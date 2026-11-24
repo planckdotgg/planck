@@ -1,8 +1,6 @@
 package ui
 
 import (
-	"fmt"
-
 	mui "github.com/egoist/mygo/ui"
 	"github.com/planckdotgg/planck/internal/ui/theme"
 	"github.com/planckdotgg/planck/pkg/discovery"
@@ -122,51 +120,6 @@ func signalColor(k discovery.PathKind) mui.Color {
 		return theme.RoleRelay
 	}
 	return theme.RoleDirect
-}
-
-// pathBadge is the split pill: meter glyph and path name, then the round
-// trip in mono after a hairline. A DERP relay drops the value and takes a
-// relay-yellow outline.
-func pathBadge(c *mui.Context, k discovery.PathKind, rttMs float64) mui.Element {
-	col := signalColor(k)
-	relay := k == discovery.PathTailscaleDERP
-	edge := theme.RoleBorderStrong
-	if relay {
-		edge = theme.RoleRelay
-	}
-	return mui.Row(c).Height(26).AlignItems(mui.Center).Radius(theme.RadiusPill).Border(1, edge).
-		Background(theme.RoleRaised).Children(func() {
-		mui.Row(c).Gap(theme.Space2).AlignItems(mui.Center).PaddingX(theme.Space3).Children(func() {
-			sliceMeter(c, pathBars(k), 3, col)
-			t := label(c, pathLabel(k)).SingleLine()
-			if relay {
-				t.TextColor(theme.RoleRelay)
-			}
-		})
-		if !relay && rttMs > 0 {
-			mui.Box(c).Width(1).FillHeight().Background(theme.RoleBorderStrong)
-			mui.Box(c).PaddingX(theme.Space3).Children(func() {
-				mono(c, fmt.Sprintf("%s ms", formatMs(rttMs))).TextColor(col)
-			})
-		}
-	})
-}
-
-// capPill labels a capability or a reading in mono.
-func capPill(c *mui.Context, s string) mui.Element {
-	return mui.Box(c).Height(24).PaddingX(theme.Space2).AlignItems(mui.Center).Justify(mui.Center).
-		Radius(theme.RadiusXs).Border(1, theme.RoleBorderStrong).Children(func() {
-		mui.Text(c, s).Font(theme.FontMono).FontSize(theme.TextCaption).TextColor(theme.RoleText).SingleLine()
-	})
-}
-
-// gpuBadge shows a GPU model on a raised fill, staying neutral rather than
-// taking a vendor's color.
-func gpuBadge(c *mui.Context, gpu string) mui.Element {
-	return mui.Box(c).Height(26).PaddingX(theme.Space2).AlignItems(mui.Center).Justify(mui.Center).
-		Radius(theme.RadiusXs).Background(theme.RoleRaised).Children(func() {
-		mono(c, gpu).FontSize(theme.TextCaption + 1)
-	})
 }
 
 // panel is a raised panel with an optional head.

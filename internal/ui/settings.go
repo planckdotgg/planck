@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 
 	mui "github.com/egoist/mygo/ui"
 	"github.com/planckdotgg/planck/internal/ui/theme"
@@ -37,6 +38,7 @@ func (a *App) settingsScreen(c *mui.Context) {
 			audioInputPanel(c, &s)
 		})
 		mui.Column(c).Grow(1).Basis(0).MinWidth(440).Gap(theme.Space5).Children(func() {
+			a.hostingPanel(c, &s)
 			a.encoderPanel(c, &s)
 			a.networkPanel(c, &s)
 		})
@@ -62,6 +64,27 @@ func videoPanel(c *mui.Context, s *Settings) {
 			if mui.StepSlider(c, &v, minBitrateMbps, float64(lanCapMbps()), 1).Label("Maximum bitrate").FillWidth().Changed() {
 				s.MaxBitrateMbps = int(v)
 			}
+		})
+	})
+}
+
+// hostingPanel names this machine for the clients that find it. The field
+// edits a draft, so a name is saved once, on Enter or when the focus
+// leaves, not at every key.
+func (a *App) hostingPanel(c *mui.Context, s *Settings) {
+	panel(c, "Hosting", "", func() {
+		settingRow(c, "Host name", "What other devices see this "+machineWord(a.goos)+" as.", func() {
+			if !a.hostNameFocused {
+				a.hostNameDraft = s.HostName
+			}
+			in := mui.TextInput(c.Key("host-name"), &a.hostNameDraft).Width(220).Height(theme.SizeControl).
+				Placeholder(a.machineName).Label("Host name").Radius(theme.RadiusSm).
+				Background(theme.RoleRaised).Border(1, theme.RoleControlEdge)
+			focused := in.Focused()
+			if in.Submitted() || a.hostNameFocused && !focused {
+				s.HostName = strings.TrimSpace(a.hostNameDraft)
+			}
+			a.hostNameFocused = focused
 		})
 	})
 }

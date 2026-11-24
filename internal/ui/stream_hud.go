@@ -246,7 +246,8 @@ func mbpsLabels(v []int) []string {
 	return out
 }
 
-// streamFormat is the drawer's caption, as "1920 x 1080, 240 FPS, HEVC 10-bit".
+// streamFormat is the drawer's caption, as "1920 x 1080, 240 FPS, HEVC
+// 10-bit, 1152 B datagrams".
 func streamFormat(t Telemetry) string {
 	s := resolutionLabel(t.Width, t.Height)
 	if t.TargetFPS > 0 {
@@ -254,6 +255,9 @@ func streamFormat(t Telemetry) string {
 	}
 	if cl := codecLabel(t.Codec, t.Chroma); cl != "" {
 		s += ", " + cl
+	}
+	if t.DatagramBytes > 0 {
+		s += fmt.Sprintf(", %d B datagrams", t.DatagramBytes)
 	}
 	return s
 }
