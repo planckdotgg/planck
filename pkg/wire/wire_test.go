@@ -2,9 +2,15 @@ package wire
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
+	"flag"
+	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -45,6 +51,38 @@ func TestControlRoundTrip(t *testing.T) {
 	}
 	if _, err := ReadMessage(&stream); err != io.EOF {
 		t.Fatalf("after last message: %v, want EOF", err)
+	}
+}
+
+var update = flag.Bool("update", false, "rewrite testdata/golden")
+
+// TestControlGolden pins the encoding of every control message, so a
+// change that would break an older peer fails here.
+func TestControlGolden(t *testing.T) {
+	for _, m := range allMessages() {
+		name := fmt.Sprintf("%02d_%s", m.Type(), strings.ToLower(strings.TrimPrefix(fmt.Sprintf("%T", m), "*wire.")))
+		t.Run(name, func(t *testing.T) {
+			b, err := AppendMessage(nil, m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join("testdata", "golden", name+".hex")
+			if *update {
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(hex.EncodeToString(b)+"\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			want, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := hex.EncodeToString(b); got != strings.TrimSpace(string(want)) {
+				t.Fatalf("encoding changed:\n got %s\nwant %s", got, want)
+			}
+		})
 	}
 }
 
