@@ -24,6 +24,7 @@ func (a *App) rail(c *mui.Context) {
 		mui.Image(c, theme.Mark).Size(22, 34).Label("Planck").Margin(0, 0, theme.Space6)
 		for _, it := range railItems {
 			b := railButton(c, *it.icon, it.name, a.screen == it.screen, false)
+			tooltip(c, b, func() { label(c, it.name).FontSize(12) })
 			if b.Clicked() {
 				a.screen = it.screen
 			}
@@ -56,9 +57,12 @@ func railButton(c *mui.Context, icon *mui.SVG, name string, active, ember bool) 
 				Top((theme.SizeRailButton-24)/2).Size(3, 24).Background(theme.RoleAccent)
 		}
 	})
-	tooltip(c, b, func() { label(c, name).FontSize(12) })
 	return b
 }
+
+// hostingTipWidth wraps a long hosting error rather than stretching the
+// tooltip across the window.
+const hostingTipWidth = 280
 
 func (a *App) hostingButton(c *mui.Context) {
 	h := a.backend.Hosting()
@@ -80,22 +84,22 @@ func (a *App) hostingButton(c *mui.Context) {
 	if h.On {
 		b.Border(1, theme.RoleAccent)
 	}
-	mui.TooltipBase(c, b, func(tip mui.Element) {
-		tip.AttachTo(b, mui.AnchorEnd, mui.AnchorStart).MarginStart(theme.Space2).
-			Padding(theme.Space2, theme.Space3).Radius(theme.RadiusSm).Background(theme.RoleRaised).
-			Border(1, theme.RoleBorderStrong).Shadow(0, 16, 40, 0, theme.FloatShadow).Children(func() {
-			mui.Column(c).Gap(2).Children(func() {
-				mui.Row(c).Gap(theme.Space2).Children(func() {
-					label(c, name).FontWeight(600).FontSize(12)
-					mono(c, state).FontSize(12).TextColor(theme.RoleText3)
-				})
-				if h.Encoder != "" {
-					mono(c, h.Encoder).FontSize(12).TextColor(theme.RoleText2)
-				}
-				if h.Err != "" {
-					label(c, h.Err).FontSize(12).TextColor(theme.RoleFault)
-				}
+	stateColor := theme.RoleText3
+	if h.On {
+		stateColor = theme.RoleAccent
+	}
+	tooltip(c, b, func() {
+		mui.Column(c).Gap(2).MaxWidth(hostingTipWidth).Children(func() {
+			mui.Row(c).Gap(theme.Space2).AlignItems(mui.Center).Children(func() {
+				label(c, name).FontWeight(600).FontSize(12)
+				mono(c, state).FontSize(theme.TextMini).TextColor(stateColor)
 			})
+			if h.Encoder != "" {
+				label(c, h.Encoder).FontSize(theme.TextCaption).TextColor(theme.RoleText2)
+			}
+			if h.Err != "" {
+				label(c, h.Err).FontSize(theme.TextCaption).TextColor(theme.RoleFault)
+			}
 		})
 	})
 	if b.Clicked() && !busy {
