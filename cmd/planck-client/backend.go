@@ -50,6 +50,8 @@ type backend struct {
 	viewSize  func() (w, h int)
 	display   func() defaults.ClientDisplay
 	onCursor  func(wire.CursorState)
+	// onCursorShape hears the host's cursor image; nil does not ask for it.
+	onCursorShape func(wire.CursorShape)
 
 	mu       sync.Mutex
 	onChange func()
@@ -86,8 +88,10 @@ type backendConfig struct {
 	// display is the display the stream window is on; nil, or a zero
 	// width, is the main display.
 	display func() defaults.ClientDisplay
-	// onCursor hears the host's cursor state.
-	onCursor func(wire.CursorState)
+	// onCursor hears the host's cursor state, and onCursorShape its
+	// image.
+	onCursor      func(wire.CursorState)
+	onCursorShape func(wire.CursorShape)
 }
 
 func newBackend(c backendConfig) (*backend, error) {
@@ -104,7 +108,7 @@ func newBackend(c backendConfig) (*backend, error) {
 		return nil, err
 	}
 	b := &backend{dir: dir, name: c.name, finder: c.finder, ts: c.tailscale, openSink: c.openSink, hostConfig: c.hostConfig,
-		encoders: c.encoders, logf: c.logf, routeConfig: c.route, overrides: c.overrides, viewSize: c.viewSize, display: c.display, onCursor: c.onCursor, settings: settingsFrom(stored), pinned: stored.PinnedHosts, aliases: stored.HostAliases,
+		encoders: c.encoders, logf: c.logf, routeConfig: c.route, overrides: c.overrides, viewSize: c.viewSize, display: c.display, onCursor: c.onCursor, onCursorShape: c.onCursorShape, settings: settingsFrom(stored), pinned: stored.PinnedHosts, aliases: stored.HostAliases,
 		storedAll: stored.Overrides, storedHosts: stored.HostOverrides, layout: layoutFrom(stored.Overlay)}
 	host, err := config.LoadHostConfig(dir)
 	if err != nil {
@@ -462,7 +466,7 @@ func (b *backend) dialNew(ctx context.Context, t session.Target, pin string, s u
 	c, err := session.NewClient(session.ClientConfig{
 		ConfigDir: b.dir, Name: b.name, PIN: pin, NoAudio: !s.AudioEnabled, Quality: legacyQuality(ov), Overrides: ov,
 		OpenSink: b.openSink, Tailscale: b.ts, Logf: b.logf, Route: b.route(ov), ViewSize: b.viewSize, Clipboard: clipboardOf(s),
-		OnCursor: b.onCursor, Capabilities: b.capabilities,
+		OnCursor: b.onCursor, OnCursorShape: b.onCursorShape, Capabilities: b.capabilities,
 	})
 	if err != nil {
 		return err

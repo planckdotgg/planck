@@ -40,6 +40,33 @@ type pointerSys interface {
 	warp(x, y float32)
 }
 
+// pictureCursor is what shows over the picture while the pointer is free
+// or confined on it.
+type pictureCursor uint8
+
+const (
+	// cursorLocal is the window's own cursor, as the UI sets it.
+	cursorLocal pictureCursor = iota
+	// cursorHidden is no cursor, as the host hides its own without
+	// capturing the mouse: over a playing video, or while typing.
+	cursorHidden
+	// cursorHost is the host's cursor, drawn as it last sent it.
+	cursorHost
+)
+
+// hostCursorSys shows the host's cursor over the picture in place of the
+// window's own. Its methods run on the main thread.
+type hostCursorSys interface {
+	// set keeps shape, or no cursor for nil, as the cursor over the
+	// window, against the UI setting its own, until unset. It reports
+	// whether it found another cursor set and set its own again.
+	set(shape *wire.CursorShape) bool
+	// unset leaves the cursor to the UI.
+	unset()
+	// close unsets the cursor and frees the cursors made.
+	close()
+}
+
 // pointerLock decides when the stream holds the local pointer, and holds
 // it. The host's cursor state says when a game captured the mouse; the
 // user locks and releases it too. The lock engages only while the window
@@ -52,9 +79,17 @@ type pointerLock struct {
 	// changed asks for a frame, from any goroutine.
 	changed func()
 
+	// cursor shows the host's cursor over the picture; nil leaves the
+	// window's own there.
+	cursor hostCursorSys
+
 	mu        sync.Mutex
 	host      wire.CursorState
 	hostKnown bool
+	// shape is the host's cursor image; look what cursor shows over the
+	// picture.
+	shape *wire.CursorShape
+	look  pictureCursor
 	// manual is the user's lock while the host has not captured the mouse;
 	// paused a lock the user released or the focus left.
 	manual, paused bool
@@ -101,6 +136,69 @@ func (l *pointerLock) setHost(s wire.CursorState) {
 	if changed != nil {
 		changed()
 	}
+}
+
+// setShape takes the host's cursor image. Safe from any goroutine.
+func (l *pointerLock) setShape(s wire.CursorShape) {
+	l.mu.Lock()
+	l.shape = &s
+	changed := l.changed
+	l.mu.Unlock()
+	if changed != nil {
+		changed()
+	}
+}
+
+// pictureCursor shows the cursor the picture has now, with the pointer
+// over it, on the picture rather than a bar beside it or the overlay above
+// it, or not, and reports it: anything but cursorLocal the UI must not
+// draw a cursor of its own over. A free pointer shows the host's cursor
+// as it shows, or none as it hides; a confined one the host's; a relative
+// one, which the lock hides, and one the user let go of while a game
+// holds the mouse, the window's own. It runs as the stream view builds,
+// and asks for another frame when the UI set a cursor over its own.
+func (l *pointerLock) pictureCursor(over bool) pictureCursor {
+	l.mu.Lock()
+	want := l.pictureTarget(over)
+	again := false
+	switch {
+	case l.cursor == nil:
+		want = cursorLocal
+	case want == cursorHidden:
+		again = l.cursor.set(nil)
+	case want == cursorHost:
+		again = l.cursor.set(l.shape)
+	case l.look != cursorLocal:
+		l.cursor.unset()
+	}
+	l.look = want
+	changed := l.changed
+	l.mu.Unlock()
+	if again && changed != nil {
+		changed()
+	}
+	return want
+}
+
+// pictureTarget is the cursor the picture should have. Called with mu
+// held.
+func (l *pointerLock) pictureTarget(over bool) pictureCursor {
+	if !over || !l.hostKnown || !l.active || l.menuOpen {
+		return cursorLocal
+	}
+	switch {
+	case l.mode == pointerRelative:
+		return cursorLocal
+	case l.mode == pointerConfined:
+	case l.host.Captured:
+		return cursorLocal
+	case !l.host.Visible:
+		return cursorHidden
+	}
+	if l.host.Visible && l.shape != nil {
+		return cursorHost
+	}
+	return cursorLocal
 }
 
 // locked reports whether the mouse is to be locked to the stream, though
@@ -172,8 +270,9 @@ func (l *pointerLock) held() pointerMode {
 func (l *pointerLock) reset() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.host, l.hostKnown, l.manual, l.paused = wire.CursorState{}, false, false, false
+	l.host, l.hostKnown, l.manual, l.paused, l.shape = wire.CursorState{}, false, false, false, nil
 	l.apply()
+	l.unsetCursor()
 }
 
 // close gives the pointer back, whatever state the lock is in: on exit,
@@ -182,6 +281,18 @@ func (l *pointerLock) close() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.release()
+	if l.cursor != nil {
+		l.cursor.close()
+		l.look = cursorLocal
+	}
+}
+
+// unsetCursor gives the cursor back to the UI. Called with mu held.
+func (l *pointerLock) unsetCursor() {
+	if l.look != cursorLocal {
+		l.cursor.unset()
+		l.look = cursorLocal
+	}
 }
 
 func (l *pointerLock) release() {

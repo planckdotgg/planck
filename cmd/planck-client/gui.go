@@ -33,6 +33,7 @@ func runGUI(o options) error {
 	video := &videoView{logf: logf, streams: streams}
 	ptr := newPointerLock(nil, nil)
 	ptr.sys = newSystemPointer(video.win.Load, ptr.motion)
+	ptr.cursor = newHostCursor(video.win.Load)
 	defer ptr.close()
 	b, err := newBackend(backendConfig{
 		dir: o.configDir, name: o.name, finder: f, tailscale: ts, openSink: video.open,
@@ -42,7 +43,7 @@ func runGUI(o options) error {
 			c.DiscoveryAddr = fmt.Sprintf(":%d", o.discoveryPort)
 			return c
 		},
-		encoders: localEncoders(), logf: logf, overrides: o.overrides, viewSize: video.liveSize, display: video.display, onCursor: ptr.setHost,
+		encoders: localEncoders(), logf: logf, overrides: o.overrides, viewSize: video.liveSize, display: video.display, onCursor: ptr.setHost, onCursorShape: ptr.setShape,
 	})
 	if err != nil {
 		return err

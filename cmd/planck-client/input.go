@@ -39,13 +39,16 @@ type inputForwarder struct {
 // The pointer goes to the host over the picture alone, not over the bars
 // beside it, except to carry a press begun on the picture to its edge.
 // While the lock holds the pointer relative, its motion goes instead, and
-// every press is on the picture.
+// every press is on the picture. Over the picture, not under the overlay,
+// the view asks the UI for no cursor of its own while the lock shows the
+// host's there (pointerLock.pictureCursor).
 func (f *inputForwarder) view(c *mui.Context) {
 	c.Key("planck-stream-input")
 	el := mui.Box(c).Fill().Label("Stream")
 	el.HandleInput(f.scroll)
 	f.keyboard(c.KeysDown(), c.Modifiers())
 	x, y, over := el.PointerPosition()
+	hovered := el.Hovered()
 	b := el.Bounds()
 	f.bw, f.bh = b.W, b.H
 	fw, fh, dw, dh := f.videoSize()
@@ -55,6 +58,10 @@ func (f *inputForwarder) view(c *mui.Context) {
 		pic.X, pic.Y = pic.X+b.X, pic.Y+b.Y
 		f.lock.frame(c.WindowActive(), pic)
 		relative = f.lock.held() == pointerRelative
+		onPic := over && hovered && b.W > 0 && b.H > 0 && onPicture(x, y, b.W, b.H, fw, fh, dw, dh)
+		if f.lock.pictureCursor(onPic) != cursorLocal {
+			el.Cursor(mui.CursorNone)
+		}
 	}
 	in := relative
 	if over && b.W > 0 && b.H > 0 && !relative {
