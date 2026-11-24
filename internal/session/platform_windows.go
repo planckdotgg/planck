@@ -40,7 +40,11 @@ func openDisplay(p VideoParams) (VideoPipe, error) {
 	}
 	// The power policy must be in place before the D3D11 device exists.
 	power := gpu.AcquireHighPerf(d.Adapter)
-	src, err := display.Open(d.ID, display.Options{HDR: p.Chroma.TenBit()})
+	// 10-bit and FP16 surfaces come from DuplicateOutput1, which answers
+	// DXGI_ERROR_UNSUPPORTED on an SDR desktop (a SudoVDA display with
+	// advanced color off); an SDR desktop is 8-bit, and the encoder
+	// raises it to the coded depth.
+	src, err := display.Open(d.ID, display.Options{HDR: p.Chroma.TenBit() && d.HDR})
 	if err != nil {
 		power.Close()
 		return nil, err
