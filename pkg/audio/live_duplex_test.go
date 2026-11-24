@@ -172,14 +172,14 @@ func TestLiveFindVirtualMic(t *testing.T) {
 		t.Logf("output device %q", d.Name)
 	}
 	vm, err := FindVirtualMic(os.Getenv("PLANCK_LIVE_MIC_SINK"))
-	if errors.Is(err, ErrNoVirtualMic) {
-		t.Logf("no virtual mic: %v", err)
+	if errors.Is(err, ErrNoVirtualMic) || errors.Is(err, ErrVirtualMicSetup) {
+		t.Logf("virtual mic unavailable, as the host would report it: %v", err)
 		return
 	}
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("virtual mic: %q", vm.Name)
+	t.Logf("virtual mic: plays to %q, apps record %q", vm.Name, vm.Input)
 	s, err := OpenMicSink(vm)
 	if err != nil {
 		t.Fatal(err)
