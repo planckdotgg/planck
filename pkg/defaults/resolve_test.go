@@ -340,6 +340,19 @@ func TestResolveFallbacksWarn(t *testing.T) {
 	}
 }
 
+// A resolution the capture display already has needs no virtual display.
+func TestResolveResolutionMatchingDisplayIsNoFallback(t *testing.T) {
+	noVDD := bigboi()
+	noVDD.VDD = VDDCap{}
+	for _, o := range []UserOverrides{{Resolution: "1080p"}, {Resolution: "custom", CustomWidth: 1920, CustomHeight: 1080}} {
+		p := Resolve(noVDD, m5Pro(), lan, o)
+		d := decision(p, "resolution")
+		if d.Source != SourceUser || d.Value != "1920x1080" || slices.ContainsFunc(p.Warnings, func(w string) bool { return strings.HasPrefix(w, "resolution") }) {
+			t.Errorf("%+v: resolution %+v, warnings %q", o, d, p.Warnings)
+		}
+	}
+}
+
 func TestResolveSplitSlicesConflictKeepsSlices(t *testing.T) {
 	p := Resolve(bigboi(), m5Pro(), lan, UserOverrides{NVENC2EngineSplit: "on", SubFrameSlices: "4"})
 	if p.Split || p.Slices != 4 || !p.SubFrame {

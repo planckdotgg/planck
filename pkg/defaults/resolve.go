@@ -343,6 +343,18 @@ func (r *resolver) stepDown() bool {
 	return false
 }
 
+// askedSize reports whether the resolution override asks for w x h: a
+// preset by its lines, a custom size exactly.
+func (r *resolver) askedSize(w, h int) bool {
+	switch r.o.Resolution {
+	case "1080p", "1440p", "4k":
+		return map[ResolutionPref]int{"1080p": 1080, "1440p": 1440, "4k": 2160}[r.o.Resolution] == h
+	case "custom":
+		return r.o.CustomWidth == w && r.o.CustomHeight == h
+	}
+	return false
+}
+
 func sizeString(w, h int) string { return fmt.Sprintf("%dx%d", w, h) }
 
 func (r *resolver) splitPossible() bool {
@@ -389,7 +401,11 @@ func (r *resolver) sizeAndFPS() {
 		}
 		resWhy = "capture display size"
 		if !isAuto(string(r.o.Resolution)) {
-			resFallback = "needs a virtual display"
+			if r.askedSize(r.p.Width, r.p.Height) {
+				resWhy = "override, the capture display's size"
+			} else {
+				resFallback = "needs a virtual display"
+			}
 		}
 	}
 
