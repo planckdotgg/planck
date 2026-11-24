@@ -110,7 +110,7 @@ func run(w io.Writer, hostPath, clientPath string, skip int, label string) error
 			}
 			get("host: FEC+AEAD+sendto (whole frame)").add(h.int(r, "sendend") - ee)
 			get("host: present -> last datagram sent").add(h.int(r, "sendend") - present)
-			get("frame size (bytes / 1000)").add(h.int(r, "bytes"))
+			get("frame size (KB)").add(h.int(r, "bytes"))
 		}
 	}
 	if clientPath != "" {
@@ -130,7 +130,7 @@ func run(w io.Writer, hostPath, clientPath string, skip int, label string) error
 			}
 			get("net: encode end -> frame reassembled").add(complete - encEnd)
 			get("client: queue wait").add(deq - complete)
-			get("client: frames queued ahead (count x 1000)").add(c.int(r, "queuelen") * 1000)
+			get("client: frames queued ahead (count)").add(c.int(r, "queuelen") * 1000)
 			get("client: decode (VT callback)").add(c.int(r, "decodens"))
 			if p := c.int(r, "presentns"); p > 0 {
 				get("client: present call").add(p)
@@ -143,7 +143,7 @@ func run(w io.Writer, hostPath, clientPath string, skip int, label string) error
 	if label != "" {
 		fmt.Fprintf(w, "### %s\n\n", label)
 	}
-	fmt.Fprintf(w, "| stage (us) | n | p50 | p95 | p99 | max |\n|---|---:|---:|---:|---:|---:|\n")
+	fmt.Fprintf(w, "| stage (us unless noted) | n | p50 | p95 | p99 | max |\n|---|---:|---:|---:|---:|---:|\n")
 	for _, s := range order {
 		if len(s.us) == 0 {
 			continue
