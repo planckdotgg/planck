@@ -21,9 +21,9 @@ type switchSinks struct {
 	sink      *NullSink
 	misrouted atomic.Int64
 	chunkLen  atomic.Int64
-	mu   sync.Mutex
-	cfgs []decode.Config
-	open int
+	mu        sync.Mutex
+	cfgs      []decode.Config
+	open      int
 }
 
 type countedSink struct {
