@@ -9,6 +9,7 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/egoist/mygo"
 
@@ -28,7 +29,8 @@ func runGUI(o options) error {
 	logf := log.Printf
 	ts := tailscale.New()
 	f := newFinder(fmt.Sprintf(":%d", o.discoveryPort), ts, nil, logf)
-	video := &videoView{logf: logf}
+	streams := &streamWindows{later: onMainAfter}
+	video := &videoView{logf: logf, streams: streams}
 	ptr := newPointerLock(nil, nil)
 	ptr.sys = newSystemPointer(video.win.Load, ptr.motion)
 	defer ptr.close()
@@ -53,25 +55,25 @@ func runGUI(o options) error {
 	app.SetStreamView(fwd.view)
 	resizer := &viewResizer{delay: resizeSettle, send: b.resizeStream}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go f.run(ctx)
-	mygo.App.WhenReady(func() {
-		win := mygo.NewWindow(mygo.WindowOptions{
-			Title: "Planck", Width: 1280, Height: 800, MinWidth: 960, MinHeight: 600,
-			BackgroundColor: "#0E0F12", Transparent: composeUnderUI, Content: app.Content(),
-		})
-		video.attach(win)
-		app.SetWindow(fullScreenHook{win})
-		app.SetCursor(cursorHook{ptr})
+	streams.fullscreen = func() bool { return b.Settings().OpenFullscreen }
+	streams.videoLive = video.surfaceLive
+	streams.userClosed = app.StreamWindowClosed
+	streams.gone = func() {
+		video.detach()
+		ptr.reset()
+	}
+	video.closed = streams.videoClosed
+	streams.create = func(title string) nativeStreamWin {
+		w := newStreamWindow(title, video.main.Load(), app.StreamContent())
+		video.attach(w)
 		// settled is whether the window was in full screen when its last
 		// transition ended. The style mask, IsFullScreen, flips as one
 		// starts; the sizes macOS reports until it ends are not final, and
-		// its end sends the final one. Main thread only.
-		settled := win.IsFullScreen()
-		win.OnResize(func() {
+		// its end sends the final one. It opens windowed. Main thread only.
+		settled := false
+		w.OnResize(func() {
 			video.resized()
-			if win.IsFullScreen() != settled {
+			if w.IsFullScreen() != settled {
 				return
 			}
 			resizer.changed(video.pixelSize())
@@ -80,32 +82,99 @@ func runGUI(o options) error {
 		// the display's refresh or scale, nor its own size in pixels; the
 		// resize it sends once settled carries the display, and one on
 		// the same display sends nothing.
-		win.OnMove(func() {
-			video.storeSize(win)
-			if win.IsFullScreen() == settled {
+		w.OnMove(func() {
+			video.storeSize(w)
+			if w.IsFullScreen() == settled {
 				resizer.changed(video.pixelSize())
 			}
 		})
 		fullScreen := func() {
-			settled = win.IsFullScreen()
+			settled = w.IsFullScreen()
 			video.resized()
 			video.applyDirect()
 			resizer.now(video.pixelSize())
+			streams.fullScreenChanged(settled)
 		}
-		win.OnEnterFullScreen(fullScreen)
-		win.OnLeaveFullScreen(fullScreen)
+		w.OnEnterFullScreen(fullScreen)
+		w.OnLeaveFullScreen(fullScreen)
+		w.OnClose(func(e *mygo.CloseEvent) {
+			if !streams.closeRequested() {
+				e.PreventDefault()
+			}
+		})
+		return w
+	}
+	app.SetStreamWindow(streamWindowHook{streams})
+	app.SetWindow(fullScreenHook{video.win.Load})
+	app.SetCursor(cursorHook{ptr})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go f.run(ctx)
+	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { streams.quitting = true })
+	mygo.App.OnQuitCanceled(func() { streams.quitting = false })
+	mygo.App.WhenReady(func() {
+		win := mygo.NewWindow(mygo.WindowOptions{
+			Title: "Planck", Width: 1280, Height: 800, MinWidth: 960, MinHeight: 600,
+			BackgroundColor: "#0E0F12", Content: app.Content(),
+		})
+		video.main.Store(win)
+		// The launcher is the app: closing it ends any stream and quits.
+		win.OnClosed(func() {
+			b.Disconnect()
+			mygo.App.Quit()
+		})
 	})
 	err = mygo.App.Run()
 	b.close()
 	return err
 }
 
+// Stream windows open at the launcher's default size, over the launcher,
+// so that they open on its display.
+const streamWidth, streamHeight = 1280, 800
+
+// newStreamWindow makes the window a stream shows in, over main. Main
+// thread.
+func newStreamWindow(title string, main *mygo.Window, content mygo.Content) *mygo.Window {
+	opts := mygo.WindowOptions{
+		Title: title, Width: streamWidth, Height: streamHeight, MinWidth: 640, MinHeight: 360,
+		BackgroundColor: "#0E0F12", Transparent: composeUnderUI, Content: content,
+	}
+	if main != nil && !main.IsDestroyed() {
+		opts.X, opts.Y = overWindow(main.Bounds(), streamWidth, streamHeight)
+	}
+	return mygo.NewWindow(opts)
+}
+
+// overWindow places a w x h window centred over r, its top-left corner
+// kept on r so that it opens on r's display.
+func overWindow(r mygo.Rectangle, w, h int) (x, y int) {
+	return r.X + max((r.Width-w)/2, 0), r.Y + max((r.Height-h)/2, 0)
+}
+
+// onMainAfter runs fn on the main thread after d, or on its next turn.
+func onMainAfter(d time.Duration, fn func()) {
+	if d <= 0 {
+		go mygo.RunOnMain(fn)
+		return
+	}
+	time.AfterFunc(d, func() { mygo.RunOnMain(fn) })
+}
+
 // videoView puts each stream's GPU surface under the window's UI and
 // tracks the window's size for it.
 type videoView struct {
 	logf func(string, ...any)
-	win  atomic.Pointer[mygo.Window]
-	cur  atomic.Pointer[surfaceSink]
+	// win is the stream's window, and main the launcher's, whose display
+	// and size a stream starting before its window has stand in.
+	win, main atomic.Pointer[mygo.Window]
+	cur       atomic.Pointer[surfaceSink]
+	streams   *streamWindows
+	// surfaces counts the surfaces on win, until each has closed; closed
+	// hears each close, on the main thread.
+	surfaces atomic.Int32
+	closed   func()
 	// size is the window's content size in DIPs and pixels in pixels,
 	// width in the high half; resize says the surface has yet to follow
 	// a change of it.
@@ -128,16 +197,39 @@ func (h cursorHook) SetCursorLocked(on bool) { h.l.setLocked(on) }
 func (h cursorHook) SetMenuOpen(open bool)   { h.l.setMenuOpen(open) }
 func (h cursorHook) StreamEnded()            { h.l.reset() }
 
-// fullScreenHook is the window for the overlay's Fullscreen switch.
-type fullScreenHook struct{ w *mygo.Window }
+// fullScreenHook is the stream's window for the overlay's Fullscreen
+// switch.
+type fullScreenHook struct{ win func() *mygo.Window }
 
-func (h fullScreenHook) Fullscreen() bool      { return h.w.IsFullScreen() }
-func (h fullScreenHook) SetFullscreen(on bool) { h.w.SetFullScreen(on) }
+func (h fullScreenHook) Fullscreen() bool {
+	w := h.win()
+	return w != nil && w.IsFullScreen()
+}
 
-// attach runs on the main thread.
+func (h fullScreenHook) SetFullscreen(on bool) {
+	if w := h.win(); w != nil {
+		w.SetFullScreen(on)
+	}
+}
+
+// attach takes the stream's window. Main thread.
 func (v *videoView) attach(w *mygo.Window) {
 	v.win.Store(w)
 	v.storeSize(w)
+}
+
+// detach lets the stream's window go as it closes. Main thread.
+func (v *videoView) detach() { v.win.Store(nil) }
+
+// surfaceLive reports whether a surface is still on the stream's window.
+func (v *videoView) surfaceLive() bool { return v.surfaces.Load() > 0 }
+
+// window is the stream's window, or the launcher's before it has one.
+func (v *videoView) window() *mygo.Window {
+	if w := v.win.Load(); w != nil {
+		return w
+	}
+	return v.main.Load()
 }
 
 func (v *videoView) storeSize(w *mygo.Window) {
@@ -152,19 +244,24 @@ func (v *videoView) pixelSize() (int, int) { return unpackSize(v.pixels.Load()) 
 
 func (v *videoView) contentSize() (int, int) { return unpackSize(v.size.Load()) }
 
-// liveSize reads the window's size in pixels now, for a stream that
-// starts before a resize or a full-screen transition was heard of.
+// liveSize reads the stream window's size in pixels now, for a stream
+// that starts before a resize or a full-screen transition was heard of. A
+// window on its way to full screen is waited for, so that the host makes
+// its display the final size once. Not on the main thread.
 func (v *videoView) liveSize() (int, int) {
-	if w := v.win.Load(); w != nil {
+	if v.streams != nil {
+		v.streams.waitReady(streamReadyWait)
+	}
+	if w := v.window(); w != nil {
 		mygo.RunOnMain(func() { v.storeSize(w) })
 	}
 	return v.pixelSize()
 }
 
-// display is the display the window is on.
+// display is the display the stream's window is on, or the launcher's.
 func (v *videoView) display() defaults.ClientDisplay {
 	var d defaults.ClientDisplay
-	if w := v.win.Load(); w != nil {
+	if w := v.window(); w != nil {
 		mygo.RunOnMain(func() { d = windowDisplay(w) })
 	}
 	return d
@@ -207,13 +304,21 @@ var errNoWindow = errors.New("no window to show the stream in")
 // open is the session's SinkOpener: a surface on the window, made on the
 // main thread, and a hardware decoder on its device.
 func (v *videoView) open(cfg decode.Config) (session.Sink, error) {
-	w := v.win.Load()
-	if w == nil {
-		return nil, errNoWindow
-	}
 	var h *surfaceHost
 	var err error
-	mygo.RunOnMain(func() { h, err = newSurfaceHost(w) })
+	mygo.RunOnMain(func() {
+		if v.streams != nil {
+			v.streams.ensure()
+		}
+		w := v.win.Load()
+		if w == nil {
+			err = errNoWindow
+			return
+		}
+		if h, err = newSurfaceHost(w); err == nil && h != nil {
+			v.surfaces.Add(1)
+		}
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -222,7 +327,10 @@ func (v *videoView) open(cfg decode.Config) (session.Sink, error) {
 	}
 	p, err := player.Open(h.surf, cfg, 0)
 	if err != nil {
-		mygo.RunOnMain(h.close)
+		mygo.RunOnMain(func() {
+			h.close()
+			v.surfaceClosed()
+		})
 		return nil, err
 	}
 	s := &surfaceSink{v: v, host: h, p: p}
@@ -293,6 +401,15 @@ func (s *surfaceSink) Close() error {
 			_ = s.host.surf.SetDirect(false)
 		}
 		s.host.close()
+		s.v.surfaceClosed()
 	})
 	return err
+}
+
+// surfaceClosed counts a surface off the window. Main thread.
+func (v *videoView) surfaceClosed() {
+	v.surfaces.Add(-1)
+	if v.closed != nil {
+		v.closed()
+	}
 }

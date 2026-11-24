@@ -35,6 +35,9 @@ type App struct {
 	streamView func(c *mui.Context)
 	window     WindowHook
 	cursor     CursorHook
+	// streamWin, when set, shows streams in a window of their own
+	// (StreamContent), and the window Content is in keeps the launcher.
+	streamWin StreamWindowHook
 	// videoTheme is theme with a clear window background, for a stream
 	// view whose video shows under the UI's layer.
 	videoTheme *mui.Theme
@@ -48,6 +51,9 @@ type App struct {
 	// built, for the overlay's key handlers.
 	ovl      overlay
 	frameNow time.Time
+	// ovlLive is set once the overlay began for the live stream, in the
+	// view that draws it.
+	ovlLive bool
 	// streamFull is set while the window is full screen because the
 	// stream's controls made it so, which the stream's end undoes;
 	// streamFullSeen once the window was seen full screen since.
@@ -72,14 +78,20 @@ type App struct {
 	mu           sync.Mutex
 	services     mui.Services
 	haveServices bool
-	connecting   string
-	cancel       context.CancelFunc
-	connectErr   string
-	settingsErr  string
-	hostingBusy  bool
-	pairBusy     bool
-	toPairing    bool
-	toHosts      bool
+	// streamServices are the stream window's, while it is open.
+	streamServices     mui.Services
+	haveStreamServices bool
+	connecting         string
+	// abandoned is set when the user closed the stream's window while it
+	// was connecting: a connect that succeeds anyway is dropped.
+	abandoned   bool
+	cancel      context.CancelFunc
+	connectErr  string
+	settingsErr string
+	hostingBusy bool
+	pairBusy    bool
+	toPairing   bool
+	toHosts     bool
 	// overlayShown is whether the overlay draws over the stream: the
 	// button, its tab, the menu, the metrics window or the toast. onOverlay
 	// hears it change.
@@ -100,6 +112,15 @@ func NewApp(backend Backend) *App {
 // Content is the window content to give mygo.WindowOptions.Content.
 func (a *App) Content() *mui.Content { return mui.View(a.View) }
 
+// StreamContent is the content of the stream's own window, for an app
+// that set SetStreamWindow.
+func (a *App) StreamContent() *mui.Content { return mui.View(a.StreamView) }
+
+// SetStreamWindow has streams show in a window of their own, which h opens
+// and closes, while Content keeps Hosts, Pairing and Settings. Call it on
+// the main thread before the first frame.
+func (a *App) SetStreamWindow(h StreamWindowHook) { a.streamWin = h }
+
 // SetStreamView sets what draws the video under the overlay, such as an
 // element a GPU surface presents into. Without one the stream view shows
 // the letterbox well. With one, a live stream paints no background at
@@ -115,9 +136,28 @@ func (a *App) SetStreamView(build func(c *mui.Context)) {
 func (a *App) Notify() {
 	a.mu.Lock()
 	s, ok := a.services, a.haveServices
+	ss, sok := a.streamServices, a.haveStreamServices
 	a.mu.Unlock()
 	if ok {
 		s.Invalidate()
+	}
+	if sok {
+		ss.Invalidate()
+	}
+}
+
+// StreamWindowClosed tells the app the user closed the stream's window:
+// the stream, or the connect under way, ends. Call it on the main thread.
+func (a *App) StreamWindowClosed() {
+	a.mu.Lock()
+	a.haveStreamServices = false
+	if a.connecting != "" {
+		a.abandoned = true
+	}
+	a.mu.Unlock()
+	a.cancelConnect()
+	if a.backend.Telemetry().Connected {
+		a.disconnect()
 	}
 }
 
@@ -146,49 +186,12 @@ func (a *App) openHostSettings(h HostInfo) {
 	a.screen = ScreenSettings
 }
 
-// View builds one frame of the client.
+// View builds one frame of the client. Without SetStreamWindow a stream
+// takes its place; with it the stream shows in StreamView, and View keeps
+// the launcher.
 func (a *App) View(c *mui.Context) {
-	c.SetTheme(a.theme)
-	a.mu.Lock()
-	if !a.haveServices {
-		a.services, a.haveServices = c.Services(), true
-	}
-	if a.toPairing {
-		a.toPairing = false
-		a.screen = ScreenPairing
-	}
-	toHosts := a.toHosts
-	a.toHosts = false
-	connecting := a.connecting
-	a.mu.Unlock()
-	a.frameNow = c.Now()
-
-	tel := a.backend.Telemetry()
-	// A stream, even one started from Pairing, ends on Hosts.
-	if a.streaming && !tel.Connected {
-		toHosts = true
-		a.noteOverlay(false)
-		a.leaveStreamFullscreen()
-		if a.cursor != nil {
-			a.cursor.StreamEnded()
-		}
-	}
-	if !a.streaming && tel.Connected {
-		w, h := c.Size()
-		a.ovl.begin(a.backend.OverlayLayout(), c.Now(), w, h)
-		a.streamFull, a.streamFullSeen = false, false
-	}
-	if tel.Connected {
-		a.watchStreamFullscreen()
-	}
-	a.streaming = tel.Connected
-	if toHosts {
-		a.screen, a.pin = ScreenHosts, ""
-	}
-	if tel.Connected && a.streamView != nil {
-		c.SetTheme(a.videoTheme)
-	}
-	if tel.Connected || connecting != "" {
+	tel, connecting := a.frame(c, false)
+	if a.streamWin == nil && (tel.Connected || connecting != "") {
 		a.streamScreen(c, tel, connecting)
 		return
 	}
@@ -213,8 +216,102 @@ func (a *App) View(c *mui.Context) {
 	})
 }
 
-// connect starts Backend.Connect off the main thread.
-func (a *App) connect(target, name string) {
+// StreamView builds one frame of the stream's own window (SetStreamWindow):
+// the connect under way, or the stream and its overlay. Switching hosts
+// shows the connect, and a window closing after its stream shows the
+// empty well.
+func (a *App) StreamView(c *mui.Context) {
+	tel, connecting := a.frame(c, true)
+	if connecting != "" && tel.Connected {
+		tel = Telemetry{}
+		a.noteOverlay(true)
+		c.SetTheme(a.theme)
+	}
+	a.streamScreen(c, tel, connecting)
+}
+
+// frame takes the backend's state for a frame of either window, and moves
+// the app along the stream's start and end. stream says the frame is the
+// stream window's.
+func (a *App) frame(c *mui.Context, stream bool) (Telemetry, string) {
+	c.SetTheme(a.theme)
+	// A stream window that is closing takes no more redraws.
+	live := stream && (a.streamWin == nil || a.streamWin.StreamWindowOpen())
+	a.mu.Lock()
+	if live {
+		a.streamServices, a.haveStreamServices = c.Services(), true
+	} else if !stream && !a.haveServices {
+		a.services, a.haveServices = c.Services(), true
+	}
+	if a.toPairing {
+		a.toPairing = false
+		a.screen = ScreenPairing
+	}
+	toHosts := a.toHosts
+	a.toHosts = false
+	connecting, pairBusy := a.connecting, a.pairBusy
+	a.mu.Unlock()
+	a.frameNow = c.Now()
+
+	tel := a.backend.Telemetry()
+	split := a.streamWin != nil
+	// A stream, even one started from Pairing, ends on Hosts.
+	if a.streaming && !tel.Connected {
+		toHosts = true
+		a.noteOverlay(false)
+		if split {
+			// The stream's window leaves full screen as it closes.
+			a.streamFull, a.streamFullSeen = false, false
+		} else {
+			a.leaveStreamFullscreen()
+		}
+		if a.cursor != nil {
+			a.cursor.StreamEnded()
+		}
+		a.ovlLive = false
+	}
+	if split && !a.streaming && tel.Connected {
+		// A stream from Pairing, or one the backend started, opens its
+		// window too; the launcher waits on Hosts.
+		toHosts = true
+		if !a.streamWin.StreamWindowOpen() {
+			a.streamWin.OpenStreamWindow(tel.HostName)
+		}
+	}
+	draws := stream || !split
+	if draws && tel.Connected && !a.ovlLive {
+		w, h := c.Size()
+		a.ovl.begin(a.backend.OverlayLayout(), c.Now(), w, h)
+		a.streamFull, a.streamFullSeen = false, false
+		a.ovlLive = true
+	}
+	if tel.Connected {
+		a.watchStreamFullscreen()
+	}
+	a.streaming = tel.Connected
+	if toHosts {
+		a.screen, a.pin = ScreenHosts, ""
+	}
+	if split && !tel.Connected && connecting == "" && !pairBusy && a.streamWin.StreamWindowOpen() {
+		a.mu.Lock()
+		a.haveStreamServices = false
+		a.mu.Unlock()
+		a.streamWin.CloseStreamWindow()
+	}
+	if draws && tel.Connected && a.streamView != nil {
+		c.SetTheme(a.videoTheme)
+	}
+	return tel, connecting
+}
+
+// connect starts Backend.Connect off the main thread, opening the
+// stream's window.
+func (a *App) connect(target, name string) { a.startConnect(target, name, true) }
+
+// startConnect starts Backend.Connect; window false leaves the stream's
+// window to the stream, for a host that will most likely ask to pair
+// first.
+func (a *App) startConnect(target, name string, window bool) {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.mu.Lock()
 	if a.connecting != "" {
@@ -222,12 +319,16 @@ func (a *App) connect(target, name string) {
 		cancel()
 		return
 	}
-	a.connecting, a.cancel, a.connectErr = name, cancel, ""
+	a.connecting, a.cancel, a.connectErr, a.abandoned = name, cancel, "", false
 	a.mu.Unlock()
+	if a.streamWin != nil && window {
+		a.streamWin.OpenStreamWindow(name)
+	}
 	go func() {
 		err := a.backend.Connect(ctx, target)
 		a.mu.Lock()
-		a.connecting, a.cancel = "", nil
+		abandoned := a.abandoned && err == nil
+		a.connecting, a.cancel, a.abandoned = "", nil, false
 		switch {
 		case errors.Is(err, ErrPairingRequired):
 			a.toPairing = true
@@ -236,8 +337,21 @@ func (a *App) connect(target, name string) {
 		}
 		a.mu.Unlock()
 		cancel()
+		if abandoned {
+			a.backend.Disconnect()
+		}
 		a.Notify()
 	}()
+}
+
+// resume brings back the stream from h: its window, or, without one, the
+// stream view in place of the launcher.
+func (a *App) resume(h HostInfo) {
+	if a.streamWin != nil && a.streaming {
+		a.streamWin.OpenStreamWindow(h.Name)
+		return
+	}
+	a.connect(h.ID, h.Name)
 }
 
 func (a *App) cancelConnect() {

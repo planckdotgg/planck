@@ -81,6 +81,9 @@ func (a *App) streamScreen(c *mui.Context, tel Telemetry, connecting string) {
 		well.Background(theme.RoleWell)
 	}
 	well.Children(func() {
+		if !tel.Connected && connecting == "" {
+			return
+		}
 		if !tel.Connected {
 			mui.Column(c).Fill().AlignItems(mui.Center).Justify(mui.Center).Gap(theme.Space4).Children(func() {
 				sliceMeter(c, 1, 4, theme.RoleAccent)

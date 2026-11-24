@@ -94,6 +94,15 @@ type ClientConfig struct {
 	// Overlay is where the stream overlay was left; nil before the first
 	// stream.
 	Overlay *OverlayLayout `json:"overlay,omitempty"`
+	// OpenFullscreen is whether a stream's window opens in full screen;
+	// nil is on (StreamsOpenFullscreen).
+	OpenFullscreen *bool `json:"openFullscreen,omitempty"`
+}
+
+// StreamsOpenFullscreen reports whether a stream's window opens in full
+// screen: on unless the user turned it off.
+func (c ClientConfig) StreamsOpenFullscreen() bool {
+	return c.OpenFullscreen == nil || *c.OpenFullscreen
 }
 
 // OverlayLayout places the stream overlay's button and metrics window,

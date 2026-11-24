@@ -502,7 +502,7 @@ func (a *App) cardActions(c *mui.Context, h HostInfo, st cardState, hover bool) 
 	case st == cardConnected:
 		mui.Row(c).FillWidth().Gap(theme.Space2).Children(func() {
 			if cardButton(c, ctaAccent, "Resume", "Resume "+h.Name, false).Grow(1).Clicked() {
-				a.connect(h.ID, h.Name)
+				a.resume(h)
 			}
 			if cardButton(c, ctaDisconnect, "Disconnect", "Disconnect from "+h.Name, false).Clicked() {
 				a.disconnect()
@@ -510,7 +510,7 @@ func (a *App) cardActions(c *mui.Context, h HostInfo, st cardState, hover bool) 
 		})
 	case st == cardUnpaired:
 		if cardButton(c, ctaOutline, "Pair & Connect", "Connect to "+h.Name, false).FillWidth().Clicked() {
-			a.connect(h.ID, h.Name)
+			a.startConnect(h.ID, h.Name, false)
 		}
 	case st == cardOffline && canConnect(h):
 		if cardButton(c, ctaMuted, "Reconnect", "Connect to "+h.Name, false).FillWidth().Clicked() {

@@ -122,7 +122,7 @@ func newBackend(c backendConfig) (*backend, error) {
 // start at their defaults each run.
 func settingsFrom(c config.ClientConfig) ui.Settings {
 	s := ui.Settings{AudioEnabled: c.AudioEnabled, ClipboardSend: c.ClipboardSend, ClipboardReceive: c.ClipboardReceive,
-		AudioVolume: 1, AudioMuted: c.AudioMuted}
+		AudioVolume: 1, AudioMuted: c.AudioMuted, OpenFullscreen: c.StreamsOpenFullscreen()}
 	if c.AudioVolume != nil {
 		s.AudioVolume = min(max(*c.AudioVolume, 0), 1)
 	}
@@ -805,6 +805,11 @@ func (b *backend) SaveSettings(s ui.Settings) error {
 		if s.AudioVolume != 1 {
 			v := s.AudioVolume
 			stored.AudioVolume = &v
+		}
+		stored.OpenFullscreen = nil
+		if !s.OpenFullscreen {
+			off := false
+			stored.OpenFullscreen = &off
 		}
 		return nil
 	})

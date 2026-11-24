@@ -111,6 +111,8 @@ type Settings struct {
 	// silences it and keeps the audio stream running.
 	AudioVolume float64
 	AudioMuted  bool
+	// OpenFullscreen opens each stream's window in full screen.
+	OpenFullscreen bool
 }
 
 // DockEdge is the stream view's edge the overlay button is docked to.
@@ -152,6 +154,22 @@ type OverlayLayout struct {
 type WindowHook interface {
 	Fullscreen() bool
 	SetFullscreen(on bool)
+}
+
+// StreamWindowHook opens and closes the window a stream shows in, apart
+// from the launcher's, which the app that made the launcher supplies
+// (SetStreamWindow). The UI calls it on the main thread; the window shows
+// App.StreamContent.
+type StreamWindowHook interface {
+	// OpenStreamWindow opens the window for a stream from host, in full
+	// screen if Settings.OpenFullscreen, or names the open one after host
+	// and brings it to the front.
+	OpenStreamWindow(host string)
+	// CloseStreamWindow leaves full screen, waits for the stream's video
+	// to let the window go, and closes it.
+	CloseStreamWindow()
+	// StreamWindowOpen reports whether the window is open and not closing.
+	StreamWindowOpen() bool
 }
 
 // CursorHook is the stream's mouse lock, which the app that streams

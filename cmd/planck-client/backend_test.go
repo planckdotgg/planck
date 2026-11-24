@@ -461,3 +461,42 @@ func TestBackendFailedSwitchEndsTheStream(t *testing.T) {
 		t.Fatalf("telemetry after the failed switch: %+v, want no stream", tel)
 	}
 }
+
+// TestBackendOpenFullscreenSetting: streams open in full screen on a
+// first run and from a client.json written before the setting; turning it
+// off lasts, and turning it back on leaves the default.
+func TestBackendOpenFullscreenSetting(t *testing.T) {
+	dir := t.TempDir()
+	if err := config.SaveClientConfig(dir, config.DefaultClientConfig()); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := newTestBackend(t, dir, nil)
+	s := b.Settings()
+	if !s.OpenFullscreen {
+		t.Fatal("a client.json without the setting opens streams windowed")
+	}
+	s.OpenFullscreen = false
+	if err := b.SaveSettings(s); err != nil {
+		t.Fatal(err)
+	}
+	again, _ := newTestBackend(t, dir, nil)
+	if again.Settings().OpenFullscreen {
+		t.Fatal("full screen came back on after a restart")
+	}
+	s = again.Settings()
+	s.OpenFullscreen = true
+	if err := again.SaveSettings(s); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := config.LoadClientConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.OpenFullscreen != nil || !stored.StreamsOpenFullscreen() {
+		t.Fatalf("stored %v, want the default (nil)", stored.OpenFullscreen)
+	}
+	fresh, _ := newTestBackend(t, t.TempDir(), nil)
+	if !fresh.Settings().OpenFullscreen {
+		t.Fatal("a first run opens streams windowed")
+	}
+}

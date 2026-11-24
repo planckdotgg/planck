@@ -37,6 +37,7 @@ func (a *App) settingsScreen(c *mui.Context) {
 		})
 		mui.Column(c).Grow(1).Basis(0).MinWidth(440).Gap(theme.Space5).Children(func() {
 			a.presentOverridePanel(c, e)
+			a.streamWindowPanel(c, &s)
 			a.hostingPanel(c, &s)
 			a.encoderPanel(c, &s)
 			a.networkPanel(c)
@@ -96,6 +97,13 @@ func (a *App) scopeBar(c *mui.Context, e *overrideEdit) {
 			e.resetToAuto()
 			a.drafts.err = ""
 		}
+	})
+}
+
+// streamWindowPanel says how a stream's own window opens.
+func (a *App) streamWindowPanel(c *mui.Context, s *Settings) {
+	panel(c, "Stream window", "", func() {
+		switchRow(c, "Open streams in full screen", "Each stream opens in its own window. "+a.shortcut(false, "F")+" switches full screen while streaming.", &s.OpenFullscreen, true)
 	})
 }
 
