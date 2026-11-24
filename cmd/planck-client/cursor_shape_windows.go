@@ -190,7 +190,8 @@ func newHCursor(shape *wire.CursorShape, dpi int) uintptr {
 	for i := 0; i < len(dst); i += 4 {
 		dst[i], dst[i+1], dst[i+2], dst[i+3] = px[i+2], px[i+1], px[i], px[i+3]
 	}
-	mask, _, _ := procCreateBitmap.Call(uintptr(w), uintptr(h), 1, 1, 0)
+	and := andMask(px, w, h)
+	mask, _, _ := procCreateBitmap.Call(uintptr(w), uintptr(h), 1, 1, uintptr(unsafe.Pointer(&and[0])))
 	if mask == 0 {
 		return 0
 	}
@@ -198,4 +199,20 @@ func newHCursor(shape *wire.CursorShape, dpi int) uintptr {
 	ii := winIconInfo{hotX: uint32(hx), hotY: uint32(hy), mask: mask, color: color}
 	cur, _, _ := procCreateIconIndirect.Call(uintptr(unsafe.Pointer(&ii)))
 	return cur
+}
+
+// andMask is a cursor's AND mask for RGBA pixels, rows of whole 16-bit
+// words, set where a pixel is clear: Windows draws a cursor whose pixels
+// all have alpha 0 by its mask, not its alpha, and a clear mask is black.
+func andMask(px []byte, w, h int) []byte {
+	stride := (w + 15) / 16 * 2
+	and := make([]byte, stride*h)
+	for y := range h {
+		for x := range w {
+			if px[(y*w+x)*4+3] == 0 {
+				and[y*stride+x/8] |= 0x80 >> (x % 8)
+			}
+		}
+	}
+	return and
 }

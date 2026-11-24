@@ -163,3 +163,78 @@ func TestCursorProcTakesSetCursor(t *testing.T) {
 	}
 	c.close()
 }
+
+var (
+	procCreateCompatibleDC = gdi32.NewProc("CreateCompatibleDC")
+	procSelectObject       = gdi32.NewProc("SelectObject")
+	procDeleteDC           = gdi32.NewProc("DeleteDC")
+	procGdiFlush           = gdi32.NewProc("GdiFlush")
+	procDrawIconEx         = user32.NewProc("DrawIconEx")
+)
+
+// drawnPixels draws the cursor h, side pixels square, on white and counts
+// the pixels it changed, and gives the blue of the first.
+func drawnPixels(t *testing.T, h uintptr, side int) (n int, blue byte) {
+	dc, _, _ := procCreateCompatibleDC.Call(0)
+	if dc == 0 {
+		t.Fatal("no DC")
+	}
+	defer procDeleteDC.Call(dc)
+	hdr := bitmapV4Header{width: int32(side), height: -int32(side), planes: 1, bitCount: 32}
+	hdr.size = uint32(unsafe.Sizeof(hdr))
+	var bits unsafe.Pointer
+	bm, _, _ := procCreateDIBSection.Call(dc, uintptr(unsafe.Pointer(&hdr)), 0, uintptr(unsafe.Pointer(&bits)), 0, 0)
+	if bm == 0 {
+		t.Fatal("no DIB")
+	}
+	defer procDeleteObject.Call(bm)
+	px := unsafe.Slice((*byte)(bits), side*side*4)
+	for i := range px {
+		px[i] = 0xff
+	}
+	old, _, _ := procSelectObject.Call(dc, bm)
+	defer procSelectObject.Call(dc, old)
+	if r, _, err := procDrawIconEx.Call(dc, 0, 0, h, uintptr(side), uintptr(side), 0, 0, 3); r == 0 { // DI_NORMAL
+		t.Fatal(err)
+	}
+	procGdiFlush.Call()
+	for i := 0; i < len(px); i += 4 {
+		if px[i] != 0xff || px[i+1] != 0xff || px[i+2] != 0xff {
+			if n == 0 {
+				blue = px[i]
+			}
+			n++
+		}
+	}
+	return n, blue
+}
+
+// TestHCursorDrawsClear: a black cursor opaque in its top half draws just
+// that half, one at half alpha blends, and one with alpha 0 everywhere, as
+// an app hiding its cursor sends, draws nothing rather than a black box.
+func TestHCursorDrawsClear(t *testing.T) {
+	half := make([]byte, 32*32*4)
+	for i := range 32 * 16 {
+		half[i*4+3] = 255
+	}
+	faint := make([]byte, 32*32*4)
+	for i := range 32 * 32 {
+		faint[i*4+3] = 128
+	}
+	for _, c := range []struct {
+		name              string
+		px                []byte
+		want              int
+		blueLow, blueHigh byte
+	}{{"half opaque", half, 32 * 16, 0, 0}, {"half alpha", faint, 32 * 32, 120, 135}, {"all clear", make([]byte, 32*32*4), 0, 0, 0}} {
+		h := newHCursor(&wire.CursorShape{ID: 1, Width: 32, Height: 32, DPI: 96, RGBA: c.px}, 96)
+		if h == 0 {
+			t.Fatalf("%s: no cursor", c.name)
+		}
+		got, blue := drawnPixels(t, h, 32)
+		procDestroyIcon.Call(h)
+		if got != c.want || got > 0 && (blue < c.blueLow || blue > c.blueHigh) {
+			t.Errorf("%s: drew %d pixels, the first blue %d; want %d, blue %d to %d", c.name, got, blue, c.want, c.blueLow, c.blueHigh)
+		}
+	}
+}
