@@ -478,13 +478,11 @@ func (c *Client) resolve(ctx context.Context, t Target) (resolved, error) {
 // capabilities is the JSON this client offers a host: its display,
 // decoders and link, the route it found, and the user's overrides.
 func (c *Client) capabilities(cfg ClientConfig, addr string, path discovery.PathKind) ([]byte, error) {
-	var caps defaults.ClientCapabilities
-	if cfg.Capabilities != nil {
-		caps = cfg.Capabilities()
-	} else {
-		caps = defaults.ClientCapabilities{OS: runtime.GOOS, Display: clientDisplay(), Decoders: clientDecoders(),
-			Present10Bit: clientPresent10Bit, DirectDisplay: clientDirectDisplay}
+	probe := cfg.Capabilities
+	if probe == nil {
+		probe = ProbeClientCapabilities
 	}
+	caps := probe()
 	if ap, err := netip.ParseAddrPort(addr); err == nil {
 		if name, link, err := linkinfo.Route(ap.Addr().Unmap()); err == nil {
 			caps.Link = link
@@ -495,6 +493,13 @@ func (c *Client) capabilities(cfg ClientConfig, addr string, path discovery.Path
 		return nil, err
 	}
 	return json.Marshal(clientCaps{V: clientCapsVersion, Client: caps, Route: defaults.RouteInfo{Kind: routeKind(path)}, Overrides: cfg.Overrides})
+}
+
+// ProbeClientCapabilities reads this device's main display and hardware
+// decoders.
+func ProbeClientCapabilities() defaults.ClientCapabilities {
+	return defaults.ClientCapabilities{OS: runtime.GOOS, Display: clientDisplay(), Decoders: clientDecoders(),
+		Present10Bit: clientPresent10Bit, DirectDisplay: clientDirectDisplay}
 }
 
 func (c *Client) pin(stored config.ClientConfig, key, addr string, fp [32]byte) error {

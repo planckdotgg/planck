@@ -50,12 +50,13 @@ func probeEncoders(cfg HostConfig) []defaults.EncoderCap {
 		}
 	}
 	var out []defaults.EncoderCap
-	seen := map[gpu.LUID]bool{}
+	// DXGI lists an adapter once per display path, under other LUIDs.
+	seen := map[string]bool{}
 	for _, a := range adapters {
-		if seen[a.LUID] || a.Vendor == gpu.VendorUnknown {
+		if seen[a.Name] || a.Vendor == gpu.VendorUnknown {
 			continue
 		}
-		seen[a.LUID] = true
+		seen[a.Name] = true
 		if cfg.Adapter != "" && !matchesAdapter(a, cfg.Adapter) {
 			continue
 		}

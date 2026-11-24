@@ -163,6 +163,7 @@ func headless(ctx context.Context, o options, d headlessDeps) (Summary, error) {
 		HandshakeTimeout: o.timeout,
 		Quality:          session.Quality{Codec: o.codec, Chroma: o.chroma, FPS: o.fps, BitrateKbps: o.bitrateKbps, Slices: o.slices},
 		Overrides:        o.overrides,
+		Capabilities:     headlessCapabilities,
 		OpenSink: func(c decode.Config) (session.Sink, error) {
 			inner, err := open(c)
 			if err != nil {
@@ -250,6 +251,14 @@ loop:
 		s.BitrateMbps = float64(cs.bytes.Load()) * 8 / 1e6 / s.Seconds
 	}
 	return s, nil
+}
+
+// headlessCapabilities is this device's, sized by its main display but
+// with no refresh limit: nothing is shown, so no screen paces the stream.
+func headlessCapabilities() defaults.ClientCapabilities {
+	c := session.ProbeClientCapabilities()
+	c.Display.MaxHz = 240
+	return c
 }
 
 func pathAllowed(m pathMode, path string) bool {
