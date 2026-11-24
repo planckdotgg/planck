@@ -194,7 +194,7 @@ type Session struct {
 
 	stats struct {
 		sent, recv, authFail, simDrop, complete, lost, recovered, pliSent, pliRecv, feedback, inputResent, inputDup, partial atomic.Uint64
-		clipSent, clipRecv, clipRefused                                                                                    atomic.Uint64
+		clipSent, clipRecv, clipRefused                                                                                      atomic.Uint64
 	}
 
 	clipMu  sync.Mutex
