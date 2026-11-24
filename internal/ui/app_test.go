@@ -371,3 +371,62 @@ func TestBackendNotifyAfterFirstFrame(t *testing.T) {
 	}
 	_ = a
 }
+
+// TestPairedButStreamFailed: the PIN paired but the stream did not start;
+// the app goes back to Hosts with the error instead of asking for a PIN
+// the host has rotated.
+func TestPairedButStreamFailed(t *testing.T) {
+	f := newFake()
+	f.pair = PairState{Status: PairPending, HostName: "bigboi"}
+	f.pinErr = errors.New("session: video sink: no window")
+	a, tt := newTester(t, f)
+	a.screen = ScreenPairing
+	tt.Frame()
+	click(t, tt, "PIN")
+	tt.Type("623543")
+	tt.Frame()
+	click(t, tt, "Pair")
+	eventually(t, tt, func() bool { return tt.HasText("Could not connect: session: video sink: no window") })
+	if a.screen != ScreenHosts || a.pin != "" {
+		t.Fatalf("screen %v, pin %q after pairing then failing to stream", a.screen, a.pin)
+	}
+}
+
+// TestStreamEndShowsHosts: a stream started from Pairing ends on Hosts.
+func TestStreamEndShowsHosts(t *testing.T) {
+	f := newFake()
+	f.pair = PairState{Status: PairPaired, HostName: "bigboi"}
+	a, tt := newTester(t, f)
+	a.screen = ScreenPairing
+	f.set(func(f *fakeBackend) { f.tel = sampleTelemetry() })
+	tt.Frame()
+	f.set(func(f *fakeBackend) { f.tel = Telemetry{} })
+	tt.Frame()
+	if a.screen != ScreenHosts {
+		t.Fatalf("screen %v after the stream ended, want Hosts", a.screen)
+	}
+}
+
+// TestPairedHostNotFoundConnects: a paired host typed in by address, which
+// discovery does not find, still connects from the list.
+func TestPairedHostNotFoundConnects(t *testing.T) {
+	f := newFake()
+	f.hosts = []HostInfo{{ID: "addr:192.168.188.126:41001", Name: "192.168.188.126:41001", Paired: true,
+		Address: "192.168.188.126:41001"}}
+	_, tt := newTester(t, f)
+	if tt.HasText("No hosts found yet") {
+		t.Fatalf("paired host not listed: %q", tt.Texts())
+	}
+	if err := tt.Click("Connect to 192.168.188.126:41001"); err != nil {
+		t.Fatalf("%v (texts: %q)", err, tt.Texts())
+	}
+	tt.Frame()
+	eventually(t, tt, func() bool { return tt.HasText("Connecting to 192.168.188.126:41001") })
+	f.mu.Lock()
+	got := slices.Clone(f.connects)
+	f.mu.Unlock()
+	if !slices.Equal(got, []string{"addr:192.168.188.126:41001"}) {
+		t.Fatalf("connects = %q", got)
+	}
+	f.connectResult <- errors.New("unreachable")
+}

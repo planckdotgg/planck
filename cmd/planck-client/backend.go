@@ -200,23 +200,42 @@ func (b *backend) dial(ctx context.Context, t session.Target, pin string) error 
 	if err != nil {
 		return err
 	}
-	if err := c.Connect(ctx, t); err != nil {
-		return err
-	}
-	stored, err := config.LoadClientConfig(b.dir)
+	err = c.Connect(ctx, t)
+	// The session pins a host as soon as it accepts this device, before
+	// the stream starts, which may still fail.
+	b.reloadPins()
 	if err != nil {
-		b.logf("planck: %v", err)
+		return err
 	}
 	b.mu.Lock()
 	b.client, b.target = c, t
 	b.tel = telemetry(c.Stats())
-	if stored.PinnedHosts != nil {
-		b.pinned = stored.PinnedHosts
-	}
 	b.mu.Unlock()
 	b.changed()
 	go b.follow(c)
 	return nil
+}
+
+func (b *backend) reloadPins() {
+	stored, err := config.LoadClientConfig(b.dir)
+	if err != nil {
+		b.logf("planck: %v", err)
+		return
+	}
+	b.mu.Lock()
+	b.pinned = stored.PinnedHosts
+	b.mu.Unlock()
+}
+
+// newPin reports whether after holds a pin that before did not, or a
+// pin with another fingerprint.
+func newPin(before, after map[string]config.PinnedHost) bool {
+	for key, p := range after {
+		if q, ok := before[key]; !ok || !strings.EqualFold(q.CertFingerprint, p.CertFingerprint) {
+			return true
+		}
+	}
+	return false
 }
 
 func quality(s ui.Settings) session.Quality {
@@ -446,6 +465,7 @@ func (b *backend) TrustTailscalePeer(ctx context.Context) error { return b.pairW
 func (b *backend) pairWith(ctx context.Context, pin string) error {
 	b.mu.Lock()
 	t := b.pairTo
+	before := b.pinned
 	b.pair.Status, b.pair.Error = ui.PairVerifying, ""
 	b.mu.Unlock()
 	b.changed()
@@ -454,6 +474,10 @@ func (b *backend) pairWith(ctx context.Context, pin string) error {
 	switch {
 	case err == nil:
 		b.pair.Status = ui.PairPaired
+	case newPin(before, b.pinned):
+		// The host took this device, and has rotated its PIN: the stream
+		// failed after pairing, and reconnects need no PIN.
+		b.pair.Status, b.pair.Error = ui.PairPaired, "Paired, but the stream did not start: "+err.Error()
 	case errors.Is(err, transport.ErrAuthDenied) && pin != "":
 		b.pair.Status, b.pair.Error = ui.PairFailed, "The host did not accept that PIN. Check the PIN it shows now and try again."
 	case errors.Is(err, transport.ErrAuthDenied):

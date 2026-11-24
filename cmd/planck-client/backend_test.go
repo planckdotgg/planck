@@ -12,6 +12,7 @@ import (
 	"github.com/planckdotgg/planck/internal/ui"
 	"github.com/planckdotgg/planck/pkg/audio"
 	"github.com/planckdotgg/planck/pkg/config"
+	"github.com/planckdotgg/planck/pkg/decode"
 	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/encode"
 	"github.com/planckdotgg/planck/pkg/input"
@@ -164,4 +165,44 @@ func TestBackendSettingsAndHosting(t *testing.T) {
 	if st := b.Hosting(); st.On {
 		t.Fatalf("hosting after off: %+v", st)
 	}
+}
+
+// TestBackendSinkFailsAfterPairing: the PIN pairs and the host rotates it,
+// then the video sink fails. Pairing reports paired with the error, not a
+// PIN to try again, the host is listed as paired at once, and connecting to
+// it from the list streams without a PIN.
+func TestBackendSinkFailsAfterPairing(t *testing.T) {
+	h := startFakeHost(t, "off")
+	b, _ := newTestBackend(t, t.TempDir(), nil)
+	ctx := context.Background()
+	sinkErr := errors.New("no window to show the stream in")
+	var failSink atomic.Bool
+	failSink.Store(true)
+	open := b.openSink
+	b.openSink = func(cfg decode.Config) (session.Sink, error) {
+		if failSink.Load() {
+			return nil, sinkErr
+		}
+		return open(cfg)
+	}
+
+	if err := b.Connect(ctx, h.Addr().String()); !errors.Is(err, ui.ErrPairingRequired) {
+		t.Fatalf("connect unpaired: %v, want ui.ErrPairingRequired", err)
+	}
+	if err := b.SubmitPIN(ctx, "246810"); !errors.Is(err, sinkErr) {
+		t.Fatalf("SubmitPIN: %v, want the sink's error", err)
+	}
+	if p := b.Pairing(); p.Status != ui.PairPaired || p.Error == "" {
+		t.Fatalf("pairing after the sink failed: %+v, want paired with an error", p)
+	}
+	hosts := b.Hosts()
+	if len(hosts) != 1 || !hosts[0].Paired || hosts[0].Address != h.Addr().String() {
+		t.Fatalf("hosts after pairing: %+v", hosts)
+	}
+
+	failSink.Store(false)
+	if err := b.Connect(ctx, hosts[0].ID); err != nil {
+		t.Fatalf("connect to the paired host: %v", err)
+	}
+	waitUntil(t, "the stream", func() bool { return b.Telemetry().Connected })
 }

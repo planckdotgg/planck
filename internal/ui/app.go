@@ -48,6 +48,7 @@ type App struct {
 	screen       Screen
 	quickConnect string
 	pin          string
+	streaming    bool
 
 	mu           sync.Mutex
 	services     mui.Services
@@ -60,6 +61,7 @@ type App struct {
 	hostingBusy  bool
 	pairBusy     bool
 	toPairing    bool
+	toHosts      bool
 }
 
 // NewApp returns the UI driving backend, and subscribes to its changes.
@@ -125,12 +127,22 @@ func (a *App) View(c *mui.Context) {
 		a.toPairing = false
 		a.screen = ScreenPairing
 	}
+	toHosts := a.toHosts
+	a.toHosts = false
 	connecting := a.connecting
 	a.mu.Unlock()
 
 	c.OnWindowShortcut(mui.Ctrl|mui.Alt, mui.KeyH, a.CycleHUD)
 
 	tel := a.backend.Telemetry()
+	// A stream, even one started from Pairing, ends on Hosts.
+	if a.streaming && !tel.Connected {
+		toHosts = true
+	}
+	a.streaming = tel.Connected
+	if toHosts {
+		a.screen, a.pin = ScreenHosts, ""
+	}
 	if tel.Connected && a.streamView != nil {
 		c.SetTheme(a.videoTheme)
 	}
@@ -225,9 +237,15 @@ func (a *App) pairing(step func(ctx context.Context) error) {
 	a.pairBusy = true
 	a.mu.Unlock()
 	go func() {
-		_ = step(context.Background())
+		err := step(context.Background())
+		paired := a.backend.Pairing().Status == PairPaired
 		a.mu.Lock()
 		a.pairBusy = false
+		if err != nil && paired {
+			// Paired, so the host's PIN has changed: the error belongs on
+			// Hosts, where connecting again needs none.
+			a.toHosts, a.connectErr = true, err.Error()
+		}
 		a.mu.Unlock()
 		a.Notify()
 	}()

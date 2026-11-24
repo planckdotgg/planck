@@ -28,6 +28,7 @@ type fakeBackend struct {
 	encoders      []EncoderInfo
 	pair          PairState
 	pins          []string
+	pinErr        error
 	trusts        int
 	cancels       int
 	connects      []string
@@ -103,7 +104,7 @@ func (f *fakeBackend) SubmitPIN(ctx context.Context, pin string) error {
 	defer f.lock()()
 	f.pins = append(f.pins, pin)
 	f.pair.Status = PairPaired
-	return nil
+	return f.pinErr
 }
 
 func (f *fakeBackend) TrustTailscalePeer(ctx context.Context) error {

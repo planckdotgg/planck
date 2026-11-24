@@ -121,7 +121,7 @@ func (a *App) featuredCard(c *mui.Context, h HostInfo) {
 				heading(c, h.Name, theme.TextPin)
 				hostBadges(c, h)
 			})
-			if h.Online {
+			if canConnect(h) {
 				b := button(c, buttonPrimary, "Connect", true).Label("Connect to " + h.Name)
 				if b.Clicked() {
 					a.connect(h.ID, h.Name)
@@ -144,6 +144,10 @@ func (a *App) featuredCard(c *mui.Context, h HostInfo) {
 		}
 	})
 }
+
+// canConnect: a host found now, or a paired one at its last address,
+// which discovery may never find (a host typed in by address).
+func canConnect(h HostInfo) bool { return h.Online || h.Paired && h.Address != "" }
 
 // hostDetails lists the readings a host reported, leaving out the rest.
 func hostDetails(h HostInfo) [][2]string {
@@ -184,7 +188,7 @@ func (a *App) hostRow(c *mui.Context, h HostInfo) {
 			}
 		})
 		mui.Box(c).Grow(1).Children(func() { hostBadges(c, h) })
-		if h.Online {
+		if canConnect(h) {
 			b := button(c, buttonSecondary, "Connect", false).Label("Connect to " + h.Name)
 			if b.Clicked() {
 				a.connect(h.ID, h.Name)
