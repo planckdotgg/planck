@@ -60,15 +60,21 @@ func TestHCursorSizeAndHotspot(t *testing.T) {
 			t.Errorf("%d DPI: %dx%d %dbpp hot %d,%d; want %d, hot %d,%d", c.dpi, bm.width, bm.height, bm.bitsPixel, ii.hotX, ii.hotY, c.side, c.hx, c.hy)
 		}
 	}
-	procDestroyIcon.Call(newHCursor(s, 144))
-	gdi, user := guiObjects(t)
-	cache := cursorCache[cursorKey, uintptr]{free: func(h uintptr) { procDestroyIcon.Call(h) }}
-	for i := range 500 {
-		cache.get(cursorKey{uint64(i), 144}, func() (uintptr, bool) { h := newHCursor(s, 144); return h, h != 0 })
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	round := func() {
+		cache := cursorCache[cursorKey, uintptr]{free: func(h uintptr) { procDestroyIcon.Call(h) }}
+		for i := range 500 {
+			cache.get(cursorKey{uint64(i), 144}, func() (uintptr, bool) { h := newHCursor(s, 144); return h, h != 0 })
+		}
+		cache.close()
 	}
-	cache.close()
+	round()
+	gdi, user := guiObjects(t)
+	round()
+	round()
 	if g, u := guiObjects(t); g > gdi || u > user {
-		t.Errorf("GDI objects %d to %d, USER objects %d to %d over 500 cursors", gdi, g, user, u)
+		t.Errorf("GDI objects %d to %d, USER objects %d to %d over 1000 cursors", gdi, g, user, u)
 	}
 }
 
@@ -80,8 +86,11 @@ func TestCursorProcTakesSetCursor(t *testing.T) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	var seen []uintptr
+	var child uintptr
 	proc := syscall.NewCallback(func(hwnd, msg, wp, lp uintptr) uintptr {
-		seen = append(seen, msg)
+		if hwnd == child {
+			seen = append(seen, msg)
+		}
 		r, _, _ := procDefWindowProcW.Call(hwnd, msg, wp, lp)
 		return r
 	})
@@ -104,7 +113,7 @@ func TestCursorProcTakesSetCursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	const wsChild = 0x40000000
-	child, _, err := procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(reg("MyGoSurface"))), 0, wsChild, 0, 0, 100, 100, top, 0, 0, 0)
+	child, _, err = procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(reg("MyGoSurface"))), 0, wsChild, 0, 0, 100, 100, top, 0, 0, 0)
 	if child == 0 {
 		t.Fatal(err)
 	}
