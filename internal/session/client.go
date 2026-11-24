@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"net/netip"
 	"path/filepath"
@@ -188,6 +189,12 @@ type ClientStats struct {
 	Glass    Latency
 	E2EGlass Latency
 
+	// CaptureMs and HostEncodeMs split Encode where the host acquired the
+	// picture, as p50s; both are 0 from a host that does not send
+	// HostStats.
+	CaptureMs    float64
+	HostEncodeMs float64
+
 	// FECParityPct is the parity share of the video datagrams received,
 	// estimated from datagram counts.
 	FECParityPct   float64
@@ -218,6 +225,8 @@ type Client struct {
 	conn   *conn
 	target Target
 	clip   *clipSync
+	// gain is the playback volume, a float64's bits.
+	gain atomic.Uint64
 }
 
 // NewClient prepares a client; the identity is created on first Connect.
@@ -232,6 +241,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	}
 	c := &Client{cfg: cfg, dir: dir, logf: cfg.Logf,
 		activity: func(s *transport.Session) uint64 { return s.Stats().PacketsReceived }}
+	c.gain.Store(math.Float64bits(1))
 	if c.logf == nil {
 		c.logf = log.Printf
 	}
@@ -274,6 +284,7 @@ type conn struct {
 
 	jb       *audio.JitterBuffer
 	player   audio.Player
+	gain     *atomic.Uint64
 	mic      *micSender
 	inputSeq atomic.Uint32
 
@@ -289,6 +300,7 @@ type conn struct {
 	encodeMs  float64
 	decodeMs  float64
 	presentMs float64
+	host      wire.HostStats
 	recv      rate
 	dataShard uint64
 
@@ -378,7 +390,7 @@ func (c *Client) connect(ctx context.Context, t Target) (*conn, error) {
 	cc := &conn{hostID: r.hostID, name: r.name, frames: make(chan *frameBuf, warmupQueue),
 		free: make(chan *frameBuf, warmupQueue+2), e2e: newWindow(latencyWindow), network: newWindow(latencyWindow),
 		encodeW: newWindow(latencyWindow), decodeW: newWindow(latencyWindow), presentW: newWindow(latencyWindow),
-		glassW: newWindow(latencyWindow), e2eGlassW: newWindow(latencyWindow), done: make(chan struct{})}
+		glassW: newWindow(latencyWindow), e2eGlassW: newWindow(latencyWindow), done: make(chan struct{}), gain: &c.gain}
 	for range warmupQueue + 2 {
 		cc.free <- &frameBuf{}
 	}
@@ -528,6 +540,10 @@ func (c *Client) dialRoute(ctx context.Context, cc *conn, r resolved) (*route, e
 					rt.bye.Store(true)
 				case *wire.Profile:
 					cc.resized(m.JSON, c.logf)
+				case *wire.HostStats:
+					cc.mu.Lock()
+					cc.host = *m
+					cc.mu.Unlock()
 				}
 			},
 			Clipboard: c.onClipboard,
@@ -1064,6 +1080,7 @@ func (cc *conn) audioLoop() {
 		if _, err := playout.Next(pcm); err != nil {
 			continue
 		}
+		applyGain(pcm, math.Float64frombits(cc.gain.Load()))
 		_ = cc.player.Write(pcm)
 	}
 }
@@ -1124,6 +1141,7 @@ func (cc *conn) stats() ClientStats {
 		s.FECParityPct = 100 * (video - float64(cc.dataShard)) / float64(cc.dataShard)
 	}
 	s.EncodeMs, s.DecodeMs, s.PresentMs = cc.encodeMs, cc.decodeMs, cc.presentMs
+	s.CaptureMs, s.HostEncodeMs = float64(cc.host.CaptureMicros)/1000, float64(cc.host.EncodeMicros)/1000
 	s.E2E, s.Network = cc.e2e.summary(), cc.network.summary()
 	s.Encode, s.Decode, s.Present = cc.encodeW.summary(), cc.decodeW.summary(), cc.presentW.summary()
 	s.Glass, s.E2EGlass = cc.glassW.summary(), cc.e2eGlassW.summary()
@@ -1311,6 +1329,21 @@ func (c *Client) SetClipboard(cfg ClipboardConfig) {
 	}
 	if sess := c.liveSession(); sess != nil {
 		c.sendPeerState(sess)
+	}
+}
+
+// SetVolume sets the stream's playback level, from 0 (silent) to 1 (as
+// the host sent it), at once and for every stream after.
+func (c *Client) SetVolume(v float64) {
+	c.gain.Store(math.Float64bits(min(max(v, 0), 1)))
+}
+
+func applyGain(pcm []int16, g float64) {
+	if g >= 1 {
+		return
+	}
+	for i, v := range pcm {
+		pcm[i] = int16(float64(v) * g)
 	}
 }
 

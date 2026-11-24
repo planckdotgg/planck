@@ -7,7 +7,7 @@ import (
 )
 
 // TestStreamViewClearsBackground: with a stream view, a live stream paints
-// nothing under the HUD, so a GPU surface beneath the UI's layer shows;
+// nothing under the overlay, so a GPU surface beneath the UI's layer shows;
 // without one the letterbox well stays opaque.
 func TestStreamViewClearsBackground(t *testing.T) {
 	f := newFake()
@@ -27,8 +27,8 @@ func TestStreamViewClearsBackground(t *testing.T) {
 	if _, _, _, a := tt.Image().At(20, 880).RGBA(); a != 0 {
 		t.Fatalf("stream view background: alpha %#x, want clear", a)
 	}
-	if _, ok := tt.Access(hudSummary(f.tel)); !ok {
-		t.Fatal("HUD pill missing over the stream view")
+	if _, ok := tt.Access("Stream controls"); !ok {
+		t.Fatal("overlay button missing over the stream view")
 	}
 
 	f.Disconnect()

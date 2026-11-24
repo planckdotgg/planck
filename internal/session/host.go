@@ -629,7 +629,11 @@ func (h *Host) onControl(m wire.Message) {
 	case *wire.StatsReport:
 		h.mu.Lock()
 		h.report = *m
+		st := h.cur
 		h.mu.Unlock()
+		if st != nil && st.sess.PeerFeatures()&wire.FeatureHostStats != 0 {
+			_ = st.sess.SendControl(st.hostStats())
+		}
 	case *wire.Resize:
 		h.mu.Lock()
 		st := h.cur

@@ -2,7 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/encode"
@@ -72,21 +71,6 @@ func codecLabel(c encode.Codec, ch encode.Chroma) string {
 	return name
 }
 
-// hudSummary is the HUD pill's reading, also its accessible label:
-// "8.4 ms · 240 FPS · 80 Mbps · LAN direct · HEVC 10-bit".
-func hudSummary(t Telemetry) string {
-	parts := []string{
-		formatMs(t.TotalMs) + " ms",
-		fmt.Sprintf("%.0f FPS", t.FPS),
-		formatMbps(t.BitrateMbps) + " Mbps",
-		pathLabel(t.PathKind),
-	}
-	if s := codecLabel(t.Codec, t.Chroma); s != "" {
-		parts = append(parts, s)
-	}
-	return strings.Join(parts, " · ")
-}
-
 func resolutionLabel(w, h int) string {
 	if w <= 0 || h <= 0 {
 		return ""
@@ -106,6 +90,3 @@ func machineWord(goos string) string {
 func derpCapMbps() int {
 	return discovery.PathTailscaleDERP.RecommendedMaxBitrateKbps() / 1000
 }
-
-// lanCapMbps is the highest bitrate the LAN path was measured to sustain.
-func lanCapMbps() int { return discovery.LANMaxBitrateKbps / 1000 }

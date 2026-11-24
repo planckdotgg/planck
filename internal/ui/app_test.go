@@ -81,8 +81,8 @@ func TestHostsListAndConnect(t *testing.T) {
 		defer a.mu.Unlock()
 		return a.connecting == ""
 	})
-	if !tt.HasText("8.4") || !tt.HasText("LAN direct") {
-		t.Fatalf("HUD missing after connect: %q", tt.Texts())
+	if _, ok := tt.Access("Stream controls"); !ok {
+		t.Fatalf("overlay button missing after connect: %q", tt.Texts())
 	}
 }
 
@@ -272,69 +272,6 @@ func TestSettingsNoSaveWithoutChange(t *testing.T) {
 	defer f.mu.Unlock()
 	if len(f.saved) != 0 {
 		t.Fatalf("saved without a change: %d times", len(f.saved))
-	}
-}
-
-func TestHUDDrawerActions(t *testing.T) {
-	f := newFake()
-	f.tel = sampleTelemetry()
-	a, tt := newTester(t, f)
-	if _, ok := tt.Access(hudSummary(f.tel)); !ok {
-		t.Fatalf("HUD pill label missing")
-	}
-	snapshot(t, tt, "hud-pill")
-	click(t, tt, "Show stream controls")
-	if !tt.HasText("Glass to glass, by stage") || !tt.HasText("1920 x 1080, 240 FPS, HEVC 10-bit") {
-		t.Fatalf("drawer missing: %q", tt.Texts())
-	}
-	for _, s := range []string{"encode", "1.5 ms", "network", "0.7 ms", "decode", "1.0 ms", "present", "2.5 ms"} {
-		if !tt.HasText(s) {
-			t.Errorf("stage reading %q missing", s)
-		}
-	}
-	snapshot(t, tt, "hud-drawer")
-
-	click(t, tt, "Force keyframe")
-	click(t, tt, "4:4:4")
-	click(t, tt, "10-bit")
-	click(t, tt, "150 Mbps")
-	click(t, tt, "System keys")
-	got, ov := f.Settings(), f.override("h-bigboi")
-	if ov.Chroma != "444" || ov.BitDepth != "10" || ov.BitrateMbps != 150 || !got.SystemKeysCapture {
-		t.Fatalf("drawer settings = %+v, overrides %+v", got, ov)
-	}
-	if f.keyframes != 1 {
-		t.Fatalf("keyframes = %d", f.keyframes)
-	}
-	click(t, tt, "Disconnect")
-	if f.disconnects != 1 {
-		t.Fatalf("disconnects = %d", f.disconnects)
-	}
-	if a.hudMode() != HUDPill {
-		t.Fatalf("HUD mode after disconnect = %v", a.hudMode())
-	}
-	if !tt.HasText("Looking for hosts") {
-		t.Fatalf("not back on hosts: %q", tt.Texts())
-	}
-}
-
-func TestCycleHUD(t *testing.T) {
-	f := newFake()
-	f.tel = sampleTelemetry()
-	a, tt := newTester(t, f)
-	want := []HUDMode{HUDDrawer, HUDHidden, HUDPill}
-	for _, m := range want {
-		tt.Key(mui.Ctrl|mui.Alt, mui.KeyH)
-		tt.Frame()
-		if a.hudMode() != m {
-			t.Fatalf("after Ctrl+Alt+H mode = %v, want %v", a.hudMode(), m)
-		}
-	}
-	a.CycleHUD()
-	a.CycleHUD()
-	tt.Frame()
-	if tt.HasText("8.4") {
-		t.Fatal("hidden HUD still shows")
 	}
 }
 

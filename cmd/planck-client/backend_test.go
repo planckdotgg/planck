@@ -345,3 +345,49 @@ func TestRouteAllowed(t *testing.T) {
 		t.Fatal("lan with only a tailnet route: no error")
 	}
 }
+
+// TestTelemetryStages: the host's capture stage and the round trip reach
+// the UI, and the encode stage leaves capture out once the host splits it.
+func TestTelemetryStages(t *testing.T) {
+	cs := session.ClientStats{Connected: true, RTTMs: 0.41, MaxBitrateKbps: 150_000, FramesDropped: 4}
+	cs.Encode.P50 = 4.3
+	tel := telemetry(cs)
+	if tel.EncodeMs != 4.3 || tel.CaptureMs != 0 || tel.RTTMs != 0.41 || tel.CeilingMbps != 150 || tel.FramesDropped != 4 {
+		t.Fatalf("without host stats: %+v", tel)
+	}
+	cs.CaptureMs, cs.HostEncodeMs = 2.9, 1.4
+	if tel := telemetry(cs); tel.CaptureMs != 2.9 || tel.EncodeMs != 1.4 {
+		t.Fatalf("with host stats: capture %v encode %v, want 2.9 and 1.4", tel.CaptureMs, tel.EncodeMs)
+	}
+}
+
+// TestBackendOverlayAndSoundPersist: the overlay's layout, the volume and
+// mute, and the clipboard switches come back on the next run.
+func TestBackendOverlayAndSoundPersist(t *testing.T) {
+	dir := t.TempDir()
+	b, _ := newTestBackend(t, dir, nil)
+	if s := b.Settings(); s.AudioVolume != 1 || s.AudioMuted || s.ClipboardSend || s.ClipboardReceive {
+		t.Fatalf("first run: %+v", s)
+	}
+	if l := b.OverlayLayout(); l.Placed {
+		t.Fatalf("first run layout: %+v", l)
+	}
+	s := b.Settings()
+	s.AudioVolume, s.AudioMuted, s.ClipboardSend, s.ClipboardReceive = 0.35, true, true, true
+	if err := b.SaveSettings(s); err != nil {
+		t.Fatal(err)
+	}
+	l := ui.OverlayLayout{Placed: true, Dock: ui.DockRight, DockFrac: 0.25, ButtonX: 0.9, ButtonY: 0.3,
+		Metrics: true, MetricsX: 0.5, MetricsY: 0.1, MetricsCompact: true}
+	if err := b.SaveOverlayLayout(l); err != nil {
+		t.Fatal(err)
+	}
+	again, _ := newTestBackend(t, dir, nil)
+	got := again.Settings()
+	if got.AudioVolume != 0.35 || !got.AudioMuted || !got.ClipboardSend || !got.ClipboardReceive {
+		t.Fatalf("next run: %+v", got)
+	}
+	if gl := again.OverlayLayout(); gl != l {
+		t.Fatalf("next run layout %+v, want %+v", gl, l)
+	}
+}

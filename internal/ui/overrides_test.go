@@ -2,8 +2,6 @@ package ui
 
 import (
 	"errors"
-	"slices"
-	"strings"
 	"testing"
 
 	mui "github.com/egoist/mygo/ui"
@@ -168,99 +166,4 @@ func sampleProfile() *defaults.ResolvedProfile {
 	return &defaults.ResolvedProfile{Codec: defaults.CodecHEVC, BitDepth: 10, Width: 1920, Height: 1080, FPS: 120,
 		VirtualDisplay: true, DirectDisplay: true, EncodeAdapter: gpu.Adapter{Name: "NVIDIA GeForce RTX 4080"},
 		Warnings: []string{"fps 240: clamped to 120 Hz"}}
-}
-
-// TestDrawerOverrides: the drawer shows the resolved stream and its
-// fallbacks, and its quick picks and Reset to Auto act on this host only.
-func TestDrawerOverrides(t *testing.T) {
-	f := newFake()
-	f.tel = sampleTelemetry()
-	f.tel.Profile = sampleProfile()
-	f.overrides[""] = defaults.UserOverrides{Codec: "hevc"}
-	a, tt := newTester(t, f)
-	a.setHUD(HUDDrawer)
-	tt.Frame()
-	if !tt.HasText("HEVC 10-bit 4:2:0 · 1080p120 · SudoVDA (RTX 4080) · Direct") || !tt.HasText("fps 240: clamped to 120 Hz") {
-		t.Fatalf("resolved stream missing: %q", tt.Texts())
-	}
-	snapshot(t, tt, "hud-drawer-overrides")
-	for _, name := range []string{"Codec: PyroWave", "Frame rate: 240", "Virtual display: Off", "Direct to display: Off", "Bitrate: Auto"} {
-		click(t, tt, name)
-	}
-	if got := f.override("h-bigboi"); got.Codec != "pyrowave" || got.FPS != "240" || got.VirtualDisplay != "off" || got.MetalDirectDisplay != "off" {
-		t.Fatalf("bigboi: %+v", got)
-	}
-	click(t, tt, "Reset to Auto")
-	if got := f.override("h-bigboi"); got != (defaults.UserOverrides{}).Normalize() {
-		t.Fatalf("bigboi after reset: %+v", got)
-	}
-	if got := f.override(""); got.Codec != "hevc" {
-		t.Fatalf("drawer changed all hosts: %+v", got)
-	}
-}
-
-// TestDrawerShowsInherited: as in Settings, the drawer's auto knobs say
-// what they follow from every host's overrides.
-func TestDrawerShowsInherited(t *testing.T) {
-	f := newFake()
-	f.tel = sampleTelemetry()
-	f.overrides[""] = defaults.UserOverrides{Codec: "hevc", BitrateMbps: 300}
-	a, tt := newTester(t, f)
-	a.setHUD(HUDDrawer)
-	tt.Frame()
-	if !tt.HasText("Auto follows all hosts: HEVC") || !tt.HasText("Auto follows all hosts: 300 Mbps") {
-		t.Fatalf("inherited values not shown: %q", tt.Texts())
-	}
-	click(t, tt, "Codec: AV1")
-	if tt.HasText("Auto follows all hosts: HEVC") {
-		t.Fatal("a knob set for this host still says it follows all hosts")
-	}
-}
-
-// TestDrawerChange: OnDrawerChange hears each open and close, from the
-// pill's button, the hotkey and disconnecting, and nothing else.
-func TestDrawerChange(t *testing.T) {
-	f := newFake()
-	f.tel = sampleTelemetry()
-	a, tt := newTester(t, f)
-	var got []bool
-	a.OnDrawerChange(func(open bool) { got = append(got, open) })
-	click(t, tt, "Show stream controls")
-	if !a.DrawerOpen() {
-		t.Fatal("drawer not open")
-	}
-	click(t, tt, "Hide stream controls")
-	a.CycleHUD() // pill to drawer
-	a.CycleHUD() // drawer to hidden
-	a.CycleHUD() // hidden to pill: no change
-	a.CycleHUD() // pill to drawer
-	tt.Frame()
-	click(t, tt, "Disconnect")
-	if want := []bool{true, false, true, false, true, false}; !slices.Equal(got, want) {
-		t.Fatalf("drawer changes %v, want %v", got, want)
-	}
-	if a.DrawerOpen() || a.HUD() != HUDPill {
-		t.Fatalf("after disconnect: open %v, mode %v", a.DrawerOpen(), a.HUD())
-	}
-}
-
-func TestProfileLine(t *testing.T) {
-	for _, tc := range []struct {
-		p    *defaults.ResolvedProfile
-		want string
-	}{
-		{nil, ""},
-		{sampleProfile(), "HEVC 10-bit 4:2:0 · 1080p120 · SudoVDA (RTX 4080) · Direct"},
-		{&defaults.ResolvedProfile{Codec: defaults.CodecPyroWave, BitDepth: 8, Chroma444: true, Width: 1728, Height: 1117, FPS: 120,
-			EncodeAdapter: gpu.Adapter{Name: "AMD Radeon RX 6700 XT"}}, "PyroWave 8-bit 4:4:4 · 1728x1117 @ 120 · Radeon RX 6700 XT"},
-		{&defaults.ResolvedProfile{Codec: defaults.CodecAV1, BitDepth: 8, Width: 3840, Height: 2160, FPS: 60, VirtualDisplay: true},
-			"AV1 8-bit 4:2:0 · 2160p60 · SudoVDA"},
-	} {
-		if got := profileLine(tc.p); got != tc.want {
-			t.Errorf("profileLine = %q, want %q", got, tc.want)
-		}
-	}
-	if strings.Contains(profileLine(sampleProfile()), "NVIDIA") {
-		t.Error("brand words kept")
-	}
 }

@@ -265,21 +265,3 @@ func TestSettingsHostName(t *testing.T) {
 		t.Fatalf("other settings changed: %+v, %d override saves", got, f.ovSaves)
 	}
 }
-
-func TestHUDRouteAndDatagram(t *testing.T) {
-	f := newFake()
-	f.tel = sampleTelemetry()
-	f.tel.DatagramBytes = 1152
-	a, tt := newTester(t, f)
-	a.setHUD(HUDDrawer)
-	tt.Frame()
-	if !tt.HasText("1920 x 1080, 240 FPS, HEVC 10-bit, 1152 B datagrams") || !tt.HasText("LAN direct") {
-		t.Fatalf("drawer: %q", tt.Texts())
-	}
-	f.set(func(f *fakeBackend) { f.tel.PathKind = discovery.PathTailscaleDirect })
-	tt.Frame()
-	if !tt.HasText("Tailscale direct") || tt.HasText("LAN direct") {
-		t.Fatalf("route did not follow the move: %q", tt.Texts())
-	}
-	snapshot(t, tt, "hud-drawer-tailscale")
-}

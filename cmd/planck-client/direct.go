@@ -3,36 +3,74 @@
 package main
 
 import (
-	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
 
-	"github.com/planckdotgg/planck/internal/session"
 	"github.com/planckdotgg/planck/pkg/defaults"
-	"github.com/planckdotgg/planck/pkg/discovery"
-	"github.com/planckdotgg/planck/pkg/player"
 )
 
+// directSettle is the least time between two swaps of the present path,
+// each of which costs a frame of pacing.
+const directSettle = 250 * time.Millisecond
+
 // directMode decides when the stream's surface scans out directly. In
-// direct mode MyGo's layers stop compositing, so its pill and drawer do not
-// show: the pill is drawn into the video instead, and the drawer opening
-// leaves direct mode until it closes.
+// direct mode MyGo's layers stop compositing, so nothing of the overlay
+// would show: the surface goes direct only while the overlay draws
+// nothing, and comes back to the compositor as soon as it draws again.
 type directMode struct {
 	allowed atomic.Bool
-	drawer  atomic.Bool
+	overlay atomic.Bool
+
+	mu   sync.Mutex
+	gen  uint64
+	last time.Time
 }
 
-func directWanted(allowed, fullScreen, drawer bool) bool { return allowed && fullScreen && !drawer }
+func directWanted(allowed, fullScreen, overlay bool) bool { return allowed && fullScreen && !overlay }
 
-// applyDirect runs on the main thread.
+// directDelay is how long a swap waits: the overlay coming back swaps at
+// once, and going direct waits directSettle, so that a menu closed and
+// opened again swaps nothing; neither comes within directSettle of the
+// last swap.
+func directDelay(toDirect bool, now, last time.Time) time.Duration {
+	wait := directSettle - now.Sub(last)
+	if toDirect {
+		wait = max(wait, directSettle)
+	}
+	return max(wait, 0)
+}
+
+// overlayChanged hears the stream overlay start or stop drawing. It runs
+// inside the UI's frame, so the surface changes after it, on the main
+// thread.
+func (v *videoView) overlayChanged(shown bool) {
+	v.mode.overlay.Store(shown)
+	m := &v.mode
+	m.mu.Lock()
+	m.gen++
+	gen, d := m.gen, directDelay(!shown, time.Now(), m.last)
+	m.mu.Unlock()
+	time.AfterFunc(d, func() {
+		m.mu.Lock()
+		current := m.gen == gen
+		m.mu.Unlock()
+		if current {
+			mygo.RunOnMain(v.applyDirect)
+		}
+	})
+}
+
+// applyDirect runs on the main thread. A swap asks for a keyframe, so the
+// new present path starts on one.
 func (v *videoView) applyDirect() {
 	w, h := v.win.Load(), v.cur.Load()
 	if w == nil || h == nil {
 		return
 	}
-	want := directWanted(v.mode.allowed.Load(), w.IsFullScreen(), v.mode.drawer.Load())
+	want := directWanted(v.mode.allowed.Load(), w.IsFullScreen(), v.mode.overlay.Load())
 	if h.surf.Direct() == want {
 		return
 	}
@@ -41,65 +79,19 @@ func (v *videoView) applyDirect() {
 		v.mode.allowed.Store(false)
 		return
 	}
+	v.mode.mu.Lock()
+	v.mode.last = time.Now()
+	v.mode.mu.Unlock()
 	v.drawable.Store(packSize(h.surf.Size()))
+	if v.keyframe != nil {
+		v.keyframe()
+	}
 	v.logf("planck: direct display %v", want)
 }
 
-// drawerChanged hears the UI's stream drawer open or close. It runs inside
-// the UI's frame, so the surface changes after it, on the main thread.
-func (v *videoView) drawerChanged(open bool) {
-	v.mode.drawer.Store(open)
-	go mygo.RunOnMain(v.applyDirect)
-}
-
-// hudLoop feeds the pill drawn into the video while direct mode hides the
-// window's own, until stop closes.
-func (v *videoView) hudLoop(s *surfaceSink, stop <-chan struct{}) {
-	t := time.NewTicker(250 * time.Millisecond)
-	defer t.Stop()
-	for {
-		select {
-		case <-stop:
-			return
-		case <-t.C:
-		}
-		st := player.HUDState{Visible: s.host.surf.Direct() && (v.hudHidden == nil || !v.hudHidden())}
-		if st.Visible && v.stats != nil {
-			if cs, ok := v.stats(); ok {
-				st = hudState(cs, s.profile.Load())
-				st.Visible = true
-			}
-		}
-		s.p.SetHUD(st)
-	}
-}
-
-func hudState(cs session.ClientStats, p *defaults.ResolvedProfile) player.HUDState {
-	st := player.HUDState{FPS: cs.FPS, Mbps: cs.Kbps / 1000, LatencyMs: cs.E2EGlass.P50, Codec: cs.Codec}
-	if st.LatencyMs == 0 {
-		st.LatencyMs = cs.E2E.P50
-	}
-	switch cs.Path {
-	case discovery.PathLANDirect.String():
-		st.Signal, st.Route = player.SignalDirect, "LAN"
-	case discovery.PathTailscaleDirect.String():
-		st.Signal, st.Route = player.SignalDirect, "Tailscale"
-	default:
-		st.Signal, st.Route = player.SignalRelay, "Relay"
-	}
-	if cs.LossPct > 2 {
-		st.Signal = player.SignalFault
-	}
-	if p != nil && p.Codec != defaults.CodecPyroWave {
-		st.Codec = fmt.Sprintf("%s %d-bit", cs.Codec, p.BitDepth)
-	}
-	return st
-}
-
 // SetProfile takes the session's resolved profile: whether direct display
-// is allowed, and the HUD's codec label.
+// is allowed.
 func (s *surfaceSink) SetProfile(p *defaults.ResolvedProfile) {
-	s.profile.Store(p)
 	s.v.mode.allowed.Store(p.DirectDisplay)
 	mygo.RunOnMain(s.v.applyDirect)
 }

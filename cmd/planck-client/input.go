@@ -93,8 +93,23 @@ func (f *inputForwarder) sendButton(b int, pressed bool) {
 	f.send(input.Event{Type: input.TypeMouseButton, Button: input.MouseButton{Button: hb, Pressed: pressed}})
 }
 
-// hudChord is the HUD hotkey's modifiers; its key stays with the client.
-const hudChord = mui.Ctrl | mui.Alt
+// overlayChord is the modifiers of the stream overlay's keys, which stay
+// with the client, even while it captures the system's keys.
+const overlayChord = mui.Ctrl | mui.Alt
+
+// overlayKey reports whether k with m is one of the overlay's keys.
+func overlayKey(k mui.Key, m mui.Modifiers) bool {
+	if m&overlayChord != overlayChord {
+		return false
+	}
+	switch k {
+	case mui.KeyO, mui.KeyP, mui.KeyH, mui.KeyM, mui.KeyU, mui.KeyF, mui.KeyI:
+		return true
+	case mui.KeyD:
+		return m&mui.Shift != 0
+	}
+	return false
+}
 
 // keyboard sends the modifiers and keys that changed since the last
 // frame, modifiers first going down and last coming up.
@@ -112,14 +127,12 @@ func (f *inputForwarder) keyboard(held []mui.Key, m mui.Modifiers) {
 		}
 	}
 	for _, k := range held {
-		if !slices.Contains(f.keys, k) && !(k == mui.KeyH && m&hudChord == hudChord) {
+		if !slices.Contains(f.keys, k) && !overlayKey(k, m) {
 			f.sendKey(k, true)
 		}
 	}
 	f.keys = append(f.keys[:0], held...)
-	if m&hudChord == hudChord {
-		f.keys = slices.DeleteFunc(f.keys, func(k mui.Key) bool { return k == mui.KeyH })
-	}
+	f.keys = slices.DeleteFunc(f.keys, func(k mui.Key) bool { return overlayKey(k, m) })
 	for _, mk := range modifierKeys {
 		if mods&mk.bit == 0 && f.mods&mk.bit != 0 {
 			f.mods &^= mk.bit

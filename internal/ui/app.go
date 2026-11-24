@@ -1,7 +1,7 @@
 // Package ui is Planck's desktop client interface, drawn with MyGo: the
 // icon rail, the Hosts, Pairing and Settings screens, and the stream view
-// with its telemetry HUD. It reads and drives a Backend and holds no
-// networking of its own.
+// with its overlay. It reads and drives a Backend and holds no networking
+// of its own.
 package ui
 
 import (
@@ -25,36 +25,15 @@ const (
 	ScreenSettings
 )
 
-// HUDMode is how much of the HUD shows over the stream. The pill shows
-// for a while on connect, then while the pointer is at the top edge or
-// over it, unless pinned; the drawer keeps it showing; hidden turns the
-// HUD off.
-type HUDMode int
-
-const (
-	HUDPill HUDMode = iota
-	HUDDrawer
-	HUDHidden
-)
-
-const (
-	// hudReveal is how long the pill shows on connect and after the HUD
-	// hotkey brings it back.
-	hudReveal = 2500 * time.Millisecond
-	// hudLinger is how long it stays after the pointer leaves it.
-	hudLinger = 1500 * time.Millisecond
-	// hudEdge is the band along the top of the stream that reveals it.
-	hudEdge = theme.Space5
-)
-
 // App is the client UI. Build it with NewApp and mount Content in a
-// window. Its view runs on the main thread; Notify, CycleHUD and the
-// backend's change callback may run on any goroutine.
+// window. Its view runs on the main thread; Notify and the backend's
+// change callback may run on any goroutine.
 type App struct {
 	backend    Backend
 	theme      *mui.Theme
 	goos       string
 	streamView func(c *mui.Context)
+	window     WindowHook
 	// videoTheme is theme with a clear window background, for a stream
 	// view whose video shows under the UI's layer.
 	videoTheme *mui.Theme
@@ -64,7 +43,10 @@ type App struct {
 	quickConnect string
 	pin          string
 	streaming    bool
-	hudPinned    bool
+	// ovl is the stream overlay; frameNow is the time of the frame being
+	// built, for the overlay's key handlers.
+	ovl      overlay
+	frameNow time.Time
 	// renaming is the HostID whose card shows the rename body; renameOpen
 	// selects its text on the frame it opens.
 	renaming   string
@@ -81,18 +63,10 @@ type App struct {
 	// text fields.
 	ovScope overrideScope
 	drafts  drafts
-	// hudUntil is when the unpinned pill hides, once nothing holds it;
-	// hudHeld is whether the drawer, the pin or the pointer held it last
-	// frame; hudRects are where the pill and drawer were drawn.
-	hudUntil time.Time
-	hudHeld  bool
-	hudRects []mui.Rect
 
 	mu           sync.Mutex
 	services     mui.Services
 	haveServices bool
-	hud          HUDMode
-	hudRevealed  bool
 	connecting   string
 	cancel       context.CancelFunc
 	connectErr   string
@@ -101,10 +75,11 @@ type App struct {
 	pairBusy     bool
 	toPairing    bool
 	toHosts      bool
-	// hudVisible is whether the HUD is on screen, as last drawn or as the
-	// hotkey just made it.
-	hudVisible bool
-	onDrawer   func(open bool)
+	// overlayShown is whether the overlay draws over the stream: the
+	// button, its tab, the menu, the metrics window or the toast. onOverlay
+	// hears it change.
+	overlayShown bool
+	onOverlay    func(shown bool)
 	// micErr is why the last unmute failed.
 	micErr string
 }
@@ -120,7 +95,7 @@ func NewApp(backend Backend) *App {
 // Content is the window content to give mygo.WindowOptions.Content.
 func (a *App) Content() *mui.Content { return mui.View(a.View) }
 
-// SetStreamView sets what draws the video under the HUD, such as an
+// SetStreamView sets what draws the video under the overlay, such as an
 // element a GPU surface presents into. Without one the stream view shows
 // the letterbox well. With one, a live stream paints no background at
 // all, so that a surface beneath the window's UI layer shows through.
@@ -141,59 +116,18 @@ func (a *App) Notify() {
 	}
 }
 
-// CycleHUD steps the HUD from pill to drawer to hidden and back, for the
-// HUD hotkey and for input layers that capture keys before the window.
-// Each step shows the pill for a while, as connecting does; a pill that
-// hid itself first just shows again.
-func (a *App) CycleHUD() {
-	a.changeHUD(func() {
-		if a.hud != HUDPill || a.hudVisible {
-			a.hud = (a.hud + 1) % 3
-		}
-		a.hudVisible = a.hud != HUDHidden
-	})
-	a.Notify()
-}
+// SetWindow gives the stream overlay the window, for its Fullscreen
+// switch. Call it on the main thread.
+func (a *App) SetWindow(w WindowHook) { a.window = w }
 
-// HUD is the HUD's mode. Safe from any goroutine.
-func (a *App) HUD() HUDMode { return a.hudMode() }
-
-// DrawerOpen reports whether the stream drawer is open. Safe from any
-// goroutine.
-func (a *App) DrawerOpen() bool { return a.hudMode() == HUDDrawer }
-
-// OnDrawerChange registers fn to hear each time the stream drawer opens or
-// closes, so that a video path the window's UI cannot draw over makes way
-// for it. fn runs on the goroutine that moved the HUD, often the main
-// thread inside a frame, and must not block.
-func (a *App) OnDrawerChange(fn func(open bool)) {
+// OnOverlayChange registers fn to hear each time the overlay starts or
+// stops drawing over the stream, so that a video path the window's UI
+// cannot draw over makes way for it. fn runs on the main thread inside a
+// frame and must not block.
+func (a *App) OnOverlayChange(fn func(shown bool)) {
 	a.mu.Lock()
-	a.onDrawer = fn
+	a.onOverlay = fn
 	a.mu.Unlock()
-}
-
-func (a *App) hudMode() HUDMode {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.hud
-}
-
-func (a *App) setHUD(m HUDMode) {
-	a.changeHUD(func() { a.hud = m })
-}
-
-// changeHUD runs fn under the lock to move the HUD, revealing the pill and
-// telling OnDrawerChange's callback if the drawer opened or closed.
-func (a *App) changeHUD(fn func()) {
-	a.mu.Lock()
-	was := a.hud == HUDDrawer
-	fn()
-	a.hudRevealed = true
-	open, cb := a.hud == HUDDrawer, a.onDrawer
-	a.mu.Unlock()
-	if open != was && cb != nil {
-		cb(open)
-	}
 }
 
 // openHostSettings shows Settings with a host's own stream format.
@@ -217,20 +151,18 @@ func (a *App) View(c *mui.Context) {
 	toHosts := a.toHosts
 	a.toHosts = false
 	connecting := a.connecting
-	revealed := a.hudRevealed
-	a.hudRevealed = false
 	a.mu.Unlock()
-
-	c.OnWindowShortcut(mui.Ctrl|mui.Alt, mui.KeyH, a.CycleHUD)
-	c.OnWindowShortcut(mui.Ctrl|mui.Alt, mui.KeyM, a.ToggleMic)
+	a.frameNow = c.Now()
 
 	tel := a.backend.Telemetry()
 	// A stream, even one started from Pairing, ends on Hosts.
 	if a.streaming && !tel.Connected {
 		toHosts = true
+		a.noteOverlay(false)
 	}
-	if revealed || (!a.streaming && tel.Connected) {
-		a.hudUntil = c.Now().Add(hudReveal)
+	if !a.streaming && tel.Connected {
+		w, h := c.Size()
+		a.ovl.begin(a.backend.OverlayLayout(), c.Now(), w, h)
 	}
 	a.streaming = tel.Connected
 	if toHosts {
@@ -301,8 +233,8 @@ func (a *App) cancelConnect() {
 }
 
 func (a *App) disconnect() {
+	a.ovl.menuOpen = false
 	a.backend.Disconnect()
-	a.setHUD(HUDPill)
 }
 
 func (a *App) setHosting(on bool) {
@@ -349,7 +281,7 @@ func (a *App) pairing(step func(ctx context.Context) error) {
 }
 
 // ToggleMic mutes or unmutes the microphone of a live stream, for the
-// Ctrl+Alt+M hotkey and the stream drawer. Safe from any goroutine.
+// overlay's Microphone switch and its hotkey. Safe from any goroutine.
 func (a *App) ToggleMic() {
 	t := a.backend.Telemetry()
 	if !t.Connected {

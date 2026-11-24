@@ -65,6 +65,7 @@ type backend struct {
 	// stored are client.json's overrides: for every host, and by host ID.
 	storedAll   defaults.UserOverrides
 	storedHosts map[string]defaults.UserOverrides
+	layout      ui.OverlayLayout
 }
 
 type backendConfig struct {
@@ -96,7 +97,7 @@ func newBackend(c backendConfig) (*backend, error) {
 	}
 	b := &backend{dir: dir, name: c.name, finder: c.finder, ts: c.tailscale, openSink: c.openSink, hostConfig: c.hostConfig,
 		encoders: c.encoders, logf: c.logf, routeConfig: c.route, overrides: c.overrides, viewSize: c.viewSize, settings: settingsFrom(stored), pinned: stored.PinnedHosts, aliases: stored.HostAliases,
-		storedAll: stored.Overrides, storedHosts: stored.HostOverrides}
+		storedAll: stored.Overrides, storedHosts: stored.HostOverrides, layout: layoutFrom(stored.Overlay)}
 	host, err := config.LoadHostConfig(dir)
 	if err != nil {
 		return nil, err
@@ -112,7 +113,51 @@ func newBackend(c backendConfig) (*backend, error) {
 // settingsFrom reads the stored preferences; the UI's other settings
 // start at their defaults each run.
 func settingsFrom(c config.ClientConfig) ui.Settings {
-	return ui.Settings{AudioEnabled: c.AudioEnabled, ClipboardSend: c.ClipboardSend, ClipboardReceive: c.ClipboardReceive}
+	s := ui.Settings{AudioEnabled: c.AudioEnabled, ClipboardSend: c.ClipboardSend, ClipboardReceive: c.ClipboardReceive,
+		AudioVolume: 1, AudioMuted: c.AudioMuted}
+	if c.AudioVolume != nil {
+		s.AudioVolume = min(max(*c.AudioVolume, 0), 1)
+	}
+	return s
+}
+
+var docks = map[ui.DockEdge]string{ui.DockLeft: "left", ui.DockRight: "right", ui.DockTop: "top", ui.DockBottom: "bottom"}
+
+func layoutFrom(l *config.OverlayLayout) ui.OverlayLayout {
+	if l == nil {
+		return ui.OverlayLayout{}
+	}
+	out := ui.OverlayLayout{Placed: true, DockFrac: float32(l.DockFrac), ButtonX: float32(l.ButtonX), ButtonY: float32(l.ButtonY),
+		Metrics: l.Metrics, MetricsX: float32(l.MetricsX), MetricsY: float32(l.MetricsY), MetricsCompact: l.MetricsCompact}
+	for e, name := range docks {
+		if name == l.Dock {
+			out.Dock = e
+		}
+	}
+	return out
+}
+
+func (b *backend) OverlayLayout() ui.OverlayLayout {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.layout
+}
+
+// SaveOverlayLayout keeps where the overlay was left for the next stream.
+func (b *backend) SaveOverlayLayout(l ui.OverlayLayout) error {
+	err := config.UpdateClientConfig(b.dir, func(stored *config.ClientConfig) error {
+		stored.Overlay = &config.OverlayLayout{Dock: docks[l.Dock], DockFrac: float64(l.DockFrac),
+			ButtonX: float64(l.ButtonX), ButtonY: float64(l.ButtonY), Metrics: l.Metrics,
+			MetricsX: float64(l.MetricsX), MetricsY: float64(l.MetricsY), MetricsCompact: l.MetricsCompact}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	b.mu.Lock()
+	b.layout = l
+	b.mu.Unlock()
+	return nil
 }
 
 func (b *backend) Subscribe(fn func()) {
@@ -370,6 +415,7 @@ func (b *backend) dial(ctx context.Context, t session.Target, pin string) error 
 	if err != nil {
 		return err
 	}
+	c.SetVolume(playbackGain(s))
 	err = c.Connect(ctx, routes)
 	// The session pins a host as soon as it accepts this device, before
 	// the stream starts, which may still fail.
@@ -509,6 +555,11 @@ func telemetry(s session.ClientStats) ui.Telemetry {
 		EncodeMs: s.Encode.P50, NetMs: s.Network.P50, DecodeMs: s.Decode.P50, PresentMs: s.Present.P50, TotalMs: s.E2E.P50,
 		BitrateMbps: s.Kbps / 1000, FECPct: s.FECParityPct, LossPct: s.LossPct, AudioBufMs: s.AudioBufferMs,
 		DatagramBytes: s.DatagramBytes, MicMuted: s.Mic.Muted, MicDevice: s.Mic.Device, MicHint: s.Mic.Hint,
+		CaptureMs: s.CaptureMs, RTTMs: s.RTTMs, CeilingMbps: float64(s.MaxBitrateKbps) / 1000,
+		FramesDropped: s.FramesDropped,
+	}
+	if s.HostEncodeMs > 0 {
+		t.EncodeMs = s.HostEncodeMs
 	}
 	if s.E2EGlass.Samples > 0 {
 		t.PresentMs, t.TotalMs = s.Glass.P50, s.E2EGlass.P50
@@ -674,6 +725,12 @@ func (b *backend) SaveSettings(s ui.Settings) error {
 	err := config.UpdateClientConfig(b.dir, func(stored *config.ClientConfig) error {
 		stored.AudioEnabled = s.AudioEnabled
 		stored.ClipboardSend, stored.ClipboardReceive = s.ClipboardSend, s.ClipboardReceive
+		stored.AudioMuted = s.AudioMuted
+		stored.AudioVolume = nil
+		if s.AudioVolume != 1 {
+			v := s.AudioVolume
+			stored.AudioVolume = &v
+		}
 		return nil
 	})
 	if err != nil {
@@ -692,10 +749,22 @@ func (b *backend) SaveSettings(s ui.Settings) error {
 			h.SetClipboard(clipboardOf(s))
 		}
 	}
+	if c != nil && playbackGain(before) != playbackGain(s) {
+		c.SetVolume(playbackGain(s))
+	}
 	if before.AudioEnabled != s.AudioEnabled {
 		b.redial()
 	}
 	return nil
+}
+
+// playbackGain is the level the stream's audio plays at: muting keeps the
+// audio flowing, silent.
+func playbackGain(s ui.Settings) float64 {
+	if s.AudioMuted {
+		return 0
+	}
+	return s.AudioVolume
 }
 
 // redial restarts a live stream in the background, as protocol v1 fixes

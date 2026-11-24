@@ -30,8 +30,8 @@ Research: `planck-design/audio-clipboard-research.md` §3–§9.
   name — Windows render endpoints "Steam Streaming Microphone" or "CABLE Input",
   macOS output devices "BlackHole", or a user-given substring. Nothing is
   bundled. No device: the host reports a hint instead.
-- Echo: the client mic starts muted every session; Ctrl+Alt+M or the stream
-  drawer toggles it.
+- Echo: the client mic starts muted every session; Ctrl+Alt+U or the
+  overlay's Sound & mic tray toggles it.
 
 ## Clipboard
 

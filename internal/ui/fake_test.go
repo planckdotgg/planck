@@ -44,12 +44,14 @@ type fakeBackend struct {
 	overrides     map[string]defaults.UserOverrides
 	ovSaves       int
 	ovErr         error
+	layout        OverlayLayout
+	layoutSaves   int
 }
 
 func newFake() *fakeBackend {
 	return &fakeBackend{
 		connectResult: make(chan error, 1),
-		settings:      Settings{AudioEnabled: true},
+		settings:      Settings{AudioEnabled: true, AudioVolume: 0.8},
 		overrides:     map[string]defaults.UserOverrides{},
 	}
 }
@@ -136,6 +138,15 @@ func (f *fakeBackend) SaveOverrides(hostID string, o defaults.UserOverrides) err
 	}
 	f.ovSaves++
 	f.overrides[hostID] = o
+	return nil
+}
+
+func (f *fakeBackend) OverlayLayout() OverlayLayout { defer f.lock()(); return f.layout }
+
+func (f *fakeBackend) SaveOverlayLayout(l OverlayLayout) error {
+	defer f.lock()()
+	f.layoutSaves++
+	f.layout = l
 	return nil
 }
 

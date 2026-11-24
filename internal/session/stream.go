@@ -59,6 +59,9 @@ type stream struct {
 	encodeMs  *window
 	sent      rate
 	parityPct float64
+	// captureW and encodeW split encodeMs at the moment the picture was
+	// acquired, for HostStats.
+	captureW, encodeW *window
 
 	frames, keyframes, dropped, audioPkts atomic.Uint64
 
@@ -83,7 +86,7 @@ func newStream(h *Host, sess *transport.Session) *stream {
 		p.BitrateKbps = int(acc.BitrateKbps)
 	}
 	st := &stream{h: h, sess: sess, params: p, done: make(chan struct{}), invalid: make(chan uint32, 16), resize: make(chan [2]int, 1),
-		encodeMs: newWindow(encodeWindow)}
+		encodeMs: newWindow(encodeWindow), captureW: newWindow(encodeWindow), encodeW: newWindow(encodeWindow)}
 	if ua, ok := sess.RemoteControlAddr().(*net.UDPAddr); ok {
 		st.addr = ua.String()
 		st.path = ratectl.ClassifyAddr(ua.AddrPort().Addr())
@@ -442,9 +445,14 @@ func (st *stream) videoLoop() {
 			continue
 		}
 		st.frames.Add(1)
+		acquired := captureTS
+		sp, staged := pipe.(interface{ stages() pipeStages })
+		if staged {
+			acquired = sp.stages().Acquired
+		}
 		if st.trace != nil {
 			row := hostTraceRow{Frame: info.FrameID, Key: pkt.Keyframe, Bytes: len(pkt.Data), Present: captureTS, SendEnd: transport.Mono(), Kbps: kbps, SetRateNs: setRate}
-			if sp, ok := pipe.(interface{ stages() pipeStages }); ok {
+			if staged {
 				g := sp.stages()
 				row.WaitStart, row.Acquired, row.EncStart, row.EncEnd, row.FirstSlice, row.Accum = g.WaitStart, g.Acquired, g.EncStart, g.EncEnd, g.FirstSlice, g.Accum
 				row.SubmitNs, row.QueryNs, row.Tries = g.SubmitNs, g.QueryNs, g.Tries
@@ -459,6 +467,8 @@ func (st *stream) videoLoop() {
 		}
 		st.mu.Lock()
 		st.encodeMs.add(ms(info.EncodeTS - captureTS))
+		st.captureW.add(ms(acquired - captureTS))
+		st.encodeW.add(ms(info.EncodeTS - acquired))
 		st.parityPct = 100 * float64(mirror.Parity(data)) / float64(max(data, 1))
 		st.mu.Unlock()
 		st.sent.add(info.EncodeTS, len(pkt.Data))
@@ -599,6 +609,15 @@ func (st *stream) fill(out *HostStats) {
 	out.Profile = st.profile
 	st.mu.Unlock()
 }
+
+// hostStats is what the client cannot read in the video headers.
+func (st *stream) hostStats() *wire.HostStats {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return &wire.HostStats{CaptureMicros: micros(st.captureW.summary().P50), EncodeMicros: micros(st.encodeW.summary().P50)}
+}
+
+func micros(ms float64) uint32 { return uint32(max(ms, 0) * 1000) }
 
 func abs(v int) int {
 	if v < 0 {

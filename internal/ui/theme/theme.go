@@ -55,6 +55,24 @@ var (
 	IconHosting = mustSVG("icons/ui-hosting.svg")
 	IconChevron = mustSVG("icons/ui-chevron-down.svg")
 	IconEdit    = mustSVG("icons/ui-edit.svg")
+
+	IconFullscreen   = mustSVG("icons/ui-fullscreen.svg")
+	IconImmersive    = mustSVG("icons/ui-immersive.svg")
+	IconDirect       = mustSVG("icons/ui-direct.svg")
+	IconDisplay      = mustSVG("icons/ui-display.svg")
+	IconResolution   = mustSVG("icons/ui-resolution.svg")
+	IconCodec        = mustSVG("icons/ui-codec.svg")
+	IconColor        = mustSVG("icons/ui-color.svg")
+	IconFrameRate    = mustSVG("icons/ui-framerate.svg")
+	IconBitrate      = mustSVG("icons/ui-bitrate.svg")
+	IconVSync        = mustSVG("icons/ui-vsync.svg")
+	IconSound        = mustSVG("icons/ui-sound.svg")
+	IconClipboard    = mustSVG("icons/ui-clipboard.svg")
+	IconMetrics      = mustSVG("icons/ui-metrics.svg")
+	IconHide         = mustSVG("icons/ui-hide.svg")
+	IconPower        = mustSVG("icons/ui-power.svg")
+	IconChevronRight = mustSVG("icons/ui-chevron-right.svg")
+	IconClose        = mustSVG("icons/ui-close.svg")
 )
 
 func mustSVG(name string) *ui.SVG {
@@ -68,11 +86,20 @@ func mustSVG(name string) *ui.SVG {
 // FloatShadow is the one shadow, for things that float over content.
 var FloatShadow = ui.RGBA(0, 0, 0, 0.55)
 
-// HUDGlass is the HUD's fill over live video, without backdrop blur.
-var HUDGlass = ui.RGBA(14, 15, 18, 0.92)
-
-// HUDEdge is the HUD's hairline over live video.
-var HUDEdge = ui.RGBA(242, 239, 234, 0.10)
+// Overlay chrome over live video, without backdrop blur: the alpha does
+// the blur's work.
+var (
+	HUDGlass     = ui.RGBA(14, 15, 18, 0.92)    // panels, the button hovered, the toast
+	HUDGlassIdle = ui.RGBA(14, 15, 18, 0.55)    // the button at rest
+	HUDGlassTab  = ui.RGBA(14, 15, 18, 0.82)    // the docked edge tab
+	HUDEdge      = ui.RGBA(242, 239, 234, 0.10) // hairline
+	HUDEdgeLit   = ui.RGBA(242, 239, 234, 0.18) // hovered, dragged or popped out
+	HUDDivider   = ui.RGBA(242, 239, 234, 0.08) // inside a panel
+	HUDRowHover  = ui.RGBA(242, 239, 234, 0.06) // a menu row under the pointer, an open row
+	HUDTray      = ui.RGBA(242, 239, 234, 0.04) // an inline picker tray
+	HUDTrace     = ui.RGBA(255, 122, 31, 0.55)  // the line left on the edge by a popped-out button
+	HUDDockGlow  = ui.RGBA(255, 122, 31, 0.30)  // the dock target's wash while dragging
+)
 
 // Planck returns the client's theme: dark only, built from the role
 // tokens so MyGo's stock widgets (switches, sliders, inputs) match.

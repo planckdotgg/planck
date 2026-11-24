@@ -47,6 +47,9 @@ const (
 	// MsgPeerState goes both ways, to a peer with FeaturePeerState, at the
 	// start of a session and whenever it changes.
 	MsgPeerState MsgType = 13
+	// MsgHostStats goes host to client, in answer to each StatsReport,
+	// only to a client whose Hello carries FeatureHostStats.
+	MsgHostStats MsgType = 16
 )
 
 // Message is a control-stream message. The set is closed: only types in this
@@ -95,6 +98,8 @@ const (
 	FeatureMic uint32 = 1 << 5
 	// FeatureClipboard says the peer reads clipboard streams.
 	FeatureClipboard uint32 = 1 << 6
+	// FeatureHostStats, from a client, says it reads HostStats.
+	FeatureHostStats uint32 = 1 << 8
 )
 
 type AuthMethod uint8
@@ -226,6 +231,16 @@ type PeerState struct {
 	MicHint   string
 }
 
+// HostStats are the host's stage times the client cannot see in the
+// video headers, which time a frame from its capture time: the p50 over
+// the last frames of capture, from the system presenting a picture to the
+// host acquiring it, and of encode, from acquiring it to the encoder
+// finishing it.
+type HostStats struct {
+	CaptureMicros uint32
+	EncodeMicros  uint32
+}
+
 type GoodbyeReason uint8
 
 const (
@@ -253,6 +268,7 @@ func (*Capabilities) Type() MsgType  { return MsgCapabilities }
 func (*Profile) Type() MsgType       { return MsgProfile }
 func (*Resize) Type() MsgType        { return MsgResize }
 func (*PeerState) Type() MsgType     { return MsgPeerState }
+func (*HostStats) Type() MsgType     { return MsgHostStats }
 
 func (m *Hello) appendBody(b []byte) []byte {
 	b = binary.BigEndian.AppendUint16(b, m.Version)
@@ -411,6 +427,16 @@ func (m *PeerState) decodeBody(d *decoder) {
 	m.MicHint = d.str()
 }
 
+func (m *HostStats) appendBody(b []byte) []byte {
+	b = binary.BigEndian.AppendUint32(b, m.CaptureMicros)
+	return binary.BigEndian.AppendUint32(b, m.EncodeMicros)
+}
+
+func (m *HostStats) decodeBody(d *decoder) {
+	m.CaptureMicros = d.u32()
+	m.EncodeMicros = d.u32()
+}
+
 func appendJSON(b, js []byte) []byte {
 	b = binary.BigEndian.AppendUint32(b, uint32(len(js)))
 	return append(b, js...)
@@ -512,6 +538,8 @@ func newMessage(t MsgType) Message {
 		return &Resize{}
 	case MsgPeerState:
 		return &PeerState{}
+	case MsgHostStats:
+		return &HostStats{}
 	}
 	return nil
 }

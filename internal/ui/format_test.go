@@ -8,21 +8,6 @@ import (
 	"github.com/planckdotgg/planck/pkg/encode"
 )
 
-func TestHUDSummary(t *testing.T) {
-	tel := sampleTelemetry()
-	if got, want := hudSummary(tel), "8.4 ms · 240 FPS · 80 Mbps · LAN direct · HEVC 10-bit"; got != want {
-		t.Fatalf("hudSummary = %q, want %q", got, want)
-	}
-	tel = Telemetry{TotalMs: 23.04, FPS: 59.6, BitrateMbps: 7.25, PathKind: discovery.PathTailscaleDERP,
-		Codec: encode.AV1, Chroma: encode.YUV444P10}
-	if got, want := hudSummary(tel), "23.0 ms · 60 FPS · 7.2 Mbps · DERP relay · AV1 4:4:4 10-bit"; got != want {
-		t.Fatalf("hudSummary = %q, want %q", got, want)
-	}
-	if got, want := hudSummary(Telemetry{}), "0.0 ms · 0 FPS · 0.0 Mbps · LAN direct"; got != want {
-		t.Fatalf("hudSummary without codec = %q, want %q", got, want)
-	}
-}
-
 func TestCodecLabel(t *testing.T) {
 	cases := []struct {
 		c    encode.Codec

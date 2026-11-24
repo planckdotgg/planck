@@ -10,7 +10,7 @@ import (
 
 // TestInputForwarder drives the stream view through MyGo's tester, with
 // no window and no OS events: pointer moves and buttons, keys with their
-// modifiers, and the HUD hotkey staying with the client.
+// modifiers, and the overlay's keys staying with the client.
 func TestInputForwarder(t *testing.T) {
 	var got []input.Event
 	f := &inputForwarder{send: func(ev input.Event) { got = append(got, ev) }}
@@ -53,13 +53,27 @@ func TestInputForwarder(t *testing.T) {
 		t.Fatalf("shift+A:\n got %v\nwant %v", keys(ev), keys(want))
 	}
 
-	f.keyboard([]mui.Key{mui.KeyH}, mui.Ctrl|mui.Alt)
-	f.keyboard(nil, mui.Ctrl|mui.Alt)
+	for _, k := range []mui.Key{mui.KeyO, mui.KeyP, mui.KeyH, mui.KeyM, mui.KeyU, mui.KeyF, mui.KeyI} {
+		f.keyboard([]mui.Key{k}, mui.Ctrl|mui.Alt)
+		f.keyboard(nil, mui.Ctrl|mui.Alt)
+		f.keyboard(nil, 0)
+		for _, ev := range take() {
+			if ev.Key.Usage == hidUsage[k] {
+				t.Fatalf("overlay key Ctrl+Alt+%v forwarded: %+v", k, ev)
+			}
+		}
+	}
+	f.keyboard([]mui.Key{mui.KeyD}, mui.Ctrl|mui.Alt|mui.Shift)
 	f.keyboard(nil, 0)
 	for _, ev := range take() {
-		if ev.Key.Usage == input.KeyH {
-			t.Fatalf("HUD hotkey forwarded: %+v", ev)
+		if ev.Key.Usage == input.KeyD {
+			t.Fatalf("Ctrl+Alt+Shift+D forwarded: %+v", ev)
 		}
+	}
+	f.keyboard([]mui.Key{mui.KeyD}, mui.Ctrl|mui.Alt)
+	f.keyboard(nil, 0)
+	if ev := take(); !slices.ContainsFunc(ev, func(e input.Event) bool { return e.Key.Usage == input.KeyD && e.Key.Pressed }) {
+		t.Fatalf("Ctrl+Alt+D, not an overlay key, was not forwarded: %v", keys(ev))
 	}
 }
 

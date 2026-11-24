@@ -63,9 +63,6 @@ const (
 	customWidth, customHeight = 1920, 1080
 )
 
-// drawerBitrates are the drawer's bitrate picks, 0 being auto.
-var drawerBitrates = []int{0, 20, 50, 100, lanCapMbps()}
-
 // overrideScope is what the overrides being edited apply to: every host,
 // or one.
 type overrideScope struct {
@@ -305,37 +302,6 @@ func (d *drafts) size(s string, old, lo, hi int) int {
 	return n
 }
 
-// profileLine sums up a resolved stream, as "HEVC 10-bit 4:2:0 · 1080p120
-// · SudoVDA (RTX 4080) · Direct".
-func profileLine(p *defaults.ResolvedProfile) string {
-	if p == nil {
-		return ""
-	}
-	format := codecName(p.Codec)
-	if p.BitDepth > 0 {
-		format += fmt.Sprintf(" %d-bit", p.BitDepth)
-	}
-	if p.Chroma444 {
-		format += " 4:4:4"
-	} else {
-		format += " 4:2:0"
-	}
-	parts := []string{format, sizeAndRate(p.Width, p.Height, p.FPS)}
-	gpu := shortGPU(p.EncodeAdapter.Name)
-	switch {
-	case p.VirtualDisplay && gpu != "":
-		parts = append(parts, "SudoVDA ("+gpu+")")
-	case p.VirtualDisplay:
-		parts = append(parts, "SudoVDA")
-	case gpu != "":
-		parts = append(parts, gpu)
-	}
-	if p.DirectDisplay {
-		parts = append(parts, "Direct")
-	}
-	return strings.Join(parts, " · ")
-}
-
 func codecName(c defaults.Codec) string {
 	switch c {
 	case defaults.CodecH264:
@@ -348,14 +314,6 @@ func codecName(c defaults.Codec) string {
 		return "PyroWave"
 	}
 	return "Unknown"
-}
-
-// sizeAndRate is "1080p120" for 16:9 sizes, else "1728x1117 @ 120".
-func sizeAndRate(w, h, fps int) string {
-	if w*9 == h*16 {
-		return fmt.Sprintf("%dp%d", h, fps)
-	}
-	return fmt.Sprintf("%dx%d @ %d", w, h, fps)
 }
 
 // shortGPU drops the vendor's brand words: "NVIDIA GeForce RTX 4080" is

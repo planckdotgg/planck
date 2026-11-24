@@ -15,7 +15,6 @@ import (
 	"github.com/planckdotgg/planck/internal/ui"
 	"github.com/planckdotgg/planck/internal/ui/theme"
 	"github.com/planckdotgg/planck/pkg/decode"
-	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/player"
 	"github.com/planckdotgg/planck/pkg/tailscale"
 )
@@ -42,16 +41,8 @@ func runGUI(o options) error {
 		return err
 	}
 	app := ui.NewApp(b)
-	video.stats = func() (session.ClientStats, bool) {
-		c := b.current()
-		if c == nil {
-			return session.ClientStats{}, false
-		}
-		s := c.Stats()
-		return s, s.Connected
-	}
-	video.hudHidden = func() bool { return app.HUD() == ui.HUDHidden }
-	app.OnDrawerChange(video.drawerChanged)
+	video.keyframe = b.RequestKeyframe
+	app.OnOverlayChange(video.overlayChanged)
 	fwd := &inputForwarder{send: b.SendInput, video: video.videoSize}
 	app.SetStreamView(fwd.view)
 	resizer := &viewResizer{delay: resizeSettle, send: b.resizeStream}
@@ -65,6 +56,7 @@ func runGUI(o options) error {
 			BackgroundColor: "#0E0F12", Transparent: composeUnderUI, Content: app.Content(),
 		})
 		video.attach(win)
+		app.SetWindow(fullScreenHook{win})
 		win.OnResize(func() {
 			video.resized()
 			resizer.changed(video.pixelSize())
@@ -98,11 +90,15 @@ type videoView struct {
 	// surface's, in pixels, width in the high half, for the pointer.
 	frame, drawable atomic.Uint64
 	mode            directMode
-	// stats reads the live session for the pill drawn into the video, and
-	// hudHidden whether the user hid the HUD.
-	stats     func() (session.ClientStats, bool)
-	hudHidden func() bool
+	// keyframe asks the host for one, as the present path changes.
+	keyframe func()
 }
+
+// fullScreenHook is the window for the overlay's Fullscreen switch.
+type fullScreenHook struct{ w *mygo.Window }
+
+func (h fullScreenHook) Fullscreen() bool      { return h.w.IsFullScreen() }
+func (h fullScreenHook) SetFullscreen(on bool) { h.w.SetFullScreen(on) }
 
 // attach runs on the main thread.
 func (v *videoView) attach(w *mygo.Window) {
@@ -170,19 +166,15 @@ func (v *videoView) open(cfg decode.Config) (session.Sink, error) {
 	}
 	v.cur.Store(h)
 	v.resize.Store(true)
-	s := &surfaceSink{v: v, host: h, p: p, stop: make(chan struct{})}
-	go v.hudLoop(s, s.stop)
-	return s, nil
+	return &surfaceSink{v: v, host: h, p: p}, nil
 }
 
 // surfaceSink decodes on the session's decode goroutine; the player
 // presents on its own thread.
 type surfaceSink struct {
-	v       *videoView
-	host    *surfaceHost
-	p       *player.Player
-	profile atomic.Pointer[defaults.ResolvedProfile]
-	stop    chan struct{}
+	v    *videoView
+	host *surfaceHost
+	p    *player.Player
 }
 
 func (s *surfaceSink) SetObserver(o player.Observer) { s.p.SetObserver(o) }
@@ -205,7 +197,6 @@ func (s *surfaceSink) Submit(au []byte, pts int64) (player.Timing, error) {
 // Close leaves direct mode before the surface goes, so the window's own
 // layers composite again.
 func (s *surfaceSink) Close() error {
-	close(s.stop)
 	err := s.p.Close()
 	s.v.cur.CompareAndSwap(s.host, nil)
 	mygo.RunOnMain(func() {

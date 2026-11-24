@@ -1,0 +1,696 @@
+package ui
+
+import (
+	"time"
+
+	mui "github.com/egoist/mygo/ui"
+	"github.com/planckdotgg/planck/internal/ui/theme"
+)
+
+// The floating button's geometry and timings, in DIPs.
+const (
+	btnSize     = 44
+	btnDragSize = 48
+	// btnInset holds the floating button inside the view; a popped-out
+	// button sits popGap off its edge.
+	btnInset = 12
+	popGap   = 6
+	// dockReach is how near an edge the button's centre must come to rest
+	// for it to dock there.
+	dockReach = 56
+	// tabLong and tabShort size the docked tab, hitLong and hitShort its
+	// hit zone; a tab stays dockCorner from the view's corners.
+	tabLong, tabShort = 40, 8
+	hitLong, hitShort = 72, 24
+	dockCorner        = 16
+	// idleReach is how near the pointer keeps the button from dimming.
+	idleReach = 120
+)
+
+const (
+	dwellTime  = 80 * time.Millisecond
+	popOutTime = 140 * time.Millisecond
+	popBack    = 110 * time.Millisecond
+	meltTime   = 160 * time.Millisecond
+	lingerTime = 900 * time.Millisecond
+	idleTime   = 6 * time.Second
+	dimTime    = 160 * time.Millisecond
+	toastIn    = 160 * time.Millisecond
+	toastHold  = 2400 * time.Millisecond
+	toastOut   = 110 * time.Millisecond
+	tipFirst   = 4 * time.Second
+)
+
+var easeOverlay = mui.CubicBezier(0.16, 1, 0.3, 1)
+
+// overlay is the stream overlay's state, read and written by the view
+// alone.
+type overlay struct {
+	hidden   bool
+	toastAt  time.Time
+	tipUntil time.Time
+	// btn is the button's top-left corner in the view while it floats or
+	// is popped out of its dock; off is how far a drag moved it from
+	// there, folded into btn once it comes to rest, and fold is set for
+	// the frame that does it.
+	btn      mui.Point
+	off      mui.Point
+	fold     bool
+	dock     DockEdge
+	dockFrac float32
+	popped   bool
+	// held is whether the button was pressed, dragged or focused last
+	// frame, which keeps it out of its dock.
+	held bool
+	// morph moves the button between its bubble and its tab.
+	morph tween
+	// dwellAt is when the pointer went into the hit zone, leftAt when it
+	// left the button and the hit zone, nearAt when it last moved near the
+	// button.
+	dwellAt, leftAt, nearAt time.Time
+	px, py                  float32
+	pointerOver             bool
+	// released is set by snap as a drag lets go, with where it docks.
+	released    bool
+	releaseDock DockEdge
+	releaseFrac float32
+	snapFn      func(mui.Point) mui.Point
+	vw, vh      float32
+	menuOpen    bool
+	menuWasOpen bool
+	tray        string
+	metrics     metricsWindow
+	saved       OverlayLayout
+}
+
+// tween is a rect moving from one place to another over dur.
+type tween struct {
+	from, to mui.Rect
+	at       time.Time
+	dur      time.Duration
+}
+
+func (t tween) active(now time.Time) bool { return !t.at.IsZero() && now.Sub(t.at) < t.dur }
+
+func (t tween) progress(now time.Time) float32 {
+	if t.dur <= 0 {
+		return 1
+	}
+	k := float32(now.Sub(t.at)) / float32(t.dur)
+	return easeOverlay(min(max(k, 0), 1))
+}
+
+func (t tween) rect(now time.Time) mui.Rect {
+	k := t.progress(now)
+	lerp := func(a, b float32) float32 { return a + (b-a)*k }
+	return mui.Rect{X: lerp(t.from.X, t.to.X), Y: lerp(t.from.Y, t.to.Y), W: lerp(t.from.W, t.to.W), H: lerp(t.from.H, t.to.H)}
+}
+
+// begin sets the overlay up for a new stream from the layout kept: shown,
+// whatever it was, and the menu closed.
+func (o *overlay) begin(l OverlayLayout, now time.Time, vw, vh float32) {
+	*o = overlay{vw: vw, vh: vh, nearAt: now, saved: l, metrics: o.metrics}
+	o.snapFn = o.snap
+	o.metrics.begin(l, vw, vh)
+	if !l.Placed {
+		o.btn = mui.Point{X: 24, Y: vh/2 - btnSize/2}
+		o.tipUntil = now.Add(tipFirst)
+		return
+	}
+	o.dock, o.dockFrac = l.Dock, l.DockFrac
+	o.btn = mui.Point{X: round32(l.ButtonX*vw - btnSize/2), Y: round32(l.ButtonY*vh - btnSize/2)}
+}
+
+// layout is what the next stream starts from.
+func (o *overlay) layout() OverlayLayout {
+	l := OverlayLayout{Placed: true, Dock: o.dock, DockFrac: o.dockFrac}
+	if o.vw > 0 && o.vh > 0 {
+		l.ButtonX, l.ButtonY = (o.btn.X+btnSize/2)/o.vw, (o.btn.Y+btnSize/2)/o.vh
+		if o.dock != DockNone {
+			l.ButtonX, l.ButtonY = o.saved.ButtonX, o.saved.ButtonY
+		}
+	}
+	o.metrics.store(&l, o.vw, o.vh)
+	return l
+}
+
+// dockFor is the edge a button resting with its centre at cx, cy docks
+// to, and where along it: left and right before top and bottom.
+func dockFor(cx, cy, vw, vh float32) (DockEdge, float32) {
+	l, r, t, b := cx, vw-cx, cy, vh-cy
+	switch {
+	case min(l, r) <= dockReach && l <= r:
+		return DockLeft, dockFrac(cy, vh)
+	case min(l, r) <= dockReach:
+		return DockRight, dockFrac(cy, vh)
+	case min(t, b) <= dockReach && t <= b:
+		return DockTop, dockFrac(cx, vw)
+	case min(t, b) <= dockReach:
+		return DockBottom, dockFrac(cx, vw)
+	}
+	return DockNone, 0
+}
+
+// dockFrac is where a tab centred at v along an edge of length n rests, as
+// a fraction of n, dockCorner from the corners.
+func dockFrac(v, n float32) float32 {
+	if n <= 0 {
+		return 0.5
+	}
+	lo := float32(dockCorner + tabLong/2)
+	return min(max(v, lo), max(n-lo, lo)) / n
+}
+
+func (o *overlay) snap(p mui.Point) mui.Point {
+	o.released = true
+	o.releaseDock, o.releaseFrac = dockFor(o.btn.X+p.X+btnSize/2, o.btn.Y+p.Y+btnSize/2, o.vw, o.vh)
+	return p
+}
+
+// dockGeom is where the docked tab, its hit zone and the popped-out button
+// are in the view.
+func (o *overlay) dockGeom() (tab, hit, out mui.Rect) {
+	return dockRects(o.dock, o.dockFrac, o.vw, o.vh)
+}
+
+func dockRects(e DockEdge, frac, vw, vh float32) (tab, hit, out mui.Rect) {
+	switch e {
+	case DockLeft, DockRight:
+		c := frac * vh
+		tab = mui.Rect{Y: c - tabLong/2, W: tabShort, H: tabLong}
+		hit = mui.Rect{Y: c - hitLong/2, W: hitShort, H: hitLong}
+		out = mui.Rect{X: popGap, Y: c - btnSize/2, W: btnSize, H: btnSize}
+		if e == DockRight {
+			tab.X, hit.X, out.X = vw-tabShort, vw-hitShort, vw-popGap-btnSize
+		}
+	case DockTop, DockBottom:
+		c := frac * vw
+		tab = mui.Rect{X: c - tabLong/2, W: tabLong, H: tabShort}
+		hit = mui.Rect{X: c - hitLong/2, W: hitLong, H: hitShort}
+		out = mui.Rect{X: c - btnSize/2, Y: popGap, W: btnSize, H: btnSize}
+		if e == DockBottom {
+			tab.Y, hit.Y, out.Y = vh-tabShort, vh-hitShort, vh-popGap-btnSize
+		}
+	}
+	return tab, hit, out
+}
+
+func inside(r mui.Rect, x, y float32) bool {
+	return x >= r.X && x < r.X+r.W && y >= r.Y && y < r.Y+r.H
+}
+
+func near(r mui.Rect, x, y, d float32) bool {
+	return inside(mui.Rect{X: r.X - d, Y: r.Y - d, W: r.W + 2*d, H: r.H + 2*d}, x, y)
+}
+
+// overlayView draws the overlay over the stream in well: the metrics
+// window, the button or its tab, and the menu. While hidden it draws
+// nothing but the toast saying so, and the stream gets every press.
+func (a *App) overlayView(c *mui.Context, well mui.Element, tel Telemetry) {
+	o := &a.ovl
+	now := c.Now()
+	o.vw, o.vh = c.Size()
+	a.overlayShortcuts(c)
+	if o.hidden {
+		a.hiddenToast(c, now)
+		a.noteOverlay(now.Before(o.toastAt.Add(toastIn + toastHold + toastOut)))
+		return
+	}
+	a.noteOverlay(true)
+	x, y, over := well.PointerPosition()
+	if over && (x != o.px || y != o.py || !o.pointerOver) {
+		if near(o.bubbleRect(), x, y, idleReach) {
+			o.nearAt = now
+		}
+	}
+	o.px, o.py, o.pointerOver = x, y, over
+	mui.Box(c).Absolute().Left(0).Top(0).Right(0).Bottom(0).PassThrough().Children(func() {
+		if o.metrics.shown {
+			a.metricsView(c, tel, now)
+		}
+		btn := a.overlayButton(c, now)
+		a.streamMenu(c, tel, btn)
+	})
+	if l := o.layout(); l != o.saved && !o.moving(now) {
+		o.saved = l
+		if err := a.backend.SaveOverlayLayout(l); err != nil {
+			a.mu.Lock()
+			a.settingsErr = err.Error()
+			a.mu.Unlock()
+		}
+	}
+}
+
+// moving reports whether the button or the window is on its way
+// somewhere, so the layout is not stored mid-move.
+func (o *overlay) moving(now time.Time) bool {
+	return o.morph.active(now) || o.metrics.dragging || o.off != (mui.Point{})
+}
+
+// bubbleRect is where the round button is, or would pop out to.
+func (o *overlay) bubbleRect() mui.Rect {
+	if o.dock != DockNone {
+		_, _, out := o.dockGeom()
+		return out
+	}
+	return mui.Rect{X: o.btn.X, Y: o.btn.Y, W: btnSize, H: btnSize}
+}
+
+// overlayButton draws the button: floating, docked as a tab, popping out
+// of its tab or melting into it. It returns the round button, nil while
+// only the tab shows.
+func (a *App) overlayButton(c *mui.Context, now time.Time) mui.Element {
+	o := &a.ovl
+	if o.dock == DockNone {
+		return a.bubble(c, now)
+	}
+	tab, hit, out := o.dockGeom()
+	onHit := o.pointerOver && inside(hit, o.px, o.py)
+	onOut := o.pointerOver && o.popped && inside(out, o.px, o.py)
+	switch {
+	case !onHit:
+		o.dwellAt = time.Time{}
+	case o.dwellAt.IsZero():
+		o.dwellAt = now
+	}
+	if !o.popped && !o.dwellAt.IsZero() {
+		if left := o.dwellAt.Add(dwellTime).Sub(now); left > 0 {
+			c.After(left)
+		} else {
+			o.popOut(now, a.motion(c, popOutTime), tab, out)
+		}
+	}
+	if o.menuOpen && !o.popped {
+		o.popOut(now, a.motion(c, popOutTime), tab, out)
+	}
+	if o.popped {
+		held := onHit || onOut || o.menuOpen || o.held
+		switch {
+		case held:
+			o.leftAt = time.Time{}
+		case o.leftAt.IsZero():
+			o.leftAt = now
+		}
+		if !o.leftAt.IsZero() {
+			if left := o.leftAt.Add(lingerTime).Sub(now); left > 0 {
+				c.After(left)
+			} else {
+				o.popped, o.leftAt = false, time.Time{}
+				o.morph = tween{from: out, to: tab, at: now, dur: a.motion(c, popBack)}
+			}
+		}
+	}
+
+	hitZone := mui.ButtonBase(c.Key("overlay-hit-zone")).Absolute().Left(hit.X).Top(hit.Y).Size(hit.W, hit.H).
+		Label("Show stream controls").TabStop(false)
+	if hitZone.Clicked() {
+		o.popOut(now, a.motion(c, popOutTime), tab, out)
+		o.menuOpen = true
+	}
+	var btn mui.Element
+	switch {
+	case o.morph.active(now):
+		a.morphBox(c, now)
+	case o.popped:
+		a.traceLine(c, tab)
+		btn = a.bubble(c, now)
+	default:
+		a.dockTab(c, tab)
+	}
+	return btn
+}
+
+func (o *overlay) popOut(now time.Time, d time.Duration, tab, out mui.Rect) {
+	if o.popped {
+		return
+	}
+	o.popped, o.leftAt = true, time.Time{}
+	o.btn = mui.Point{X: out.X, Y: out.Y}
+	o.morph = tween{from: tab, to: out, at: now, dur: d}
+}
+
+// motion is d, or nothing while the desktop asks for less motion.
+func (a *App) motion(c *mui.Context, d time.Duration) time.Duration {
+	if c.Preferences().ReduceMotion {
+		return 0
+	}
+	return d
+}
+
+// bubble is the round button, which the pointer drags anywhere in the
+// view and throws into an edge to dock it.
+func (a *App) bubble(c *mui.Context, now time.Time) mui.Element {
+	o := &a.ovl
+	b := mui.ButtonBase(c.Key("overlay-button")).Label("Stream controls").Description(a.shortcut(false, "O")).
+		Expanded(o.menuOpen).Cursor(mui.CursorPointer)
+	dragging := b.Dragging()
+	pressed := b.Pressed() || dragging
+	if !pressed {
+		o.menuWasOpen = o.menuOpen
+	}
+	inset := float32(btnInset)
+	if o.dock != DockNone {
+		inset = popGap
+		if !pressed && o.off == (mui.Point{}) {
+			_, _, out := o.dockGeom()
+			o.btn = mui.Point{X: out.X, Y: out.Y}
+		}
+	}
+	// The button sits at btn, where AttachTo sees it, and drags by off.
+	bounds := mui.Rect{X: inset - o.btn.X, Y: inset - o.btn.Y, W: max(o.vw-2*inset-btnSize, 0), H: max(o.vh-2*inset-btnSize, 0)}
+	anim := mui.Animation{}
+	if o.fold {
+		anim, o.fold = mui.Animation{Duration: time.Nanosecond}, false
+	}
+	size, radius, mark := float32(btnSize), float32(12), [2]float32{13, 20}
+	if dragging {
+		size, radius, mark = btnDragSize, 13, [2]float32{14, 22}
+		b.Margin(-2, 0, 0, -2)
+	}
+	b.Absolute().Left(o.btn.X).Top(o.btn.Y).Size(size, size).Radius(radius).AlignItems(mui.Center).Justify(mui.Center)
+	b.Draggable(&o.off, mui.DraggableOptions{Bounds: &bounds, Rigid: true, Snap: o.snapFn, Animation: anim})
+
+	hover := b.Hovered() || b.Focused()
+	o.held = pressed || b.Focused()
+	dim := !hover && !dragging && !o.menuOpen && o.dock == DockNone
+	idleFor := now.Sub(o.nearAt) - idleTime
+	switch {
+	case dragging:
+		b.Background(theme.HUDGlass).Border(1, theme.RoleText.Alpha(0.22)).Shadow(0, 20, 48, 0, mui.RGBA(0, 0, 0, 0.60))
+	case hover || o.menuOpen || o.popped:
+		b.Background(theme.HUDGlass).Border(1, theme.HUDEdgeLit).Shadow(0, 16, 40, 0, theme.FloatShadow)
+	default:
+		b.Background(theme.HUDGlassIdle).Border(1, theme.HUDEdge).Shadow(0, 10, 28, 0, mui.RGBA(0, 0, 0, 0.45))
+	}
+	if dim {
+		if idleFor < 0 {
+			c.After(-idleFor)
+		} else {
+			k := min(float32(idleFor)/float32(a.motion(c, dimTime)+1), 1)
+			if k < 1 {
+				c.AnimationFrame()
+			}
+			b.Opacity(1 - 0.65*k)
+		}
+	}
+	b.Children(func() {
+		m := mui.Image(c, theme.Mark).Size(mark[0], mark[1])
+		if !hover && !dragging && !o.menuOpen {
+			m.Opacity(0.72)
+		}
+	})
+	if o.released {
+		a.release(b, now, a.motion(c, meltTime))
+	}
+	if !pressed && !b.Transitioning() && o.off != (mui.Point{}) {
+		o.btn = mui.Point{X: o.btn.X + o.off.X, Y: o.btn.Y + o.off.Y}
+		o.off, o.fold = mui.Point{}, true
+		c.Invalidate()
+	}
+	if dragging {
+		a.dockTarget(c, b)
+	}
+	if b.Clicked() {
+		o.menuOpen = !o.menuWasOpen
+	}
+	a.buttonTip(c, b, now)
+	return b
+}
+
+// release docks the button where snap said, melting it into the edge, or
+// leaves it floating.
+func (a *App) release(b mui.Element, now time.Time, melt time.Duration) {
+	o := &a.ovl
+	o.released = false
+	at := b.DragOffset()
+	from := mui.Rect{X: o.btn.X + at.X, Y: o.btn.Y + at.Y, W: btnSize, H: btnSize}
+	if o.releaseDock == DockNone {
+		o.dock, o.popped = DockNone, false
+		return
+	}
+	o.dock, o.dockFrac, o.popped = o.releaseDock, o.releaseFrac, false
+	o.off = mui.Point{}
+	tab, _, _ := o.dockGeom()
+	o.morph = tween{from: from, to: tab, at: now, dur: melt}
+	o.menuOpen = false
+}
+
+// morphBox draws the button on its way between bubble and tab.
+func (a *App) morphBox(c *mui.Context, now time.Time) {
+	o := &a.ovl
+	r := o.morph.rect(now)
+	if left := o.morph.at.Add(o.morph.dur).Sub(now); left > 0 {
+		c.After(left)
+		c.AnimationFrame()
+	}
+	mui.Box(c).Absolute().Left(r.X).Top(r.Y).Size(r.W, r.H).Radius(min(r.W, r.H) / 4).Background(theme.HUDGlass).
+		IgnoreInput(true).AlignItems(mui.Center).Justify(mui.Center).Children(func() {
+		emberSlice(c, o.dock, r)
+	})
+}
+
+// emberSlice is the 2 x 16 ember bar the docked tab carries, across the
+// tab's short side.
+func emberSlice(c *mui.Context, e DockEdge, r mui.Rect) {
+	w, h := float32(2), float32(16)
+	if e == DockTop || e == DockBottom {
+		w, h = h, w
+	}
+	mui.Box(c).Size(min(w, r.W), min(h, r.H)).Radius(1).Background(theme.RoleAccent)
+}
+
+// dockTab is the button melted into its edge: 8 px of glass carrying the
+// ember slice, rounded on its inner corners.
+func (a *App) dockTab(c *mui.Context, tab mui.Rect) {
+	t := mui.Box(c).Absolute().Left(tab.X).Top(tab.Y).Size(tab.W, tab.H).Background(theme.HUDGlassTab).
+		Shadow(0, 4, 14, 0, mui.RGBA(0, 0, 0, 0.35)).IgnoreInput(true).AlignItems(mui.Center).Justify(mui.Center)
+	switch a.ovl.dock {
+	case DockLeft:
+		t.Radius(0, 6, 6, 0)
+	case DockRight:
+		t.Radius(6, 0, 0, 6)
+	case DockTop:
+		t.Radius(0, 0, 6, 6)
+	case DockBottom:
+		t.Radius(6, 6, 0, 0)
+	}
+	t.Children(func() { emberSlice(c, a.ovl.dock, tab) })
+}
+
+// traceLine is the 1 px ember line left on the edge behind a popped-out
+// button.
+func (a *App) traceLine(c *mui.Context, tab mui.Rect) {
+	r := tab
+	switch a.ovl.dock {
+	case DockLeft:
+		r.W = 1
+	case DockRight:
+		r.X, r.W = r.X+r.W-1, 1
+	case DockTop:
+		r.H = 1
+	case DockBottom:
+		r.Y, r.H = r.Y+r.H-1, 1
+	}
+	mui.Box(c).Absolute().Left(r.X).Top(r.Y).Size(r.W, r.H).Background(theme.HUDTrace).IgnoreInput(true)
+}
+
+// dockTarget lights the edge the dragged button would dock to where the
+// throw would carry it: an ember lip, a wash from the edge, and the tab
+// it would melt into.
+func (a *App) dockTarget(c *mui.Context, b mui.Element) {
+	o := &a.ovl
+	at := b.DragOffset()
+	vx, vy := b.DragVelocity()
+	px, py := o.btn.X+mui.Project(at.X, vx), o.btn.Y+mui.Project(at.Y, vy)
+	e, frac := dockFor(px+btnSize/2, py+btnSize/2, o.vw, o.vh)
+	if e == DockNone {
+		return
+	}
+	tab, _, _ := dockRects(e, frac, o.vw, o.vh)
+	const lipLong, glow = 124, 88
+	lip, wash := tab, tab
+	angle := float32(90)
+	switch e {
+	case DockLeft, DockRight:
+		lip.Y, lip.W, lip.H = tab.Y+tab.H/2-lipLong/2, 3, lipLong
+		wash.Y, wash.W, wash.H = lip.Y, glow, lipLong
+		if e == DockRight {
+			lip.X, wash.X, angle = o.vw-3, o.vw-glow, 270
+		}
+	default:
+		lip.X, lip.W, lip.H = tab.X+tab.W/2-lipLong/2, lipLong, 3
+		wash.X, wash.W, wash.H, angle = lip.X, lipLong, glow, 180
+		if e == DockBottom {
+			lip.Y, wash.Y, angle = o.vh-3, o.vh-glow, 0
+		}
+	}
+	mui.Box(c).Absolute().Left(wash.X).Top(wash.Y).Size(wash.W, wash.H).IgnoreInput(true).
+		Draw(func(p *mui.Painter, r mui.Rect) {
+			p.FillGradient(r, mui.LinearGradient{From: theme.HUDDockGlow, To: theme.HUDDockGlow.Alpha(0), Angle: angle}, 0)
+		})
+	mui.Box(c).Absolute().Left(lip.X).Top(lip.Y).Size(lip.W, lip.H).Radius(2).Background(theme.RoleAccent).IgnoreInput(true)
+	mui.Box(c).Absolute().Left(tab.X).Top(tab.Y).Size(tab.W, tab.H).Radius(3).Background(theme.RoleAccent.Alpha(0.38)).
+		IgnoreInput(true).Label("Dock target")
+}
+
+// buttonTip names the button and its key: on hover, at once on keyboard
+// focus, and for a while on the first stream ever.
+func (a *App) buttonTip(c *mui.Context, b mui.Element, now time.Time) {
+	o := &a.ovl
+	body := func(tip mui.Element) {
+		at, self := mui.AnchorEnd, mui.AnchorStart
+		if o.menuOpensLeft() {
+			at, self = mui.AnchorStart, mui.AnchorEnd
+		}
+		tip.AttachTo(b, at, self).Margin(0, theme.Space2, 0, theme.Space2).Padding(theme.Space1+1, theme.Space2+2).
+			Radius(theme.RadiusSm).Background(theme.RoleRaised).Border(1, theme.RoleBorderStrong).
+			Shadow(0, 16, 40, 0, theme.FloatShadow).IgnoreInput(true).Children(func() {
+			mui.Row(c).AlignItems(mui.Center).Gap(theme.Space2).Children(func() {
+				mui.Text(c, "Stream controls").Font(theme.FontUI).FontSize(theme.TextCaption + 1).TextColor(theme.RoleText).SingleLine()
+				badge(c, a.shortcut(false, "O"))
+			})
+		})
+	}
+	if o.menuOpen || b.Dragging() {
+		return
+	}
+	if now.Before(o.tipUntil) {
+		c.After(o.tipUntil.Sub(now))
+		mui.Overlay(c, func() { body(mui.Box(c.Key("overlay-first-tip"))) })
+		return
+	}
+	mui.TooltipBase(c, b, body)
+}
+
+// menuOpensLeft reports whether the menu and the tip open towards the
+// left: docked right, or floating in the right half.
+func (o *overlay) menuOpensLeft() bool {
+	switch o.dock {
+	case DockRight:
+		return true
+	case DockNone:
+		return o.btn.X+o.off.X+btnSize/2 > o.vw/2
+	}
+	return false
+}
+
+// badge is a shortcut's keys in a hairline box.
+func badge(c *mui.Context, keys string) mui.Element {
+	return mui.Row(c).Height(18).PaddingX(5).AlignItems(mui.Center).Radius(3).Border(1, theme.RoleBorder).Children(func() {
+		mui.Text(c, keys).Font(theme.FontMono).FontSize(theme.TextMini).TextColor(theme.RoleText3).SingleLine()
+	})
+}
+
+// shortcut prints a three-key chord as this platform does: "⌃⌥P" on
+// macOS, "Ctrl Alt P" elsewhere.
+func (a *App) shortcut(shift bool, key string) string {
+	if a.goos == "darwin" {
+		if shift {
+			return "⌃⌥⇧" + key
+		}
+		return "⌃⌥" + key
+	}
+	if shift {
+		return "Ctrl Alt Shift " + key
+	}
+	return "Ctrl Alt " + key
+}
+
+// hiddenToast says, once, how to bring the overlay back. It never takes
+// the pointer.
+func (a *App) hiddenToast(c *mui.Context, now time.Time) {
+	o := &a.ovl
+	t := now.Sub(o.toastAt)
+	end := toastIn + toastHold + toastOut
+	if o.toastAt.IsZero() || t >= end {
+		return
+	}
+	c.After(end - t)
+	opacity := float32(1)
+	switch {
+	case t < toastIn:
+		opacity = float32(t) / float32(toastIn)
+		c.AnimationFrame()
+	case t > toastIn+toastHold:
+		opacity = 1 - float32(t-toastIn-toastHold)/float32(toastOut)
+		c.AnimationFrame()
+	}
+	if c.Preferences().ReduceMotion {
+		opacity = 1
+	}
+	mui.Row(c).Absolute().Left(0).Right(0).Top(26).Justify(mui.Center).IgnoreInput(true).Children(func() {
+		mui.Row(c).Height(36).Padding(0, 14).Gap(9).AlignItems(mui.Center).Radius(theme.RadiusPill).
+			Background(theme.HUDGlass).Border(1, theme.HUDEdge).Shadow(0, 16, 40, 0, theme.FloatShadow).
+			Opacity(opacity).IgnoreInput(true).Children(func() {
+			mui.Image(c, theme.Mark).Size(10, 15).Opacity(0.8)
+			mui.Box(c).Size(1, 16).Background(theme.RoleText.Alpha(0.12))
+			mui.Text(c, "Overlay hidden").Font(theme.FontUI).FontSize(theme.TextBody).FontWeight(500).TextColor(theme.RoleText).SingleLine()
+			mui.Text(c, "press").Font(theme.FontUI).FontSize(theme.TextCaption + 1).TextColor(theme.RoleText3).SingleLine()
+			mui.Row(c).Height(18).PaddingX(5).AlignItems(mui.Center).Radius(3).Border(1, theme.RoleBorderStrong).Children(func() {
+				mui.Text(c, a.shortcut(false, "P")).Font(theme.FontMono).FontSize(theme.TextMini).TextColor(theme.RoleText2).SingleLine()
+			})
+			mui.Text(c, "to show").Font(theme.FontUI).FontSize(theme.TextCaption + 1).TextColor(theme.RoleText3).SingleLine()
+		})
+	})
+}
+
+// overlayShortcuts are the overlay's keys, which work while it is hidden.
+func (a *App) overlayShortcuts(c *mui.Context) {
+	chord := mui.Ctrl | mui.Alt
+	c.OnWindowShortcut(chord, mui.KeyO, func() {
+		o := &a.ovl
+		if o.hidden {
+			o.hidden = false
+			o.menuOpen = true
+			return
+		}
+		o.menuOpen = !o.menuOpen
+	})
+	c.OnWindowShortcut(chord, mui.KeyP, a.toggleHidden)
+	c.OnWindowShortcut(chord, mui.KeyH, a.toggleHidden)
+	c.OnWindowShortcut(chord, mui.KeyM, func() {
+		o := &a.ovl
+		o.hidden = false
+		o.metrics.toggle(o.vw, o.vh)
+	})
+	c.OnWindowShortcut(chord, mui.KeyU, func() { go a.ToggleMic() })
+	c.OnWindowShortcut(chord, mui.KeyF, a.toggleFullscreen)
+	c.OnWindowShortcut(chord, mui.KeyI, func() {
+		s := a.backend.Settings()
+		before := s
+		s.SystemKeysCapture = !s.SystemKeysCapture
+		a.saveSettings(before, s)
+	})
+	c.OnWindowShortcut(chord|mui.Shift, mui.KeyD, a.disconnect)
+}
+
+// toggleHidden hides the whole overlay, or brings it back; hiding shows
+// the toast that says how to bring it back.
+func (a *App) toggleHidden() {
+	o := &a.ovl
+	o.hidden = !o.hidden
+	o.menuOpen, o.tray = false, ""
+	o.toastAt = time.Time{}
+	if o.hidden {
+		o.toastAt = a.frameNow
+	}
+}
+
+func (a *App) toggleFullscreen() {
+	if a.window != nil {
+		a.window.SetFullscreen(!a.window.Fullscreen())
+	}
+}
+
+// noteOverlay tells OnOverlayChange's callback when the overlay starts or
+// stops drawing over the stream.
+func (a *App) noteOverlay(shown bool) {
+	a.mu.Lock()
+	changed := shown != a.overlayShown
+	a.overlayShown = shown
+	cb := a.onOverlay
+	a.mu.Unlock()
+	if changed && cb != nil {
+		cb(shown)
+	}
+}

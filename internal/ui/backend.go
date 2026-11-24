@@ -77,6 +77,18 @@ type Telemetry struct {
 	MicMuted  bool
 	MicDevice string
 	MicHint   string
+
+	// CaptureMs is the host's capture stage, 0 from a host that does not
+	// report it, whose EncodeMs then holds it.
+	CaptureMs float64
+	// RTTMs is the transport's round trip, where NetMs is one way.
+	RTTMs float64
+	// CeilingMbps is the most the host accepted on the route; 0 is
+	// unknown.
+	CeilingMbps float64
+	// FramesDropped counts the frames this client dropped since the
+	// stream started.
+	FramesDropped uint64
 }
 
 // Settings are the client's preferences other than the stream's format,
@@ -95,6 +107,45 @@ type Settings struct {
 	// HostName is what this machine is called while hosting; empty is
 	// its own name.
 	HostName string
+	// AudioVolume is the stream's playback level from 0 to 1; AudioMuted
+	// silences it and keeps the audio stream running.
+	AudioVolume float64
+	AudioMuted  bool
+}
+
+// DockEdge is the stream view's edge the overlay button is docked to.
+type DockEdge uint8
+
+const (
+	DockNone DockEdge = iota
+	DockLeft
+	DockRight
+	DockTop
+	DockBottom
+)
+
+// OverlayLayout is where the stream overlay was left, in fractions of the
+// stream view, so that another window size keeps it in place.
+type OverlayLayout struct {
+	// Placed is false before the first stream.
+	Placed bool
+	Dock   DockEdge
+	// DockFrac is the docked tab's centre along its edge; ButtonX and
+	// ButtonY are the floating button's centre.
+	DockFrac         float32
+	ButtonX, ButtonY float32
+	Metrics          bool
+	// MetricsX and MetricsY are the metrics window's top-left corner, both
+	// 0 until it was first shown.
+	MetricsX, MetricsY float32
+	MetricsCompact     bool
+}
+
+// WindowHook is the window the client streams in, which the app that
+// made it supplies (SetWindow).
+type WindowHook interface {
+	Fullscreen() bool
+	SetFullscreen(on bool)
 }
 
 // EncoderInfo is a hardware encoder on this machine.
@@ -181,6 +232,10 @@ type Backend interface {
 	// SaveOverrides keeps o for hostID, or for every host when hostID is
 	// "", and restarts a live stream they change.
 	SaveOverrides(hostID string, o defaults.UserOverrides) error
+	// OverlayLayout is where the stream overlay was left last, and
+	// SaveOverlayLayout keeps l for the next stream.
+	OverlayLayout() OverlayLayout
+	SaveOverlayLayout(l OverlayLayout) error
 
 	Pairing() PairState
 	SubmitPIN(ctx context.Context, pin string) error

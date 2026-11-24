@@ -96,6 +96,10 @@ const (
 
 // Type: app scale, size and line height in px.
 const (
+	TextMicro      float32 = 9
+	LeadingMicro   float32 = 12
+	TextMini       float32 = 10
+	LeadingMini    float32 = 14
 	TextCaption    float32 = 11
 	LeadingCaption float32 = 16
 	TextBody       float32 = 13

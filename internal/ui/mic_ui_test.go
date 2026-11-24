@@ -7,6 +7,8 @@ import (
 	mui "github.com/egoist/mygo/ui"
 )
 
+const steamMic = "Microphone (Steam Streaming Microphone)"
+
 func waitMuted(t *testing.T, f *fakeBackend, tt *mui.Tester, want bool) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -17,41 +19,63 @@ func waitMuted(t *testing.T, f *fakeBackend, tt *mui.Tester, want bool) {
 		tt.Frame()
 		time.Sleep(5 * time.Millisecond)
 	}
+	tt.Frame()
 }
 
-func TestDrawerMicAndClipboard(t *testing.T) {
-	f := newFake()
-	f.tel = sampleTelemetry()
-	f.tel.MicMuted, f.tel.MicDevice = true, "Microphone (Steam Streaming Microphone)"
-	_, tt := newTester(t, f)
-	click(t, tt, "Show stream controls")
-	if !tt.HasText("Muted. Plays into Microphone (Steam Streaming Microphone) on the host when on.") {
+// TestOverlayMicAndClipboard: the Sound tray's Microphone switch and
+// Ctrl+Alt+U drive the host's virtual mic, and Shared clipboard turns both
+// directions on and off together.
+func TestOverlayMicAndClipboard(t *testing.T) {
+	f := streamFake()
+	f.tel.MicMuted, f.tel.MicDevice = true, steamMic
+	_, tt, _ := newStreamTester(t, f)
+	openMenu(t, tt)
+	if !tt.HasText("80 % · mic off") {
+		t.Fatalf("sound row value: %q", tt.Texts())
+	}
+	click(t, tt, "Sound & mic")
+	if !tt.HasText("Off · plays into " + steamMic + " on the host") {
 		t.Fatalf("mic hint missing: %q", tt.Texts())
 	}
-	click(t, tt, "Unmute")
+	click(t, tt, "Microphone")
 	waitMuted(t, f, tt, false)
-	tt.Frame()
-	if !tt.HasText("Live in Microphone (Steam Streaming Microphone) on the host.") {
-		t.Fatalf("live mic hint missing: %q", tt.Texts())
+	if !tt.HasText("Live in "+steamMic+" on the host") || !tt.HasText("80 % · mic on") {
+		t.Fatalf("live mic not shown: %q", tt.Texts())
 	}
-	tt.Key(mui.Ctrl|mui.Alt, mui.KeyM)
+	tt.Key(mui.Ctrl|mui.Alt, mui.KeyU)
 	waitMuted(t, f, tt, true)
 
-	click(t, tt, "Share clipboard")
-	click(t, tt, "Accept clipboard")
+	click(t, tt, "Shared clipboard")
 	if s := f.Settings(); !s.ClipboardSend || !s.ClipboardReceive {
-		t.Fatalf("clipboard switches saved %+v", s)
+		t.Fatalf("clipboard on saved %+v", s)
+	}
+	click(t, tt, "Shared clipboard")
+	if s := f.Settings(); s.ClipboardSend || s.ClipboardReceive {
+		t.Fatalf("clipboard off saved %+v", s)
+	}
+	f.set(func(f *fakeBackend) { f.settings.ClipboardReceive = true })
+	tt.Frame()
+	if !tt.HasText("receive only") {
+		t.Fatalf("one-way clipboard not shown: %q", tt.Texts())
+	}
+	click(t, tt, "Shared clipboard")
+	if s := f.Settings(); !s.ClipboardSend || !s.ClipboardReceive {
+		t.Fatalf("one-way clipboard switched to %+v, want both", s)
 	}
 }
 
-func TestMicHotkeyWithoutVirtualMic(t *testing.T) {
-	f := newFake()
-	f.tel = sampleTelemetry()
+// TestOverlayMicWithoutVirtualMic: with no virtual mic on the host the mic
+// stays muted and the tray says why.
+func TestOverlayMicWithoutVirtualMic(t *testing.T) {
+	f := streamFake()
 	f.tel.MicMuted, f.tel.MicHint = true, "Virtual mic not detected — install Steam Streaming Microphone / virtual audio device"
-	_, tt := newTester(t, f)
-	tt.Key(mui.Ctrl|mui.Alt, mui.KeyM)
+	_, tt, _ := newStreamTester(t, f)
+	tt.Key(mui.Ctrl|mui.Alt, mui.KeyU)
+	openMenu(t, tt)
+	click(t, tt, "Sound & mic")
+	click(t, tt, "Microphone")
+	time.Sleep(20 * time.Millisecond)
 	tt.Frame()
-	click(t, tt, "Show stream controls")
 	if !f.Telemetry().MicMuted || !tt.HasText(f.tel.MicHint) {
 		t.Fatalf("muted %v, texts %q", f.Telemetry().MicMuted, tt.Texts())
 	}

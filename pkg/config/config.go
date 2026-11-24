@@ -86,6 +86,31 @@ type ClientConfig struct {
 
 	Overrides     defaults.UserOverrides            `json:"overrides"`
 	HostOverrides map[string]defaults.UserOverrides `json:"hostOverrides,omitempty"` // key: HostID
+
+	// AudioVolume is the stream's playback level from 0 to 1; nil is
+	// full.
+	AudioVolume *float64 `json:"audioVolume,omitempty"`
+	AudioMuted  bool     `json:"audioMuted,omitempty"`
+	// Overlay is where the stream overlay was left; nil before the first
+	// stream.
+	Overlay *OverlayLayout `json:"overlay,omitempty"`
+}
+
+// OverlayLayout places the stream overlay's button and metrics window, in
+// fractions of the stream view so that a new window size keeps them where
+// they were.
+type OverlayLayout struct {
+	// Dock is the edge the button is docked to: "left", "right", "top",
+	// "bottom", or "" while it floats at ButtonX, ButtonY, its centre.
+	Dock     string  `json:"dock,omitempty"`
+	DockFrac float64 `json:"dockFrac,omitempty"`
+	ButtonX  float64 `json:"buttonX"`
+	ButtonY  float64 `json:"buttonY"`
+	Metrics  bool    `json:"metrics,omitempty"`
+	// MetricsX and MetricsY are the metrics window's top-left corner.
+	MetricsX       float64 `json:"metricsX"`
+	MetricsY       float64 `json:"metricsY"`
+	MetricsCompact bool    `json:"metricsCompact,omitempty"`
 }
 
 // OverridesFor returns the global overrides with hostID's on top.
