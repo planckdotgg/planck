@@ -170,6 +170,22 @@ func scalePercent(s float64) int {
 	return int(math.Round(s * 100))
 }
 
+// resizeDisplay is d as a Resize carries it.
+func resizeDisplay(d defaults.ClientDisplay) wire.ResizeDisplay {
+	u16 := func(v int) uint16 { return uint16(min(max(v, 0), math.MaxUint16)) }
+	return wire.ResizeDisplay{Width: u16(d.WidthPx), Height: u16(d.HeightPx), ScaleMilli: u16(int(math.Round(d.Scale * 1000))),
+		MaxHz: u16(d.MaxHz), MinHz: u16(d.MinHz), HDR: d.HDR}
+}
+
+// clientDisplayOf is the display a Resize carries, nil when it has none.
+func clientDisplayOf(d wire.ResizeDisplay) *defaults.ClientDisplay {
+	if d.Width == 0 || d.Height == 0 {
+		return nil
+	}
+	return &defaults.ClientDisplay{WidthPx: int(d.Width), HeightPx: int(d.Height), Scale: float64(d.ScaleMilli) / 1000,
+		MaxHz: int(d.MaxHz), MinHz: int(d.MinHz), HDR: d.HDR}
+}
+
 // profileVideoConfig is the video part of a profile's SessionConfig.
 func profileVideoConfig(p *defaults.ResolvedProfile) wire.SessionConfig {
 	acc := wire.SessionConfig{Codec: wire.Codec(p.Codec), Chroma: wire.Chroma420, Width: uint16(p.Width), Height: uint16(p.Height),

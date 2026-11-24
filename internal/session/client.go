@@ -267,9 +267,9 @@ type conn struct {
 	profile atomic.Pointer[defaults.ResolvedProfile]
 	// openSink makes the sink of each stream.
 	openSink SinkOpener
-	// asked is the window size last offered the host, in pixels, width
-	// in the high half.
-	asked atomic.Uint64
+	// asked is the window last offered the host, at the connect or a
+	// route's or in a Resize.
+	asked atomic.Pointer[viewOffer]
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -415,9 +415,6 @@ func (c *Client) connect(ctx context.Context, t Target) (*conn, error) {
 	if cc.name == "" {
 		cc.name = sess.PeerName()
 	}
-	if cfg.ViewSize != nil {
-		cc.asked.Store(packView(defaults.ViewSize(cfg.ViewSize())))
-	}
 	acc := sess.Config()
 	cc.intra.Store(acc.Codec == wire.CodecPyroWave)
 	dcfg, prof := c.streamConfig(sess)
@@ -537,10 +534,11 @@ func (c *Client) dialRoute(ctx context.Context, cc *conn, r resolved) (*route, e
 		req.AudioSampleRate, req.AudioChannels = audio.SampleRate, audio.Channels
 	}
 
-	capsJSON, err := c.capabilities(cfg, r.addr, r.kind)
+	capsJSON, offered, err := c.capabilities(cfg, r.addr, r.kind)
 	if err != nil {
 		return nil, err
 	}
+	cc.asked.Store(offerOf(offered, cfg.ViewSize != nil))
 
 	rt := &route{kind: r.kind, addr: r.addr}
 	sess, err := transport.Dial(ctx, r.addr, transport.ClientConfig{
@@ -678,7 +676,7 @@ func (c *Client) streamConfig(sess *transport.Session) (decode.Config, *defaults
 
 // capabilities is the JSON this client offers a host: its display,
 // decoders and link, the route it found, and the user's overrides.
-func (c *Client) capabilities(cfg ClientConfig, addr string, path discovery.PathKind) ([]byte, error) {
+func (c *Client) capabilities(cfg ClientConfig, addr string, path discovery.PathKind) ([]byte, defaults.ClientDisplay, error) {
 	probe := cfg.Capabilities
 	if probe == nil {
 		probe = ProbeClientCapabilities
@@ -694,9 +692,10 @@ func (c *Client) capabilities(cfg ClientConfig, addr string, path discovery.Path
 		}
 	}
 	if err := cfg.Overrides.Validate(); err != nil {
-		return nil, err
+		return nil, caps.Display, err
 	}
-	return json.Marshal(clientCaps{V: clientCapsVersion, Client: caps, Route: defaults.RouteInfo{Kind: routeKind(path)}, Overrides: cfg.Overrides})
+	js, err := json.Marshal(clientCaps{V: clientCapsVersion, Client: caps, Route: defaults.RouteInfo{Kind: routeKind(path)}, Overrides: cfg.Overrides})
+	return js, caps.Display, err
 }
 
 // ProbeClientCapabilities reads this device's main display and hardware
@@ -1449,12 +1448,18 @@ func (c *Client) Close() {
 	}
 }
 
-// Resize offers the host a w x h pixel window to stream at. It sends
-// nothing unless the stream is on a virtual display at Resolution auto,
-// the host takes Resize, and the size, made even and in bounds, is not
-// the last one offered. The host may answer with a new stream in another
-// codec (switchStream).
-func (c *Client) Resize(w, h int) error {
+// Resize offers the host a w x h pixel window to stream at, on the
+// display offered last. See ResizeOn.
+func (c *Client) Resize(w, h int) error { return c.ResizeOn(w, h, defaults.ClientDisplay{}) }
+
+// ResizeOn offers the host a w x h pixel window to stream at, on display
+// d; a d without a size is the display offered last. It sends nothing
+// unless the stream is on a virtual display at Resolution auto and the
+// host takes Resize, nor when the size, made even and in bounds, and the
+// display are the ones offered last. A host that does not read a
+// Resize's display gets the size alone. The host may answer with a new
+// stream in another codec (switchStream).
+func (c *Client) ResizeOn(w, h int, d defaults.ClientDisplay) error {
 	c.mu.Lock()
 	cc, res := c.conn, c.cfg.Overrides.Resolution
 	c.mu.Unlock()
@@ -1465,11 +1470,49 @@ func (c *Client) Resize(w, h int) error {
 	if rt == nil || p == nil || !p.VirtualDisplay || rt.sess.PeerFeatures()&wire.FeatureResize == 0 {
 		return nil
 	}
-	w, h = defaults.ViewSize(w, h)
-	if cc.asked.Swap(packView(w, h)) == packView(w, h) {
-		return nil
+	withDisplay := rt.sess.PeerFeatures()&wire.FeatureResizeDisplay != 0
+	next := &viewOffer{}
+	next.w, next.h = defaults.ViewSize(w, h)
+	for {
+		last := cc.asked.Load()
+		switch {
+		case withDisplay && d.WidthPx > 0 && d.HeightPx > 0:
+			next.display = d
+			next.display.ViewWidthPx, next.display.ViewHeightPx = 0, 0
+		case last != nil:
+			next.display = last.display
+		}
+		if last != nil && *last == *next {
+			return nil
+		}
+		if cc.asked.CompareAndSwap(last, next) {
+			break
+		}
 	}
-	return rt.sess.SendControl(&wire.Resize{Width: uint16(w), Height: uint16(h)})
+	m := &wire.Resize{Width: uint16(next.w), Height: uint16(next.h)}
+	if withDisplay && next.display.WidthPx > 0 {
+		m.Display = resizeDisplay(next.display)
+	}
+	return rt.sess.SendControl(m)
+}
+
+// viewOffer is a window size in pixels, even and in bounds, and the
+// display it is on, without the window's size.
+type viewOffer struct {
+	w, h    int
+	display defaults.ClientDisplay
+}
+
+// offerOf is the window a client display offered: its view size when the
+// client has a window, and the display.
+func offerOf(d defaults.ClientDisplay, window bool) *viewOffer {
+	o := &viewOffer{}
+	if window {
+		o.w, o.h = defaults.ViewSize(d.ViewWidthPx, d.ViewHeightPx)
+	}
+	d.ViewWidthPx, d.ViewHeightPx = 0, 0
+	o.display = d
+	return o
 }
 
 func packView(w, h int) uint64 { return uint64(uint32(w))<<32 | uint64(uint32(h)) }

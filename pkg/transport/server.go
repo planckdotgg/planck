@@ -168,7 +168,7 @@ func (sv *Server) handshake(parent context.Context, conn *quic.Conn) (*Session, 
 		features |= wire.FeatureCapabilities
 	}
 	if sv.cfg.Resize {
-		features |= wire.FeatureResize
+		features |= wire.FeatureResize | wire.FeatureResizeDisplay
 	}
 	if err := wire.WriteMessage(ctrl, &wire.Hello{Version: wire.Version, Role: wire.RoleHost, Name: *sv.name.Load(), Features: features}); err != nil {
 		return nil, err

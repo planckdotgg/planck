@@ -50,8 +50,12 @@ type stream struct {
 	epoch uint8
 	// resize holds the client window's latest size, in pixels, for the
 	// video loop.
-	resize chan [2]int
-	pts    [ptsRingSize]struct {
+	resize chan resizeReq
+	// display is the client display a Resize said the window moved to;
+	// nil keeps the one offered at the start. Only the video loop
+	// touches it.
+	display *defaults.ClientDisplay
+	pts     [ptsRingSize]struct {
 		id  uint32
 		pts int64
 	}
@@ -88,7 +92,7 @@ func newStream(h *Host, sess *transport.Session) *stream {
 	if p.BitrateKbps <= 0 {
 		p.BitrateKbps = int(acc.BitrateKbps)
 	}
-	st := &stream{h: h, sess: sess, params: p, done: make(chan struct{}), invalid: make(chan uint32, 16), resize: make(chan [2]int, 1),
+	st := &stream{h: h, sess: sess, params: p, done: make(chan struct{}), invalid: make(chan uint32, 16), resize: make(chan resizeReq, 1),
 		encodeMs: newWindow(encodeWindow), captureW: newWindow(encodeWindow), encodeW: newWindow(encodeWindow)}
 	if ua, ok := sess.RemoteControlAddr().(*net.UDPAddr); ok {
 		st.addr = ua.String()
@@ -168,17 +172,28 @@ func (st *stream) closeVirtualDisplay(vd VirtualDisplay) {
 	st.h.logf("planck: virtual display %s removed (err %v)", name, err)
 }
 
+// resizeReq is a client window's size in pixels and, when the client
+// sent it, the display the window is on.
+type resizeReq struct {
+	w, h    int
+	display *defaults.ClientDisplay
+}
+
 // requestResize leaves the client window's size for the video loop,
-// replacing one it has not taken yet.
-func (st *stream) requestResize(w, h int) {
+// replacing one it has not taken yet but keeping that one's display when
+// r has none.
+func (st *stream) requestResize(r resizeReq) {
 	for {
 		select {
-		case st.resize <- [2]int{w, h}:
+		case st.resize <- r:
 			return
 		default:
 		}
 		select {
-		case <-st.resize:
+		case old := <-st.resize:
+			if r.display == nil {
+				r.display = old.display
+			}
 		default:
 		}
 	}
@@ -192,8 +207,14 @@ func (st *stream) requestResize(w, h int) {
 // display takes the new size (or is made anew on another GPU or rate),
 // the client hears of it, and the loop opens the pipeline again with a
 // keyframe. A display that fails to resize is gone; the loop makes a new
-// one. It reports whether the stream changed.
-func (st *stream) resizeTo(w, h int, pipe *VideoPipe, vd *VirtualDisplay) bool {
+// one. A window moved to another client display resolves for that
+// display: its refresh caps the rate, and its scale the virtual display's.
+// It reports whether the stream changed.
+func (st *stream) resizeTo(r resizeReq, pipe *VideoPipe, vd *VirtualDisplay) bool {
+	w, h := r.w, r.h
+	if r.display != nil {
+		st.display = r.display
+	}
 	switches := st.sess.PeerFeatures()&wire.FeatureStreamSwitch != 0
 	if st.profile == nil || !st.params.VirtualDisplay || (st.params.Codec == encode.PyroWave && !switches) {
 		return false
@@ -201,6 +222,9 @@ func (st *stream) resizeTo(w, h int, pipe *VideoPipe, vd *VirtualDisplay) bool {
 	var cc clientCaps
 	if err := json.Unmarshal(st.sess.PeerCapabilities(), &cc); err != nil || cc.V != clientCapsVersion {
 		return false
+	}
+	if st.display != nil {
+		cc.Client.Display = *st.display
 	}
 	cc.Client.Display.ViewWidthPx, cc.Client.Display.ViewHeightPx = w, h
 	var remote netip.Addr
@@ -215,7 +239,9 @@ func (st *stream) resizeTo(w, h int, pipe *VideoPipe, vd *VirtualDisplay) bool {
 	if !switches {
 		return st.resizeLegacy(w, h, &p, pipe, vd)
 	}
-	if sameStream(st.profile, &p) {
+	next := paramsFromProfile(st.params, &p, st.sess.ShardSize())
+	next.ScalePct = scalePercent(cc.Client.Display.Scale)
+	if sameStream(st.profile, &p) && next.ScalePct == st.params.ScalePct {
 		return false
 	}
 	if *pipe != nil {
@@ -223,10 +249,9 @@ func (st *stream) resizeTo(w, h int, pipe *VideoPipe, vd *VirtualDisplay) bool {
 		*pipe = nil
 	}
 	from := st.profile
-	next := paramsFromProfile(st.params, &p, st.sess.ShardSize())
 	if *vd != nil {
 		switch {
-		case next.Adapter != st.params.Adapter || next.FPS != st.params.FPS:
+		case next.Adapter != st.params.Adapter || next.FPS != st.params.FPS || next.ScalePct != st.params.ScalePct:
 			st.closeVirtualDisplay(*vd)
 			*vd = nil
 		case next.Width != st.params.Width || next.Height != st.params.Height:
@@ -419,8 +444,8 @@ func (st *stream) videoLoop() {
 	emit := out.emit
 	for st.ctx.Err() == nil {
 		select {
-		case sz := <-st.resize:
-			if st.resizeTo(sz[0], sz[1], &pipe, &vd) {
+		case req := <-st.resize:
+			if st.resizeTo(req, &pipe, &vd) {
 				kbps = st.sess.TargetBitrateKbps()
 				slices = max(1, int(st.sess.Config().Slices))
 				out.slices, out.epoch = uint8(slices), st.epoch

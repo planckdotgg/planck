@@ -347,3 +347,33 @@ func TestMediaCodecDoesNotAllocate(t *testing.T) {
 		t.Fatalf("media header encode/decode allocates %.1f times", allocs)
 	}
 }
+
+// TestResizeDisplay: a Resize with a display round-trips in a pinned
+// encoding, one without stays the 4-byte body older hosts read (golden
+// 12_resize), and a zero-width display is refused.
+func TestResizeDisplay(t *testing.T) {
+	want := Resize{Width: 3440, Height: 1440, Display: ResizeDisplay{Width: 3440, Height: 1440, ScaleMilli: 1000, MaxHz: 75, MinHz: 24, HDR: true}}
+	b, err := AppendMessage(nil, &want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := hex.EncodeToString(b); got != "000000100c0d7005a00d7005a003e8004b001801" {
+		t.Errorf("encoding changed: %s", got)
+	}
+	got, err := DecodeMessage(b[4:])
+	if err != nil || *got.(*Resize) != want {
+		t.Fatalf("round trip: %+v, %v", got, err)
+	}
+	b, _ = AppendMessage(nil, &Resize{Width: 2560, Height: 1440})
+	bad := append(b[4:], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+	if _, err := DecodeMessage(bad); !errors.Is(err, ErrMalformed) {
+		t.Errorf("zero-width display: %v, want ErrMalformed", err)
+	}
+	var all uint32
+	for _, f := range []uint32{FeatureLANDatagram, FeatureInputDedup, FeatureCapabilities, FeatureResize, FeaturePeerState, FeatureMic, FeatureClipboard, FeatureHostStats, FeatureCursorState, FeatureStreamSwitch} {
+		all |= f
+	}
+	if all&FeatureResizeDisplay != 0 {
+		t.Errorf("FeatureResizeDisplay %#x shares a bit", FeatureResizeDisplay)
+	}
+}

@@ -439,6 +439,9 @@ func (b *backend) dial(ctx context.Context, t session.Target, pin string) error 
 	b.tel = telemetry(st)
 	b.mu.Unlock()
 	b.changed()
+	if b.viewSize != nil {
+		b.resizeStream(b.viewSize())
+	}
 	go b.follow(c)
 	return nil
 }
@@ -651,12 +654,20 @@ func (b *backend) capabilities() defaults.ClientCapabilities {
 	return c
 }
 
-// resizeStream offers the stream, if there is one, the window's new size.
+// resizeStream offers the stream, if there is one, the window's new size
+// and the display it is on now. After a connect it offers a size or
+// display that changed while the stream was starting.
 func (b *backend) resizeStream(w, h int) {
-	if c := b.current(); c != nil {
-		if err := c.Resize(w, h); err != nil {
-			b.logf("planck: resize the stream: %v", err)
-		}
+	c := b.current()
+	if c == nil {
+		return
+	}
+	var d defaults.ClientDisplay
+	if b.display != nil {
+		d = b.display()
+	}
+	if err := c.ResizeOn(w, h, d); err != nil {
+		b.logf("planck: resize the stream: %v", err)
 	}
 }
 

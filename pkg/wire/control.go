@@ -113,6 +113,10 @@ const (
 	// codec, format or size changes mid-session: the host announces each
 	// new stream in a Stream message and tags its frames with the epoch.
 	FeatureStreamSwitch uint32 = 1 << 10
+	// FeatureResizeDisplay, from a host, says its Resize handler reads
+	// Resize.Display. A client sends Display only to such a host: an
+	// older one refuses the longer message.
+	FeatureResizeDisplay uint32 = 1 << 11
 )
 
 type AuthMethod uint8
@@ -237,6 +241,18 @@ type Stream struct {
 // keeps the stream as it is.
 type Resize struct {
 	Width, Height uint16
+	// Display is the client display the window is on now, when Width is
+	// set; else the display offered at the start holds.
+	Display ResizeDisplay
+}
+
+// ResizeDisplay is a client display: its size in pixels, backing scale
+// in thousandths, refresh range and HDR.
+type ResizeDisplay struct {
+	Width, Height uint16
+	ScaleMilli    uint16
+	MaxHz, MinHz  uint16
+	HDR           bool
 }
 
 // PeerState is what one side does with the session's optional flows.
@@ -456,12 +472,26 @@ func (m *Stream) decodeBody(d *decoder) {
 
 func (m *Resize) appendBody(b []byte) []byte {
 	b = binary.BigEndian.AppendUint16(b, m.Width)
-	return binary.BigEndian.AppendUint16(b, m.Height)
+	b = binary.BigEndian.AppendUint16(b, m.Height)
+	if m.Display.Width == 0 {
+		return b
+	}
+	for _, v := range []uint16{m.Display.Width, m.Display.Height, m.Display.ScaleMilli, m.Display.MaxHz, m.Display.MinHz} {
+		b = binary.BigEndian.AppendUint16(b, v)
+	}
+	return append(b, boolByte(m.Display.HDR))
 }
 
 func (m *Resize) decodeBody(d *decoder) {
 	m.Width = d.u16()
 	m.Height = d.u16()
+	if len(d.b) == 0 {
+		return
+	}
+	m.Display = ResizeDisplay{Width: d.u16(), Height: d.u16(), ScaleMilli: d.u16(), MaxHz: d.u16(), MinHz: d.u16(), HDR: d.boolean()}
+	if m.Display.Width == 0 {
+		d.bad = true
+	}
 }
 
 func (m *PeerState) appendBody(b []byte) []byte {

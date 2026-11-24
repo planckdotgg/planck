@@ -19,6 +19,7 @@ type fakeVDD struct {
 	mu         sync.Mutex
 	live, made int
 	sizes      [][2]int
+	scales     []int
 	failResize bool
 }
 
@@ -34,6 +35,7 @@ func (v *fakeVDD) open(p VideoParams, _ []byte, _ bool) (VirtualDisplay, error) 
 	v.live++
 	v.made++
 	v.sizes = append(v.sizes, [2]int{p.Width, p.Height})
+	v.scales = append(v.scales, p.ScalePct)
 	return &fakeDisplay{v: v, name: fmt.Sprintf(`\\.\DISPLAY%d`, 40+v.made)}, nil
 }
 
@@ -285,6 +287,82 @@ func TestResizeFailureLeavesOneDisplay(t *testing.T) {
 	}
 	units := r.sink.Units.Load()
 	waitFor(t, "video on the new display", func() bool { return r.sink.Units.Load() >= units+10 })
+	r.client.Disconnect()
+	waitFor(t, "the display removed", func() bool { live, _, _ := vdd.state(); return live == 0 })
+}
+
+// TestResizeAfterSizeChangedWhileConnecting: a window resized between the
+// size the connect offered and the end of the connect is offered after
+// it, not taken for the size the host already has.
+func TestResizeAfterSizeChangedWhileConnecting(t *testing.T) {
+	vdd, pipes := &fakeVDD{}, &pipeLog{}
+	h := startVDDHost(t, vdd, pipes)
+	var view atomic.Uint64
+	view.Store(packView(1280, 720))
+	r := windowClient(t, h.PIN(), defaults.UserOverrides{}, &view)
+	var calls atomic.Int32
+	r.client.cfg.ViewSize = func() (int, int) {
+		if calls.Add(1) == 1 {
+			return 1280, 720
+		}
+		return 1600, 1000
+	}
+	if err := connect(t, r, h.Addr().String()); err != nil {
+		t.Fatal(err)
+	}
+	if w, hh := profileSize(r); w != 1280 || hh != 720 {
+		t.Fatalf("initial profile %dx%d, want the 1280x720 offered", w, hh)
+	}
+	if err := r.client.Resize(1600, 1000); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the 1600x1000 profile", func() bool { w, hh := profileSize(r); return w == 1600 && hh == 1000 })
+}
+
+// TestResizeFollowsDisplay: a window moved, at the same size, to a 60 Hz
+// 2x display streams at 60 fps on a virtual display made anew at 200%
+// scale; offering the same window again, or without a display, changes
+// nothing.
+func TestResizeFollowsDisplay(t *testing.T) {
+	vdd, pipes := &fakeVDD{}, &pipeLog{}
+	h := startVDDHost(t, vdd, pipes)
+	var view atomic.Uint64
+	view.Store(packView(1280, 720))
+	r := windowClient(t, h.PIN(), defaults.UserOverrides{}, &view)
+	if err := connect(t, r, h.Addr().String()); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "video frames", func() bool { return r.sink.Units.Load() >= 10 })
+	if p := r.client.Stats().Profile; p.FPS != 120 || vdd.scales[0] != 100 {
+		t.Fatalf("initial stream %d fps at %d%% scale, want 120 at 100%%", p.FPS, vdd.scales[0])
+	}
+	other := defaults.ClientDisplay{WidthPx: 3440, HeightPx: 1440, Scale: 2, MaxHz: 60, MinHz: 24}
+	if err := r.client.ResizeOn(1280, 720, other); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the 60 fps profile", func() bool { return r.client.Stats().Profile.FPS == 60 })
+	waitFor(t, "the pipeline at 60 fps", func() bool { p, _ := pipes.last(); return p.FPS == 60 && p.ScalePct == 200 })
+	vdd.mu.Lock()
+	made, live, scale := vdd.made, vdd.live, vdd.scales[len(vdd.scales)-1]
+	vdd.mu.Unlock()
+	if made != 2 || live != 1 || scale != 200 {
+		t.Fatalf("after the move: %d live of %d made, last at %d%%", live, made, scale)
+	}
+	if w, hh := profileSize(r); w != 1280 || hh != 720 {
+		t.Fatalf("after the move: %dx%d, want the 1280x720 window", w, hh)
+	}
+
+	_, opens := pipes.last()
+	if err := r.client.ResizeOn(1280, 720, other); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.client.Resize(1280, 720); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if _, n := pipes.last(); n != opens {
+		t.Fatalf("the same window on the same display reopened the pipeline: %d opens, %d before", n, opens)
+	}
 	r.client.Disconnect()
 	waitFor(t, "the display removed", func() bool { live, _, _ := vdd.state(); return live == 0 })
 }

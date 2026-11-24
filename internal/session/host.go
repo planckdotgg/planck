@@ -655,7 +655,7 @@ func (h *Host) onControl(m wire.Message) {
 		st := h.cur
 		h.mu.Unlock()
 		if st != nil {
-			st.requestResize(int(m.Width), int(m.Height))
+			st.requestResize(resizeReq{w: int(m.Width), h: int(m.Height), display: clientDisplayOf(m.Display)})
 		}
 	}
 }

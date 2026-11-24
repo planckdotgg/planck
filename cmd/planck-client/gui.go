@@ -76,6 +76,16 @@ func runGUI(o options) error {
 			}
 			resizer.changed(video.pixelSize())
 		})
+		// A window moved onto another display may keep its size but not
+		// the display's refresh or scale, nor its own size in pixels; the
+		// resize it sends once settled carries the display, and one on
+		// the same display sends nothing.
+		win.OnMove(func() {
+			video.storeSize(win)
+			if win.IsFullScreen() == settled {
+				resizer.changed(video.pixelSize())
+			}
+		})
 		fullScreen := func() {
 			settled = win.IsFullScreen()
 			video.resized()
