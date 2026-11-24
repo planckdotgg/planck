@@ -609,12 +609,6 @@ func (e *Encoder) encodeMapped(f capture.Frame, mapped uintptr, format uint32, f
 		PTS:      int64(get64(l, lockTimeStamp)),
 	}
 	if e.cfg.Slices > 1 && e.cfg.Codec == encode.HEVC && e.cfg.SubFrame {
-		e.sliceEnds = e.sliceEnds[:0]
-		n := int(get32(l, lockNumSlices))
-		for i := 1; i < n && i < len(e.sliceOffsets); i++ {
-			e.sliceEnds = append(e.sliceEnds, int(e.sliceOffsets[i]))
-		}
-		e.sliceEnds = append(e.sliceEnds, size)
 		pkt.SliceEnds = e.sliceEnds
 	}
 	err := e.call2(fnUnlockBitstream, e.enc, e.output)
@@ -641,15 +635,16 @@ func relax(since time.Duration) {
 }
 
 // pollSubFrame locks the bitstream without waiting until the whole picture
-// is done, recording when the first slice became readable. With emit it
-// copies each slice into *dst as it finishes and hands it on. It returns
-// with the bitstream locked.
+// is done, recording when the first slice became readable and where each
+// slice ends in e.sliceEnds. With emit it hands each slice on as it
+// finishes. It copies the finished slices into *dst and returns with the
+// bitstream locked.
 func (e *Encoder) pollSubFrame(dst *[]byte, forceKey bool, emit func(int, []byte, bool) error) error {
 	l := e.lock
 	setBits(l, lockBits, lockBitDoNotWait, 1, 1)
 	e.firstSlice, e.polls = 0, 0
+	e.sliceEnds = e.sliceEnds[:0]
 	want := max(e.cfg.Slices, 1)
-	emitted := 0
 	for {
 		polled := clock.Now()
 		r, _, _ := syscall.SyscallN(e.api.fn(fnLockBitstream), e.enc, uintptr(unsafe.Pointer(&l[0])))
@@ -666,45 +661,39 @@ func (e *Encoder) pollSubFrame(dst *[]byte, forceKey bool, emit func(int, []byte
 		if n > 0 && e.firstSlice == 0 {
 			e.firstSlice = clock.Now() - e.submitted
 		}
-		done := get32(l, lockHWStatus) == 2 || n >= want
-		if emit != nil && n > emitted {
-			if err := e.emitSlices(dst, emitted, n, forceKey || isKeyframe(l), emit); err != nil {
-				e.call2(fnUnlockBitstream, e.enc, e.output)
-				return err
-			}
-			emitted = n
+		finished := get32(l, lockHWStatus) == 2
+		found := len(e.sliceEnds)
+		if n > found {
+			size := int(get32(l, lockSize))
+			data := unsafe.Slice((*byte)(win.Ptr(uintptr(get64(l, lockPtr)))), size)
+			*dst = append(*dst, data[len(*dst):]...)
+			e.sliceEnds, _ = appendSliceEnds(e.sliceEnds, *dst, n, e.cfg.Codec, e.sliceOffsets, finished)
 		}
-		if done {
+		if emit != nil {
+			key := forceKey || isKeyframe(l)
+			for i := found; i < len(e.sliceEnds); i++ {
+				start := 0
+				if i > 0 {
+					start = e.sliceEnds[i-1]
+				}
+				if err := emit(i, (*dst)[start:e.sliceEnds[i]], key); err != nil {
+					e.call2(fnUnlockBitstream, e.enc, e.output)
+					return err
+				}
+			}
+		}
+		if (finished || n >= want) && len(e.sliceEnds) == n {
 			return nil
+		}
+		if finished {
+			e.call2(fnUnlockBitstream, e.enc, e.output)
+			return fmt.Errorf("nvenc: found %d of %d slice boundaries in a finished picture", len(e.sliceEnds), n)
 		}
 		if err := e.call2(fnUnlockBitstream, e.enc, e.output); err != nil {
 			return err
 		}
 		relax(polled)
 	}
-}
-
-// emitSlices copies the finished slices from..to-1 out of the locked
-// bitstream, whose size counts the bytes of every finished slice.
-func (e *Encoder) emitSlices(dst *[]byte, from, to int, key bool, emit func(int, []byte, bool) error) error {
-	l := e.lock
-	size := int(get32(l, lockSize))
-	data := unsafe.Slice((*byte)(win.Ptr(uintptr(get64(l, lockPtr)))), size)
-	*dst = append(*dst, data[len(*dst):]...)
-	for i := from; i < to; i++ {
-		// Slice 0 starts at 0: a keyframe's parameter sets come before it.
-		start, end := 0, size
-		if i > 0 {
-			start = int(e.sliceOffsets[i])
-		}
-		if i+1 < to {
-			end = int(e.sliceOffsets[i+1])
-		}
-		if err := emit(i, (*dst)[start:end], key); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // refDPB is how many past pictures stay referable, so InvalidateRefs can
