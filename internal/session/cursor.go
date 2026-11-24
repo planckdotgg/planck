@@ -57,8 +57,8 @@ func (st *stream) cursorLoop() {
 			st.mu.Unlock()
 			m := cursorMessage(s, cursor.Rect{X: d.X, Y: d.Y, W: d.W, H: d.H})
 			moves := st.h.absMoves.Load()
-			t := st.h.absTarget.Load()
-			m.Captured = warp.observe(m, moves, uint16(t>>16), uint16(t)) || m.Captured
+			target := st.h.absTarget.Load()
+			m.Captured = warp.observe(m, moves, uint16(target>>16), uint16(target)) || m.Captured
 			if !sent || m.Visible != last.Visible || m.Captured != last.Captured {
 				if st.sess.SendControl(&m) == nil {
 					last, sent = m, true
