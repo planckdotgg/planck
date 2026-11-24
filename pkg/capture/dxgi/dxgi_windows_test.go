@@ -112,3 +112,30 @@ func TestDuplicatePrimary(t *testing.T) {
 	}
 	t.Fatal("no frame after Recover")
 }
+
+// TestAcquireInvalidCallIsAccessLost: a duplication that answers
+// INVALID_CALL after a full-screen mode switch is recovered as a lost one,
+// not failed as a broken capture; releasing a lost duplication's frame is
+// no error.
+func TestAcquireInvalidCallIsAccessLost(t *testing.T) {
+	for hr, want := range map[win.HRESULT]error{
+		win.DXGI_ERROR_INVALID_CALL: capture.ErrAccessLost,
+		win.DXGI_ERROR_ACCESS_LOST:  capture.ErrAccessLost,
+		win.DXGI_ERROR_WAIT_TIMEOUT: capture.ErrTimeout,
+		win.DXGI_ERROR_UNSUPPORTED:  win.DXGI_ERROR_UNSUPPORTED,
+		win.DXGI_ERROR_NOT_FOUND:    win.DXGI_ERROR_NOT_FOUND,
+	} {
+		if err := acquireErr(hr); !errors.Is(err, want) {
+			t.Errorf("acquire %v: %v, want %v", hr, err, want)
+		}
+	}
+	if err := acquireErr(0); err != nil {
+		t.Errorf("acquire S_OK: %v", err)
+	}
+	if err := releaseErr(win.DXGI_ERROR_INVALID_CALL); err != nil {
+		t.Errorf("release on a lost duplication: %v", err)
+	}
+	if err := releaseErr(win.DXGI_ERROR_ACCESS_LOST); !errors.Is(err, capture.ErrAccessLost) {
+		t.Errorf("release ACCESS_LOST: %v", err)
+	}
+}

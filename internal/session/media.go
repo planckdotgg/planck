@@ -129,6 +129,9 @@ func (p *sourcePipe) NextSlices(timeout time.Duration, forceKey bool, dst []byte
 func (p *sourcePipe) next(timeout time.Duration, forceKey bool, dst []byte, emit sliceEmit) (encode.Packet, int64, bool, error) {
 	p.st = pipeStages{WaitStart: transport.Mono()}
 	f, err := p.src.Next(timeout)
+	if errors.Is(err, capture.ErrAccessLost) {
+		err = p.recover()
+	}
 	if err != nil {
 		return encode.Packet{}, 0, false, err
 	}
@@ -172,6 +175,37 @@ func (p *sourcePipe) next(timeout time.Duration, forceKey bool, dst []byte, emit
 		p.st.SubmitNs, p.st.QueryNs, p.st.Tries = int64(s), int64(q), n
 	}
 	return pkt, captureTS, streamed, err
+}
+
+// recoverer is a capture.Source that can duplicate its display again in
+// place after capture.ErrAccessLost (dxgi.Source).
+type recoverer interface {
+	Recover(timeout, interval time.Duration) error
+}
+
+const (
+	recoverFor   = 2 * time.Second
+	recoverEvery = 20 * time.Millisecond
+)
+
+// recover takes a lost capture back on the same device and display, as a
+// full-screen game's mode switch needs, without reopening the pipeline.
+// The encoder goes with the old desktop images it may hold, and opens
+// again, with a keyframe, on the next picture. capture.ErrTimeout says
+// the caller may go on; capture.ErrAccessLost that the pipe must reopen.
+func (p *sourcePipe) recover() error {
+	r, ok := p.src.(recoverer)
+	if !ok {
+		return capture.ErrAccessLost
+	}
+	if p.enc != nil {
+		p.enc.Close()
+		p.enc = nil
+	}
+	if err := r.Recover(recoverFor, recoverEvery); err != nil {
+		return err
+	}
+	return capture.ErrTimeout
 }
 
 func (p *sourcePipe) forwardSlice(i int, s []byte, key bool) error {

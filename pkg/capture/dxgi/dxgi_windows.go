@@ -133,13 +133,8 @@ func (s *Source) Next(timeout time.Duration) (capture.Frame, error) {
 		}
 		r := vcall(s.dup.Object, 8, uintptr(left/time.Millisecond), uintptr(unsafe.Pointer(s.info)), uintptr(unsafe.Pointer(s.res)))
 		acquired := clock.Now()
-		switch hr := win.HRESULT(r); {
-		case hr == win.DXGI_ERROR_WAIT_TIMEOUT:
-			return capture.Frame{}, capture.ErrTimeout
-		case hr == win.DXGI_ERROR_ACCESS_LOST:
-			return capture.Frame{}, capture.ErrAccessLost
-		case hr.Failed():
-			return capture.Frame{}, fmt.Errorf("dxgi: acquire: %w", hr)
+		if err := acquireErr(win.HRESULT(r)); err != nil {
+			return capture.Frame{}, err
 		}
 		s.held = true
 		if s.info.LastPresentTime == 0 {
@@ -167,6 +162,22 @@ func (s *Source) Next(timeout time.Duration) (capture.Frame, error) {
 	}
 }
 
+// acquireErr maps AcquireNextFrame's result. A full-screen game switching
+// the display's mode can leave the duplication answering
+// DXGI_ERROR_INVALID_CALL instead of ACCESS_LOST (seen on a SudoVDA
+// display on bigboi); either way only a new duplication recovers.
+func acquireErr(hr win.HRESULT) error {
+	switch {
+	case hr == win.DXGI_ERROR_WAIT_TIMEOUT:
+		return capture.ErrTimeout
+	case hr == win.DXGI_ERROR_ACCESS_LOST, hr == win.DXGI_ERROR_INVALID_CALL:
+		return fmt.Errorf("%w: dxgi: acquire: %w", capture.ErrAccessLost, hr)
+	case hr.Failed():
+		return fmt.Errorf("dxgi: acquire: %w", hr)
+	}
+	return nil
+}
+
 // AccumulatedFrames is how many desktop presents the last frame folded in.
 func (s *Source) AccumulatedFrames() int { return int(s.info.AccumulatedFrames) }
 
@@ -181,7 +192,19 @@ func (s *Source) Release() error {
 	(*s.res).Release()
 	*s.res = nil
 	s.held = false
-	return s.dup.ReleaseFrame()
+	return releaseErr(s.dup.ReleaseFrame())
+}
+
+// releaseErr maps ReleaseFrame's result: a lost duplication has no frame
+// to release (INVALID_CALL), and ACCESS_LOST needs a new duplication.
+func releaseErr(err error) error {
+	switch {
+	case errors.Is(err, win.DXGI_ERROR_INVALID_CALL):
+		return nil
+	case errors.Is(err, win.DXGI_ERROR_ACCESS_LOST):
+		return fmt.Errorf("%w: dxgi: release: %w", capture.ErrAccessLost, err)
+	}
+	return err
 }
 
 // Recover reopens duplication after Next returned capture.ErrAccessLost: a
