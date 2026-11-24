@@ -1,9 +1,6 @@
 package main
 
 import (
-	"errors"
-
-	"github.com/ebitengine/purego/objc"
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/gpusurface"
 
@@ -11,36 +8,23 @@ import (
 	"github.com/planckdotgg/planck/pkg/player"
 )
 
-// composeUnderUI: on macOS the video layer goes under MyGo's in the same
+// composeUnderUI: on macOS the video's view goes under MyGo's in the same
 // content view, so the window stays opaque.
 const composeUnderUI = false
 
-// surfaceHost is a gpusurface whose CAMetalLayer sits at the back of the
-// window's content view, under the layer MyGo draws the UI in, which shows
-// it where the UI paints nothing.
+// surfaceHost is a gpusurface composed under the view MyGo draws the UI
+// in, which shows it where the UI paints nothing.
 type surfaceHost struct {
 	surf  *gpusurface.Surface
 	scale float64
 }
 
-func send(obj objc.ID, sel string, args ...any) objc.ID {
-	return obj.Send(objc.RegisterName(sel), args...)
-}
-
 // newSurfaceHost runs on the main thread.
 func newSurfaceHost(w *mygo.Window) (*surfaceHost, error) {
-	win := w.NativeHandle()
-	surf, err := gpusurface.New(gpusurface.Options{Window: win})
+	surf, err := gpusurface.New(gpusurface.Options{Window: w.NativeHandle(), Composite: true})
 	if err != nil {
 		return nil, err
 	}
-	parent := send(send(objc.ID(win), "contentView"), "layer")
-	layer := send(send(parent, "sublayers"), "lastObject")
-	if layer == 0 || !objc.Send[bool](layer, objc.RegisterName("isKindOfClass:"), objc.GetClass("CAMetalLayer")) {
-		surf.Close()
-		return nil, errors.New("gpusurface's layer is not the content view's last")
-	}
-	send(parent, "insertSublayer:atIndex:", layer, uint32(0))
 	h := &surfaceHost{surf: surf, scale: 1}
 	if cw, _ := w.ContentSize(); cw > 0 {
 		pw, _ := surf.Size()
@@ -49,7 +33,8 @@ func newSurfaceHost(w *mygo.Window) (*surfaceHost, error) {
 	return h, nil
 }
 
-// fit has nothing to do on macOS: the presenting thread resizes the layer.
+// fit has nothing to do on macOS: the surface's view follows the window,
+// and the presenting thread resizes the drawables.
 func (h *surfaceHost) fit() {}
 
 func (h *surfaceHost) resizeSurface(p *player.Player, v *videoView) error {

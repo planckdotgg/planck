@@ -62,7 +62,14 @@ type Options struct {
 	// target on Window that is not topmost, under the window's own content
 	// and the topmost target a MyGo window with Transparent draws through,
 	// which shows the frames where it paints nothing. The window may then
-	// have a swap chain of its own. macOS ignores it.
+	// have a swap chain of its own.
+	//
+	// On macOS the surface's layer goes in a view of its own at the back of
+	// the window's content view, under MyGo's surface view, which shows the
+	// frames where the UI paints nothing; the view follows the window's
+	// size, and Resize sets only the drawables' size. Close removes the
+	// view. Without Composite the layer is added to the content view's own
+	// layer, which suits a window holding nothing else.
 	Composite bool
 }
 

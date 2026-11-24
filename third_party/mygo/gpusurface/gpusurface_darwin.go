@@ -35,6 +35,12 @@ const (
 	fourccBGRA = 0x42475241 // 'BGRA'
 	fourcc420v = 0x34323076 // '420v', NV12 video range
 	fourccx420 = 0x78343230 // 'x420', P010 video range
+
+	viewWidthSizable   = 2           // NSViewWidthSizable
+	viewHeightSizable  = 16          // NSViewHeightSizable
+	layerWidthSizable  = 2           // kCALayerWidthSizable
+	layerHeightSizable = 16          // kCALayerHeightSizable
+	windowBelow        = ^uintptr(0) // NSWindowBelow, -1
 )
 
 type cgSize struct{ W, H float64 }
@@ -55,6 +61,7 @@ var lib struct {
 	msgSetRect   func(obj uintptr, sel objc.SEL, r cgRect)
 	msgFloat     func(obj uintptr, sel objc.SEL) float64
 	msgSetFloat  func(obj uintptr, sel objc.SEL, v float64)
+	msgInitRect  func(obj uintptr, sel objc.SEL, r cgRect) uintptr
 
 	presented objc.Block
 }
@@ -128,6 +135,7 @@ func load() error {
 		purego.RegisterFunc(&lib.msgSetRect, lib.msgSend)
 		purego.RegisterFunc(&lib.msgFloat, lib.msgSend)
 		purego.RegisterFunc(&lib.msgSetFloat, lib.msgSend)
+		purego.RegisterFunc(&lib.msgInitRect, lib.msgSend)
 		// One block for every drawable of every surface: purego callbacks
 		// are never freed.
 		lib.presented = objc.NewBlock(onPresented)
@@ -209,6 +217,7 @@ type pending struct {
 type Surface struct {
 	device, queue        uintptr
 	layer                uintptr
+	host                 uintptr // the view holding layer, with Composite
 	pass, attachment     uintptr
 	rgbPipeline, yuvPipe uintptr
 	cache                [wrapCache]frameTextures
@@ -278,10 +287,24 @@ func New(opts Options) (s *Surface, err error) {
 	send(s.attachment, "setStoreAction:", uintptr(storeActionStore))
 
 	view := send(opts.Window, "contentView")
-	send(view, "setWantsLayer:", true)
-	parent := send(view, "layer")
 	scale := lib.msgFloat(opts.Window, objc.RegisterName("backingScaleFactor"))
-	bounds := lib.msgRect(parent, objc.RegisterName("bounds"))
+	bounds := lib.msgRect(view, objc.RegisterName("bounds"))
+	var parent uintptr
+	if opts.Composite {
+		// A view of its own at the back of the content view, as MyGo puts
+		// web views under its surface view: AppKit keeps the sublayers of
+		// a view's layer in its subviews' order, and moves a layer added
+		// beside them.
+		s.host = lib.msgInitRect(send(class("NSView"), "alloc"), objc.RegisterName("initWithFrame:"), bounds)
+		send(s.host, "setAutoresizingMask:", uintptr(viewWidthSizable|viewHeightSizable))
+		send(s.host, "setWantsLayer:", true)
+		send(view, "addSubview:positioned:relativeTo:", s.host, windowBelow, uintptr(0))
+		parent = send(s.host, "layer")
+	} else {
+		send(view, "setWantsLayer:", true)
+		parent = send(view, "layer")
+	}
+	bounds.X, bounds.Y = 0, 0
 
 	layer := send(send(class("CAMetalLayer"), "alloc"), "init")
 	send(layer, "setDevice:", s.device)
@@ -294,6 +317,11 @@ func New(opts Options) (s *Surface, err error) {
 	send(layer, "setDisplaySyncEnabled:", false)
 	send(layer, "setPresentsWithTransaction:", false)
 	send(layer, "setOpaque:", true)
+	if opts.Composite {
+		// The host view follows the window, and the layer it: the frame
+		// changes on the main thread, the drawable size in Resize.
+		send(layer, "setAutoresizingMask:", uintptr(layerWidthSizable|layerHeightSizable))
+	}
 	lib.msgSetRect(layer, objc.RegisterName("setFrame:"), bounds)
 	lib.msgSetFloat(layer, objc.RegisterName("setContentsScale:"), scale)
 	s.scale = scale
@@ -369,7 +397,9 @@ func (s *Surface) Resize(w, h int) error {
 	}
 	pool, _, _ := purego.SyscallN(lib.poolPush)
 	defer purego.SyscallN(lib.poolPop, pool)
-	lib.msgSetRect(s.layer, objc.RegisterName("setFrame:"), cgRect{W: float64(w) / s.scale, H: float64(h) / s.scale})
+	if s.host == 0 {
+		lib.msgSetRect(s.layer, objc.RegisterName("setFrame:"), cgRect{W: float64(w) / s.scale, H: float64(h) / s.scale})
+	}
 	lib.msgSetSize(s.layer, objc.RegisterName("setDrawableSize:"), cgSize{float64(w), float64(h)})
 	send(class("CATransaction"), "flush")
 	s.width, s.height = w, h
@@ -525,11 +555,14 @@ func (s *Surface) Close() {
 		surfaces.Delete(s.layer)
 		send(s.layer, "removeFromSuperlayer")
 	}
+	if s.host != 0 {
+		send(s.host, "removeFromSuperview")
+	}
 	for i := range s.cache {
 		release(&s.cache[i].tex[0])
 		release(&s.cache[i].tex[1])
 	}
-	for _, p := range []*uintptr{&s.layer, &s.pass, &s.rgbPipeline, &s.yuvPipe, &s.queue, &s.device} {
+	for _, p := range []*uintptr{&s.host, &s.layer, &s.pass, &s.rgbPipeline, &s.yuvPipe, &s.queue, &s.device} {
 		release(p)
 	}
 }
