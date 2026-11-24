@@ -211,6 +211,8 @@ const pendingRing = 64
 type pending struct {
 	drawableID int64 // atomic
 	index      int64 // atomic: the Timing's index, or -1
+	tag        int64 // atomic
+	submitted  int64 // atomic
 }
 
 // Surface presents frames into a window.
@@ -224,6 +226,7 @@ type Surface struct {
 	nextSlot             int
 	pending              [pendingRing]pending
 	timings              timings
+	onPresented          atomic.Pointer[func(tag, submitted, presented int64)]
 	width, height        int
 	scale                float64
 }
@@ -413,9 +416,22 @@ func (s *Surface) Resize(w, h int) error {
 // errNoDrawable is Present's error when the layer gave no drawable in time.
 var errNoDrawable = errors.New("gpusurface: no drawable")
 
+// OnPresented sets f to be called, on Core Animation's thread, once for
+// each frame given to PresentTagged after it: with the frame's tag, the
+// time Present was called and the time it reached the screen (0 when a
+// newer frame replaced it first), on the clock Now reads. Set it before
+// the first present.
+func (s *Surface) OnPresented(f func(tag, submitted, presented int64)) {
+	s.onPresented.Store(&f)
+}
+
 // Present draws the frame in surface, an IOSurfaceRef in BGRA ('BGRA'),
 // NV12 ('420v') or P010 ('x420'), and presents it at once.
-func (s *Surface) Present(surface uintptr) error {
+func (s *Surface) Present(surface uintptr) error { return s.PresentTagged(surface, 0) }
+
+// PresentTagged is Present with a tag the OnPresented handler receives
+// back for this frame.
+func (s *Surface) PresentTagged(surface uintptr, tag int64) error {
 	submitted := Now()
 	// The autorelease pool belongs to the thread.
 	runtime.LockOSThread()
@@ -445,10 +461,12 @@ func (s *Surface) Present(surface uintptr) error {
 	msg3(enc, selDraw, primitiveTriangle, 0, 3)
 	msg(enc, selEndEncoding)
 	i := s.timings.start(submitted)
-	if i >= 0 {
+	if i >= 0 || s.onPresented.Load() != nil {
 		id := int64(msg(d, selDrawableID))
 		p := &s.pending[id%pendingRing]
 		atomic.StoreInt64(&p.index, int64(i))
+		atomic.StoreInt64(&p.tag, tag)
+		atomic.StoreInt64(&p.submitted, submitted)
 		atomic.StoreInt64(&p.drawableID, id)
 		msg1(d, selAddPresented, uintptr(lib.presented))
 	}
@@ -481,6 +499,9 @@ func onPresented(_ objc.Block, d objc.ID) {
 		presented = int64(at * 1e9)
 	}
 	s.timings.resolve(int(atomic.LoadInt64(&p.index)), presented)
+	if f := s.onPresented.Load(); f != nil {
+		(*f)(atomic.LoadInt64(&p.tag), atomic.LoadInt64(&p.submitted), presented)
+	}
 }
 
 // wrap returns the textures of the frame in surface, wrapping it on its

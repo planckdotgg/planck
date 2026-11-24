@@ -44,7 +44,6 @@ type Decoder struct {
 	slice   *uint32
 	locked  *uintptr
 	pts     *int64
-	pending int
 	dropped int
 }
 
@@ -369,7 +368,6 @@ func (d *Decoder) output() (decode.Frame, error) {
 	tex := *d.tex
 	d.tex.release()
 	sample.call3(sampleGetSampleTime, uintptr(unsafe.Pointer(d.pts)), 0, 0)
-	d.pending++
 	return decode.Frame{Surface: uintptr(tex), Slice: int(*d.slice), Format: d.format, Width: d.width, Height: d.height,
 		PTS: *d.pts, Ref: uintptr(sample)}, nil
 }
@@ -379,7 +377,6 @@ func (d *Decoder) Release(f decode.Frame) {
 	if f.Ref != 0 {
 		s := obj(f.Ref)
 		s.release()
-		d.pending--
 	}
 }
 

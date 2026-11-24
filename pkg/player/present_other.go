@@ -17,3 +17,7 @@ func openDecoder(*gpusurface.Surface, decode.Config) (decode.Decoder, error) {
 }
 
 func present(*gpusurface.Surface, decode.Frame) error { return errNoBackend }
+
+// observeGlass has nothing to report: the surface cannot tell when a
+// frame reached the screen.
+func observeGlass(*gpusurface.Surface, Observer) {}

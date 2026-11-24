@@ -50,7 +50,7 @@ func TestTraceColumnsMatchPlanckTrace(t *testing.T) {
 		t.Fatal(err)
 	}
 	check(t, read(t, filepath.Join(dir, "client.csv"))[0],
-		"err", "encend", "firstpkt", "done", "complete", "dequeue", "queuelen", "decodens", "presentns", "present", "rttns")
+		"err", "encend", "firstpkt", "done", "complete", "dequeue", "queuelen", "decodens", "presentns", "present", "rttns", "presentat", "glassat")
 
 	t.Setenv(traceHostEnv, "")
 	if newTracer[hostTraceRow](traceHostEnv) != nil {

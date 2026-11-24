@@ -15,12 +15,14 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/planckdotgg/planck/internal/rtprio"
 	"github.com/planckdotgg/planck/pkg/audio"
 	"github.com/planckdotgg/planck/pkg/config"
 	"github.com/planckdotgg/planck/pkg/decode"
 	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/encode"
 	"github.com/planckdotgg/planck/pkg/input"
+	"github.com/planckdotgg/planck/pkg/player"
 	"github.com/planckdotgg/planck/pkg/ratectl"
 	"github.com/planckdotgg/planck/pkg/tailscale"
 	"github.com/planckdotgg/planck/pkg/transport"
@@ -115,6 +117,11 @@ type ClientStats struct {
 	Encode  Latency
 	Decode  Latency
 	Present Latency
+	// Glass is from the present call to the picture reaching the screen,
+	// and E2EGlass from the host's capture to that: what a viewer sees.
+	// Only a sink that presents on macOS reports them.
+	Glass    Latency
+	E2EGlass Latency
 
 	// FECParityPct is the parity share of the video datagrams received,
 	// estimated from datagram counts.
@@ -188,6 +195,9 @@ type conn struct {
 	encodeW   *window
 	decodeW   *window
 	presentW  *window
+	glassW    *window
+	e2eGlassW *window
+	captured  [captureRing]capturedAt
 	encodeMs  float64
 	decodeMs  float64
 	presentMs float64
@@ -203,6 +213,17 @@ type conn struct {
 
 	trace *tracer[clientTraceRow]
 }
+
+// capturedAt maps a frame, by the PTS its picture carries, to the host's
+// capture time on the client's clock, for pictures that reach the screen
+// after the decode loop moved on.
+type capturedAt struct {
+	frame uint32
+	at    int64
+	row   int // the frame's trace row, or -1
+}
+
+const captureRing = 256
 
 type frameBuf struct {
 	info     wire.VideoInfo
@@ -300,7 +321,8 @@ func (c *Client) connect(ctx context.Context, t Target) (*conn, error) {
 
 	cc := &conn{hostID: hostID, name: r.name, path: path.String(), addr: addr, frames: make(chan *frameBuf, warmupQueue),
 		free: make(chan *frameBuf, warmupQueue+2), e2e: newWindow(latencyWindow), network: newWindow(latencyWindow),
-		encodeW: newWindow(latencyWindow), decodeW: newWindow(latencyWindow), presentW: newWindow(latencyWindow)}
+		encodeW: newWindow(latencyWindow), decodeW: newWindow(latencyWindow), presentW: newWindow(latencyWindow),
+		glassW: newWindow(latencyWindow), e2eGlassW: newWindow(latencyWindow)}
 	for range warmupQueue + 2 {
 		cc.free <- &frameBuf{}
 	}
@@ -349,6 +371,9 @@ func (c *Client) connect(ctx context.Context, t Target) (*conn, error) {
 	if err != nil {
 		sess.Close()
 		return nil, fmt.Errorf("session: video sink: %w", err)
+	}
+	if o, ok := sink.(interface{ SetObserver(player.Observer) }); ok {
+		o.SetObserver(viewObserver{cc})
 	}
 	cc.ctx, cc.cancel = context.WithCancel(context.Background())
 	cc.wg.Go(func() { cc.decodeLoop(sink, c.logf) })
@@ -486,8 +511,13 @@ func (cc *conn) requestKey() {
 	_ = sess.SendControl(&wire.PLI{})
 }
 
+// decodeLoop runs on a thread of its own at a raised class, which ends
+// with it.
 func (cc *conn) decodeLoop(sink Sink, logf func(string, ...any)) {
 	defer sink.Close()
+	if err := rtprio.Boost(); err != nil {
+		logf("planck: decode thread priority: %v", err)
+	}
 	clock := cc.sess.Clock()
 	for {
 		var fb *frameBuf
@@ -500,9 +530,10 @@ func (cc *conn) decodeLoop(sink Sink, logf func(string, ...any)) {
 		t, err := sink.Submit(fb.data, int64(fb.info.FrameID))
 		shown := transport.Mono()
 		info, arrival := fb.info, fb.arrival
+		row := -1
 		if cc.trace != nil {
 			off := clock.Offset()
-			cc.trace.add(clientTraceRow{Frame: info.FrameID, Key: info.Keyframe, Bytes: len(fb.data),
+			row = cc.trace.add(clientTraceRow{Frame: info.FrameID, Key: info.Keyframe, Bytes: len(fb.data),
 				Present: info.CaptureTS - off, EncEnd: info.EncodeTS - off, FirstPkt: fb.firstPkt, Complete: arrival,
 				QueueLen: fb.queued, Dequeue: dequeued, DecodeNs: int64(t.Decode), PresentNs: int64(t.Present), Done: shown,
 				OffsetNs: off, RTTNs: int64(clock.RTT()), Err: err != nil})
@@ -521,19 +552,56 @@ func (cc *conn) decodeLoop(sink Sink, logf func(string, ...any)) {
 		}
 		cc.mu.Lock()
 		cc.encodeMs = ms(info.EncodeTS - info.CaptureTS)
-		cc.decodeMs, cc.presentMs = ms(int64(t.Decode)), ms(int64(t.Present))
+		cc.decodeMs = ms(int64(t.Decode))
 		cc.encodeW.add(cc.encodeMs)
 		if err == nil {
 			cc.decodeW.add(cc.decodeMs)
-			cc.presentW.add(cc.presentMs)
 		}
 		if clock.Samples() > 0 {
 			cc.network.add(ms(arrival - clock.ToLocal(info.EncodeTS)))
 			if err == nil {
 				cc.e2e.add(ms(shown - clock.ToLocal(info.CaptureTS)))
+				cc.captured[info.FrameID%captureRing] = capturedAt{info.FrameID, clock.ToLocal(info.CaptureTS), row}
 			}
 		}
 		cc.mu.Unlock()
+	}
+}
+
+// viewObserver takes a presenting sink's present and glass times, from
+// its threads.
+type viewObserver struct{ cc *conn }
+
+func (o viewObserver) Presented(t player.Timing, err error) {
+	if err != nil {
+		return
+	}
+	cc := o.cc
+	at := transport.Mono() - int64(t.Present)
+	id := uint32(t.PTS)
+	cc.mu.Lock()
+	cc.presentMs = ms(int64(t.Present))
+	cc.presentW.add(cc.presentMs)
+	c := cc.captured[id%captureRing]
+	cc.mu.Unlock()
+	if c.frame == id {
+		cc.trace.update(c.row, func(r *clientTraceRow) { r.PresentAt, r.PresentNs = at, int64(t.Present) })
+	}
+}
+
+func (o viewObserver) Glass(pts int64, glass, since time.Duration) {
+	cc := o.cc
+	at := transport.Mono() - int64(since)
+	id := uint32(pts)
+	cc.mu.Lock()
+	cc.glassW.add(ms(int64(glass)))
+	c := cc.captured[id%captureRing]
+	if c.frame == id && c.at != 0 {
+		cc.e2eGlassW.add(ms(at - c.at))
+	}
+	cc.mu.Unlock()
+	if c.frame == id {
+		cc.trace.update(c.row, func(r *clientTraceRow) { r.GlassAt = at })
 	}
 }
 
@@ -625,6 +693,7 @@ func (cc *conn) stats() ClientStats {
 	s.EncodeMs, s.DecodeMs, s.PresentMs = cc.encodeMs, cc.decodeMs, cc.presentMs
 	s.E2E, s.Network = cc.e2e.summary(), cc.network.summary()
 	s.Encode, s.Decode, s.Present = cc.encodeW.summary(), cc.decodeW.summary(), cc.presentW.summary()
+	s.Glass, s.E2EGlass = cc.glassW.summary(), cc.e2eGlassW.summary()
 	s.E2EMs, s.NetworkMs = cc.e2e.last(), cc.network.last()
 	cc.mu.Unlock()
 	return s

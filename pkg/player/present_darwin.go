@@ -3,6 +3,8 @@
 package player
 
 import (
+	"time"
+
 	"github.com/egoist/mygo/gpusurface"
 
 	"github.com/planckdotgg/planck/pkg/decode"
@@ -19,4 +21,15 @@ func openDecoder(_ *gpusurface.Surface, cfg decode.Config) (decode.Decoder, erro
 	return d, nil
 }
 
-func present(surf *gpusurface.Surface, f decode.Frame) error { return surf.Present(f.Surface) }
+func present(surf *gpusurface.Surface, f decode.Frame) error {
+	return surf.PresentTagged(f.Surface, f.PTS)
+}
+
+func observeGlass(surf *gpusurface.Surface, obs Observer) {
+	surf.OnPresented(func(pts, submitted, presented int64) {
+		if presented == 0 {
+			return
+		}
+		obs.Glass(pts, time.Duration(presented-submitted), time.Duration(gpusurface.Now()-presented))
+	})
+}

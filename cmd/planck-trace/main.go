@@ -137,6 +137,13 @@ func run(w io.Writer, hostPath, clientPath string, skip int, label string) error
 			}
 			get("client: Submit total").add(done - deq)
 			get("E2E: host present -> client Submit done").add(done - c.int(r, "present"))
+			if pa := c.int(r, "presentat"); pa > 0 {
+				get("client: Submit done -> present start").add(pa - done)
+			}
+			if g := c.int(r, "glassat"); g > 0 {
+				get("client: present start -> glass").add(g - c.int(r, "presentat"))
+				get("E2E: host present -> glass").add(g - c.int(r, "present"))
+			}
 			get("clock: RTT").add(c.int(r, "rttns"))
 		}
 	}

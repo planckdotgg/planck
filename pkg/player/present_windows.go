@@ -21,3 +21,7 @@ func openDecoder(surf *gpusurface.Surface, cfg decode.Config) (decode.Decoder, e
 func present(surf *gpusurface.Surface, f decode.Frame) error {
 	return surf.PresentSlice(f.Surface, f.Slice, f.Width, f.Height)
 }
+
+// observeGlass has nothing to report: the surface cannot tell when a
+// frame reached the screen.
+func observeGlass(*gpusurface.Surface, Observer) {}

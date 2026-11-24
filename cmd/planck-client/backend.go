@@ -280,6 +280,9 @@ func telemetry(s session.ClientStats) ui.Telemetry {
 		EncodeMs: s.Encode.P50, NetMs: s.Network.P50, DecodeMs: s.Decode.P50, PresentMs: s.Present.P50, TotalMs: s.E2E.P50,
 		BitrateMbps: s.Kbps / 1000, FECPct: s.FECParityPct, LossPct: s.LossPct, AudioBufMs: s.AudioBufferMs,
 	}
+	if s.E2EGlass.Samples > 0 {
+		t.PresentMs, t.TotalMs = s.Glass.P50, s.E2EGlass.P50
+	}
 	for _, k := range []discovery.PathKind{discovery.PathLANDirect, discovery.PathTailscaleDirect, discovery.PathTailscaleDERP} {
 		if k.String() == s.Path {
 			t.PathKind = k

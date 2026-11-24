@@ -130,12 +130,15 @@ func (v *videoView) open(cfg decode.Config) (session.Sink, error) {
 	return &surfaceSink{v: v, host: h, p: p}, nil
 }
 
-// surfaceSink decodes and presents on the session's decode goroutine.
+// surfaceSink decodes on the session's decode goroutine; the player
+// presents on its own thread.
 type surfaceSink struct {
 	v    *videoView
 	host *surfaceHost
 	p    *player.Player
 }
+
+func (s *surfaceSink) SetObserver(o player.Observer) { s.p.SetObserver(o) }
 
 func (s *surfaceSink) Submit(au []byte, pts int64) (player.Timing, error) {
 	if s.v.resize.Swap(false) {

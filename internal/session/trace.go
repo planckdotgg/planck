@@ -59,11 +59,15 @@ type clientTraceRow struct {
 	QueueLen  int   // frames waiting in front of it when queued
 	Dequeue   int64 // the decode loop took it
 	DecodeNs  int64 // the sink's decode latency
-	PresentNs int64 // the sink's present call
+	PresentNs int64 // the present call, on a sink that presents
 	Done      int64 // Submit returned
 	OffsetNs  int64 // host clock minus client clock
 	RTTNs     int64
 	Err       bool
+	// PresentAt is when a presenting sink's present thread started to show
+	// the picture, and GlassAt when it reached the screen; 0 when it was
+	// superseded unshown or the platform cannot tell.
+	PresentAt, GlassAt int64
 }
 
 // inputTraceRow is one input event received by the host. Sent is the
@@ -90,13 +94,28 @@ func newTracer[T any](env string) *tracer[T] {
 	return &tracer[T]{path: p, rows: make([]T, 0, traceCap)}
 }
 
-func (t *tracer[T]) add(r T) {
+// add records r and returns its row, or -1 when it was not kept.
+func (t *tracer[T]) add(r T) int {
 	if t == nil {
+		return -1
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.rows) == cap(t.rows) {
+		return -1
+	}
+	t.rows = append(t.rows, r)
+	return len(t.rows) - 1
+}
+
+// update changes row i, as add returned it, until the next flush.
+func (t *tracer[T]) update(i int, f func(*T)) {
+	if t == nil || i < 0 {
 		return
 	}
 	t.mu.Lock()
-	if len(t.rows) < cap(t.rows) {
-		t.rows = append(t.rows, r)
+	if i < len(t.rows) {
+		f(&t.rows[i])
 	}
 	t.mu.Unlock()
 }
