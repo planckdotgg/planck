@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"runtime"
 	"sync"
 
@@ -114,17 +115,7 @@ func (h *Host) resolve(r transport.ResolveRequest) (transport.ResolveResult, err
 	if err := cc.Overrides.Validate(); err != nil {
 		return transport.ResolveResult{}, fmt.Errorf("client overrides: %w", err)
 	}
-	caps := h.capabilities()
-	if name, link, err := linkinfo.Route(r.Remote.Addr()); err == nil {
-		caps.Link = link
-		h.logf("planck: route to %v via %s: wired %v, %d Mbps", r.Remote.Addr(), name, link.Wired, link.SpeedMbps)
-	}
-	route := cc.Route
-	if route.Kind == 0 {
-		route.Kind = routeFromPath(r.Path)
-	}
-	route.LANDatagram = r.LANDatagram
-	prof := defaults.Resolve(caps, cc.Client, route, cc.Overrides)
+	prof := h.resolveProfile(cc, r.Remote.Addr(), r.Path, r.LANDatagram)
 	for _, w := range prof.Warnings {
 		h.logf("planck: profile: %s", w)
 	}
@@ -138,6 +129,22 @@ func (h *Host) resolve(r transport.ResolveRequest) (transport.ResolveResult, err
 		Parity: transport.ParityProfile{MinPercent: prof.FEC.MinParityPercent,
 			KeyframePercent: prof.FEC.KeyframeParityPercent, CriticalPercent: prof.FEC.CriticalParityPercent},
 	}, nil
+}
+
+// resolveProfile settles a stream from both ends' capabilities, on the
+// route to remote.
+func (h *Host) resolveProfile(cc clientCaps, remote netip.Addr, path ratectl.Path, lanDatagram bool) defaults.ResolvedProfile {
+	caps := h.capabilities()
+	if name, link, err := linkinfo.Route(remote); err == nil {
+		caps.Link = link
+		h.logf("planck: route to %v via %s: wired %v, %d Mbps", remote, name, link.Wired, link.SpeedMbps)
+	}
+	route := cc.Route
+	if route.Kind == 0 {
+		route.Kind = routeFromPath(path)
+	}
+	route.LANDatagram = lanDatagram
+	return defaults.Resolve(caps, cc.Client, route, cc.Overrides)
 }
 
 // profileConfig is a profile's legacy SessionConfig, which SessionReady

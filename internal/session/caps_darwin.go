@@ -72,10 +72,8 @@ type vddManager struct{}
 
 var errNoVDD = errors.New("session: virtual displays need SudoVDA on Windows")
 
-func (*vddManager) create(VideoParams, []byte, bool) (string, func() error, error) {
-	return "", nil, errNoVDD
-}
-func (*vddManager) close() error { return nil }
+func (*vddManager) create(VideoParams, []byte, bool) (VirtualDisplay, error) { return nil, errNoVDD }
+func (*vddManager) close() error                                             { return nil }
 
 // clientDisplay is the main display's current mode in backing pixels, and
 // the most frames a second its screen shows (ProMotion: 120). The main
