@@ -54,6 +54,9 @@ type ServerConfig struct {
 	// Negotiate.
 	Capabilities func() []byte
 	Resolve      func(ResolveRequest) (ResolveResult, error)
+	// Resize offers wire.FeatureResize: the Control handler takes
+	// wire.Resize.
+	Resize bool
 	// MediaAddr is the local address for media sockets; default ":0".
 	MediaAddr string
 	// MaxDatagram caps sealed media datagrams. Zero takes
@@ -163,6 +166,9 @@ func (sv *Server) handshake(parent context.Context, conn *quic.Conn) (*Session, 
 	}
 	if sv.cfg.Capabilities != nil && sv.cfg.Resolve != nil {
 		features |= wire.FeatureCapabilities
+	}
+	if sv.cfg.Resize {
+		features |= wire.FeatureResize
 	}
 	if err := wire.WriteMessage(ctrl, &wire.Hello{Version: wire.Version, Role: wire.RoleHost, Name: *sv.name.Load(), Features: features}); err != nil {
 		return nil, err

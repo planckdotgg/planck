@@ -1,6 +1,9 @@
 package main
 
 import (
+	"math"
+
+	"github.com/ebitengine/purego/objc"
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/gpusurface"
 
@@ -46,6 +49,17 @@ func (h *surfaceHost) resizeSurface(p *player.Player, v *videoView) error {
 }
 
 func (h *surfaceHost) close() { h.surf.Close() }
+
+// windowPixels is the window's content size in backing pixels. It runs on
+// the main thread.
+func windowPixels(w *mygo.Window) (int, int) {
+	cw, ch := w.ContentSize()
+	scale := objc.Send[float64](objc.ID(w.NativeHandle()), objc.RegisterName("backingScaleFactor"))
+	if scale <= 0 {
+		scale = 1
+	}
+	return int(math.Round(float64(cw) * scale)), int(math.Round(float64(ch) * scale))
+}
 
 func localEncoders() []ui.EncoderInfo {
 	return []ui.EncoderInfo{{GPU: "Apple GPU", API: "VideoToolbox"}}

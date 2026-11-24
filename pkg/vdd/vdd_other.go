@@ -16,3 +16,4 @@ func (d *Driver) Remove(GUID) error                                  { return Er
 func (d *Driver) Err() <-chan error                                  { return nil }
 func (d *Driver) Close() error                                       { return nil }
 func (v *VirtualDisplay) Close() error                               { return nil }
+func (v *VirtualDisplay) Resize(w, h int) error                      { return ErrNotInstalled }

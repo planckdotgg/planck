@@ -145,7 +145,8 @@ type VirtualDisplay struct {
 	RefreshMilliHz int
 	HDR            bool
 
-	drv *Driver
+	drv  *Driver
+	spec DisplaySpec
 }
 
 // Monitor is a SudoVDA monitor that Windows shows on the desktop, whoever

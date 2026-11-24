@@ -3,6 +3,7 @@ package main
 import (
 	"slices"
 
+	"github.com/egoist/mygo/gpusurface"
 	mui "github.com/egoist/mygo/ui"
 	"github.com/planckdotgg/planck/pkg/input"
 )
@@ -12,6 +13,9 @@ import (
 // build, on the main thread.
 type inputForwarder struct {
 	send func(input.Event)
+	// video is the size of the picture shown and of the drawable it shows
+	// in, in pixels; nil, or zeros, map the pointer over the whole view.
+	video func() (fw, fh, dw, dh int)
 
 	keys    []mui.Key
 	mods    uint8
@@ -29,7 +33,11 @@ func (f *inputForwarder) view(c *mui.Context) {
 	x, y, over := el.PointerPosition()
 	b := el.Bounds()
 	if over && b.W > 0 && b.H > 0 {
-		nx, ny := normalize(x, b.W), normalize(y, b.H)
+		var fw, fh, dw, dh int
+		if f.video != nil {
+			fw, fh, dw, dh = f.video()
+		}
+		nx, ny := mapPointer(x, y, b.W, b.H, fw, fh, dw, dh)
 		if !f.over || nx != f.x || ny != f.y {
 			f.send(input.Event{Type: input.TypeMouseMoveAbs, MouseAbs: input.MouseMoveAbs{X: nx, Y: ny}})
 		}
@@ -44,6 +52,19 @@ func (f *inputForwarder) view(c *mui.Context) {
 		f.sendButton(btn, true)
 	}
 	f.button, f.pressed = btn, pressed
+}
+
+// mapPointer maps a point of a bw x bh view onto 0..65535 across the
+// picture: a fw x fh frame shown whole in the view's dw x dh drawable, as
+// the surface places it. Over a bar the point clamps to the picture's
+// edge.
+func mapPointer(x, y, bw, bh float32, fw, fh, dw, dh int) (uint16, uint16) {
+	if dw <= 0 || dh <= 0 {
+		dw, dh = int(bw+0.5), int(bh+0.5)
+	}
+	px, py := x/bw*float32(dw), y/bh*float32(dh)
+	rx, ry, rw, rh := gpusurface.FitRect(fw, fh, dw, dh)
+	return normalize(px-float32(rx), float32(rw)), normalize(py-float32(ry), float32(rh))
 }
 
 // normalize maps a position along a side of length n onto 0..65535.

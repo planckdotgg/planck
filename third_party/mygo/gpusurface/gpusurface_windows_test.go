@@ -110,7 +110,7 @@ func TestComposite(t *testing.T) {
 	if w, h := s.Size(); w != 480 || h != 270 {
 		t.Fatalf("surface %dx%d after resize, want 480x270", w, h)
 	}
-	if err := s.Present(solid(t, s, 64, 64, 0xffff0000)); err != nil {
+	if err := s.Present(solid(t, s, 64, 36, 0xffff0000)); err != nil {
 		t.Fatal(err)
 	}
 	pumpFor(300 * time.Millisecond)
@@ -118,4 +118,39 @@ func TestComposite(t *testing.T) {
 		t.Fatalf("screen shows %#06x after resize, want red 0x0000ff (COLORREF)", c)
 	}
 	t.Logf("on %s, tearing %v", s.AdapterName(), s.Tearing())
+}
+
+// TestCompositeKeepsAspect: a square picture in a 16:9 swap chain shows
+// whole between black bars, not stretched over the window.
+func TestCompositeKeepsAspect(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	hwnd := testWindow(t, 320, 180)
+	s, err := New(Options{Window: hwnd, Composite: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Present(solid(t, s, 64, 64, 0xff00ff00)); err != nil {
+		t.Fatal(err)
+	}
+	pumpFor(300 * time.Millisecond)
+	if c := screenPixel(hwnd, 160, 90); c != 0x0000ff00 {
+		t.Fatalf("screen shows %#06x at the centre, want green 0x00ff00", c)
+	}
+	for _, x := range []int32{10, 309} {
+		if c := screenPixel(hwnd, x, 90); c != 0 {
+			t.Fatalf("screen shows %#06x at x %d, want the black pillar", c, x)
+		}
+	}
+}
+
+func TestFitViewport(t *testing.T) {
+	s := &Surface{width: 5120, height: 1440}
+	if !s.fitViewport(1920, 1080) || s.vp != (viewport{X: 1280, W: 2560, H: 1440, MaxDepth: 1}) {
+		t.Fatalf("16:9 in 32:9: viewport %+v", s.vp)
+	}
+	if s.fitViewport(2560, 720) || s.vp != (viewport{W: 5120, H: 1440, MaxDepth: 1}) {
+		t.Fatalf("32:9 in 32:9: viewport %+v", s.vp)
+	}
 }

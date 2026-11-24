@@ -88,6 +88,9 @@ type resolver struct {
 	display  *HostDisplay
 
 	resIdx, fpsIdx int
+	// stepW, stepH is the shape stepDown keeps; zero keeps the client
+	// display's.
+	stepW, stepH int
 }
 
 func (r *resolver) source(get func(UserOverrides) string) Source {
@@ -319,17 +322,24 @@ func (r *resolver) widthAt(lines int) int {
 	return (lines * cw / ch) &^ 1
 }
 
+func (r *resolver) stepWidthAt(lines int) int {
+	if r.stepW > 0 && r.stepH > 0 {
+		return (lines * r.stepW / r.stepH) &^ 1
+	}
+	return r.widthAt(lines)
+}
+
 func (r *resolver) pixelRate() int64 {
 	return int64(r.p.Width) * int64(r.p.Height) * int64(r.p.FPS)
 }
 
-// stepDown moves one rung down the ladder: fewer lines at the client
+// stepDown moves one rung down the ladder: fewer lines at the stream's
 // aspect while a virtual display allows it, then a lower frame rate.
 func (r *resolver) stepDown() bool {
 	if r.p.VirtualDisplay {
 		for _, l := range ladderLines {
 			if l < r.p.Height {
-				r.p.Width, r.p.Height = r.widthAt(l), l
+				r.p.Width, r.p.Height = r.stepWidthAt(l), l
 				return true
 			}
 		}
@@ -377,6 +387,11 @@ func (r *resolver) sizeAndFPS() {
 			r.p.Width, r.p.Height = 1920, 1080
 		}
 		resWhy = "client native"
+		if vw, vh := r.client.Display.ViewWidthPx, r.client.Display.ViewHeightPx; vw > 0 && vh > 0 && isAuto(string(r.o.Resolution)) {
+			r.p.Width, r.p.Height = ViewSize(vw, vh)
+			r.stepW, r.stepH = r.p.Width, r.p.Height
+			resWhy = "client window"
+		}
 		fpsCeil = min(maxHz, maxAutoFPS)
 		switch r.o.Resolution {
 		case "1080p", "1440p", "4k":

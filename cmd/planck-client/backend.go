@@ -46,6 +46,7 @@ type backend struct {
 	routeConfig session.RouteConfig
 	// overrides are the command line's, over the stored ones.
 	overrides defaults.UserOverrides
+	viewSize  func() (w, h int)
 
 	mu       sync.Mutex
 	onChange func()
@@ -76,6 +77,8 @@ type backendConfig struct {
 	logf       func(string, ...any)
 	route      session.RouteConfig
 	overrides  defaults.UserOverrides
+	// viewSize is the stream window's size in pixels.
+	viewSize func() (w, h int)
 }
 
 func newBackend(c backendConfig) (*backend, error) {
@@ -92,7 +95,7 @@ func newBackend(c backendConfig) (*backend, error) {
 		return nil, err
 	}
 	b := &backend{dir: dir, name: c.name, finder: c.finder, ts: c.tailscale, openSink: c.openSink, hostConfig: c.hostConfig,
-		encoders: c.encoders, logf: c.logf, routeConfig: c.route, overrides: c.overrides, settings: settingsFrom(stored), pinned: stored.PinnedHosts, aliases: stored.HostAliases,
+		encoders: c.encoders, logf: c.logf, routeConfig: c.route, overrides: c.overrides, viewSize: c.viewSize, settings: settingsFrom(stored), pinned: stored.PinnedHosts, aliases: stored.HostAliases,
 		storedAll: stored.Overrides, storedHosts: stored.HostOverrides}
 	host, err := config.LoadHostConfig(dir)
 	if err != nil {
@@ -362,7 +365,7 @@ func (b *backend) dial(ctx context.Context, t session.Target, pin string) error 
 	}
 	c, err := session.NewClient(session.ClientConfig{
 		ConfigDir: b.dir, Name: b.name, PIN: pin, NoAudio: !s.AudioEnabled, Quality: legacyQuality(ov), Overrides: ov,
-		OpenSink: b.openSink, Tailscale: b.ts, Logf: b.logf, Route: b.route(ov), Clipboard: clipboardOf(s),
+		OpenSink: b.openSink, Tailscale: b.ts, Logf: b.logf, Route: b.route(ov), ViewSize: b.viewSize, Clipboard: clipboardOf(s),
 	})
 	if err != nil {
 		return err
@@ -574,6 +577,15 @@ func (b *backend) current() *session.Client {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.client
+}
+
+// resizeStream offers the stream, if there is one, the window's new size.
+func (b *backend) resizeStream(w, h int) {
+	if c := b.current(); c != nil {
+		if err := c.Resize(w, h); err != nil {
+			b.logf("planck: resize the stream: %v", err)
+		}
+	}
 }
 
 // SendInput forwards one input event to the stream, if there is one.

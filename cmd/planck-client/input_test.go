@@ -78,3 +78,79 @@ func keys(evs []input.Event) []input.KeyEvent {
 	}
 	return out
 }
+
+func TestMapPointer(t *testing.T) {
+	type pt struct{ x, y float32 }
+	for _, c := range []struct {
+		name           string
+		bw, bh         float32
+		fw, fh, dw, dh int
+		at             pt
+		want           [2]int
+	}{
+		{"1:1 centre", 1920, 1080, 1920, 1080, 1920, 1080, pt{960, 540}, [2]int{32767, 32767}},
+		{"1:1 corner", 1920, 1080, 1920, 1080, 1920, 1080, pt{0, 0}, [2]int{0, 0}},
+		// 16:9 in a 32:9 Retina window, 2560x720 points: the picture is
+		// points 640..1920 wide.
+		{"pillarbox left edge", 2560, 720, 1920, 1080, 5120, 1440, pt{640, 360}, [2]int{0, 32767}},
+		{"pillarbox centre", 2560, 720, 1920, 1080, 5120, 1440, pt{1280, 0}, [2]int{32767, 0}},
+		{"pillarbox right edge", 2560, 720, 1920, 1080, 5120, 1440, pt{1920, 719.99}, [2]int{65535, 65535}},
+		{"left pillar clamps", 2560, 720, 1920, 1080, 5120, 1440, pt{100, 360}, [2]int{0, 32767}},
+		{"right pillar clamps", 2560, 720, 1920, 1080, 5120, 1440, pt{2500, 360}, [2]int{65535, 32767}},
+		// 32:9 in 16:9: the picture is rows 270..810.
+		{"letterbox centre", 1920, 1080, 5120, 1440, 1920, 1080, pt{960, 540}, [2]int{32767, 32767}},
+		{"top bar clamps", 1920, 1080, 5120, 1440, 1920, 1080, pt{960, 100}, [2]int{32767, 0}},
+		{"bottom bar clamps", 1920, 1080, 5120, 1440, 1920, 1080, pt{960, 1000}, [2]int{32767, 65535}},
+		{"letterbox quarter", 1920, 1080, 5120, 1440, 1920, 1080, pt{480, 405}, [2]int{16383, 16383}},
+		// 150% scaling on Windows: 1280x720 DIPs over 1920x1080 pixels.
+		{"scale 1.5", 1280, 720, 1920, 1080, 1920, 1080, pt{640, 180}, [2]int{32767, 16383}},
+		// A 14" MacBook Pro, 1512x982 points at 2x: the 16:9 picture is
+		// pixel rows 131..1832, points 65.5..916.
+		{"retina letterbox top", 1512, 982, 1920, 1080, 3024, 1964, pt{756, 65.5}, [2]int{32767, 0}},
+		{"retina letterbox centre", 1512, 982, 1920, 1080, 3024, 1964, pt{756, 490.75}, [2]int{32767, 32767}},
+		{"no drawable yet", 800, 600, 0, 0, 0, 0, pt{400, 150}, [2]int{32767, 16383}},
+	} {
+		x, y := mapPointer(c.at.x, c.at.y, c.bw, c.bh, c.fw, c.fh, c.dw, c.dh)
+		if d := int(x) - c.want[0]; d < -1 || d > 1 {
+			t.Errorf("%s: x %d, want %d", c.name, x, c.want[0])
+		}
+		if d := int(y) - c.want[1]; d < -1 || d > 1 {
+			t.Errorf("%s: y %d, want %d", c.name, y, c.want[1])
+		}
+	}
+}
+
+// TestInputForwarderFollowsPicture: the pointer maps onto the picture as
+// it is now, through a resize to full screen and a new frame size.
+func TestInputForwarderFollowsPicture(t *testing.T) {
+	var got []input.Event
+	fw, fh, dw, dh := 1920, 1080, 1600, 1000
+	f := &inputForwarder{send: func(ev input.Event) { got = append(got, ev) },
+		video: func() (int, int, int, int) { return fw, fh, dw, dh }}
+	tt := mui.NewTester(f.view, 800, 500)
+	move := func(x, y float32) input.MouseMoveAbs {
+		t.Helper()
+		got = nil
+		tt.Move(x, y)
+		tt.Frame()
+		if len(got) != 1 {
+			t.Fatalf("move to %v, %v: %+v", x, y, got)
+		}
+		return got[0].MouseAbs
+	}
+	// 16:9 in 16:10: rows 50..950 of 1000, points 25..475.
+	if m := move(400, 25); m.X != 32767 || m.Y != 0 {
+		t.Fatalf("windowed top edge: %+v", m)
+	}
+	// The window goes full screen on a 32:9 display while the old frames
+	// still show: pillarboxed until the host's new size arrives.
+	tt.SetSize(2560, 720)
+	dw, dh = 5120, 1440
+	if m := move(640, 360); m.X != 0 || m.Y != 32767 {
+		t.Fatalf("full screen, old frame, pillar edge: %+v", m)
+	}
+	fw, fh = 5120, 1440
+	if m := move(640, 360); m.X != 16383 || m.Y != 32767 {
+		t.Fatalf("full screen, new frame: %+v", m)
+	}
+}

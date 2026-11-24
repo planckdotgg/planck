@@ -33,6 +33,7 @@ const (
 	ctxIASetPrimitiveTopology = 24
 	ctxOMSetRenderTargets     = 33
 	ctxRSSetViewports         = 44
+	ctxClearRenderTargetView  = 50
 	ctxFlush                  = 111
 	// ID3D11Texture2D
 	texGetDesc = 10
@@ -251,9 +252,11 @@ type frameViews struct {
 	slice         int
 	width, height int
 	srv           [2]uintptr
-	format        Format
-	params        uintptr // constant buffer
-	crop          uintptr // constant buffer of uvScale
+	// visibleW and visibleH are the size of the picture shown.
+	visibleW, visibleH int
+	format             Format
+	params             uintptr // constant buffer
+	crop               uintptr // constant buffer of uvScale
 }
 
 const wrapCache = 16
@@ -267,6 +270,7 @@ type Surface struct {
 	sampler              uintptr
 	params8, params10    uintptr
 	vp                   viewport
+	black                [4]float32
 	tearing              bool
 	adapterName          string
 	width, height        int
@@ -501,7 +505,8 @@ func (s *Surface) Present(texture uintptr) error { return s.PresentSlice(texture
 // PresentSlice is Present for slice of a texture array, as hardware
 // decoders write their pictures, showing its top-left width x height: the
 // visible picture of a texture aligned past it. Zero width or height shows
-// the whole texture.
+// the whole texture. A picture of another shape than the swap chain shows
+// whole between black bars.
 func (s *Surface) PresentSlice(texture uintptr, slice, width, height int) error {
 	submitted := Now()
 	f := s.wrap(texture, slice, width, height)
@@ -510,6 +515,11 @@ func (s *Surface) PresentSlice(texture uintptr, slice, width, height int) error 
 	}
 	// Every pointer passed is into s, on the heap (fastCall).
 	ctx := s.ctx
+	if s.fitViewport(f.visibleW, f.visibleH) {
+		// Flip-discard leaves the back buffer undefined: the bars need
+		// clearing on every present.
+		fastCall(ctx, ctxClearRenderTargetView, s.rtv, uintptr(unsafe.Pointer(&s.black)), 0, 0, 0)
+	}
 	fastCall(ctx, ctxOMSetRenderTargets, 1, uintptr(unsafe.Pointer(&s.rtv)), 0, 0, 0)
 	fastCall(ctx, ctxRSSetViewports, 1, uintptr(unsafe.Pointer(&s.vp)), 0, 0, 0)
 	fastCall(ctx, ctxIASetPrimitiveTopology, topologyTriangleList, 0, 0, 0, 0)
@@ -556,7 +566,10 @@ func (s *Surface) wrap(texture uintptr, slice, width, height int) *frameViews {
 	if slice < 0 || uint32(slice) >= max(td.ArraySize, 1) || uint32(width) > td.Width || uint32(height) > td.Height {
 		return nil
 	}
-	f := frameViews{slice: slice, width: width, height: height}
+	f := frameViews{slice: slice, width: width, height: height, visibleW: int(td.Width), visibleH: int(td.Height)}
+	if width > 0 && height > 0 {
+		f.visibleW, f.visibleH = width, height
+	}
 	var formats [2]uint32
 	switch td.Format {
 	case formatB8G8R8A8Unorm:
@@ -646,6 +659,14 @@ func (s *Surface) viewBackBuffer() error {
 	s.width, s.height = int(bd.Width), int(bd.Height)
 	s.vp = viewport{W: float32(bd.Width), H: float32(bd.Height), MaxDepth: 1}
 	return nil
+}
+
+// fitViewport sets the viewport where a fw x fh picture shows whole in
+// the back buffer, and reports whether it leaves bars.
+func (s *Surface) fitViewport(fw, fh int) (bars bool) {
+	x, y, w, h := FitRect(fw, fh, s.width, s.height)
+	s.vp = viewport{X: float32(x), Y: float32(y), W: float32(w), H: float32(h), MaxDepth: 1}
+	return w != s.width || h != s.height
 }
 
 // Close frees the surface.

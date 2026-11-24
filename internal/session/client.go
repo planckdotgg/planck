@@ -66,6 +66,10 @@ type ClientConfig struct {
 	// Capabilities replaces the probe of this device's display and
 	// decoders.
 	Capabilities func() defaults.ClientCapabilities
+	// ViewSize is the size in pixels of the window the stream shows in;
+	// nil, as headless, has none. A stream on a virtual display at
+	// Resolution auto starts at this size and follows Resize.
+	ViewSize func() (w, h int)
 	// PIN is the host's pairing PIN, needed the first time unless both
 	// devices belong to the same Tailscale user.
 	PIN     string
@@ -253,6 +257,9 @@ type conn struct {
 	profile atomic.Pointer[defaults.ResolvedProfile]
 	// sinkCfg is what the sink was opened for; a new route must match it.
 	sinkCfg decode.Config
+	// asked is the window size last offered the host, in pixels, width
+	// in the high half.
+	asked atomic.Uint64
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -389,6 +396,9 @@ func (c *Client) connect(ctx context.Context, t Target) (*conn, error) {
 	if cc.name == "" {
 		cc.name = sess.PeerName()
 	}
+	if cfg.ViewSize != nil {
+		cc.asked.Store(packView(defaults.ViewSize(cfg.ViewSize())))
+	}
 	acc := sess.Config()
 	cc.video = acc
 	cc.codec = codecFromWire(acc.Codec)
@@ -513,8 +523,11 @@ func (c *Client) dialRoute(ctx context.Context, cc *conn, r resolved) (*route, e
 			VideoFrame: cc.onFrame,
 			Audio:      cc.onAudio,
 			Control: func(m wire.Message) {
-				if _, ok := m.(*wire.Goodbye); ok {
+				switch m := m.(type) {
+				case *wire.Goodbye:
 					rt.bye.Store(true)
+				case *wire.Profile:
+					cc.resized(m.JSON, c.logf)
 				}
 			},
 			Clipboard: c.onClipboard,
@@ -633,6 +646,9 @@ func (c *Client) capabilities(cfg ClientConfig, addr string, path discovery.Path
 		probe = ProbeClientCapabilities
 	}
 	caps := probe()
+	if cfg.ViewSize != nil {
+		caps.Display.ViewWidthPx, caps.Display.ViewHeightPx = cfg.ViewSize()
+	}
 	if ap, err := netip.ParseAddrPort(addr); err == nil {
 		if name, link, err := linkinfo.Route(ap.Addr().Unmap()); err == nil {
 			caps.Link = link
@@ -827,6 +843,11 @@ func (c *Client) switchRoute(cc *conn, r resolved) error {
 	acc := rt.sess.Config()
 	dcfg, prof := c.streamConfig(rt.sess)
 	dcfg.FPS = cc.sinkCfg.FPS
+	if dcfg.Codec != encode.PyroWave {
+		// The hardware decoders take a new size from the stream itself,
+		// which a resize or the window's size on this route may give.
+		dcfg.Width, dcfg.Height = cc.sinkCfg.Width, cc.sinkCfg.Height
+	}
 	if acc.Codec != cc.video.Codec || dcfg != cc.sinkCfg {
 		rt.sess.Close()
 		return fmt.Errorf("session: the host changed the stream to %dx%d %v chroma %v chunk %d on %s", dcfg.Width, dcfg.Height, dcfg.Codec, dcfg.Chroma, dcfg.ChunkLen, r.kind)
@@ -1336,6 +1357,44 @@ func (c *Client) Close() {
 	if s != nil {
 		s.close()
 	}
+}
+
+// Resize offers the host a w x h pixel window to stream at. It sends
+// nothing unless the stream is on a virtual display at Resolution auto,
+// the host takes Resize, the codec decodes a new size mid-stream (not
+// PyroWave), and the size, made even and in bounds, is not the last one
+// offered.
+func (c *Client) Resize(w, h int) error {
+	c.mu.Lock()
+	cc, res := c.conn, c.cfg.Overrides.Resolution
+	c.mu.Unlock()
+	if cc == nil || (res != "" && res != defaults.Auto) {
+		return nil
+	}
+	rt, p := cc.live.Load(), cc.profile.Load()
+	if rt == nil || p == nil || !p.VirtualDisplay || p.Codec == defaults.CodecPyroWave || rt.sess.PeerFeatures()&wire.FeatureResize == 0 {
+		return nil
+	}
+	w, h = defaults.ViewSize(w, h)
+	if cc.asked.Swap(packView(w, h)) == packView(w, h) {
+		return nil
+	}
+	return rt.sess.SendControl(&wire.Resize{Width: uint16(w), Height: uint16(h)})
+}
+
+func packView(w, h int) uint64 { return uint64(uint32(w))<<32 | uint64(uint32(h)) }
+
+// resized takes a Profile the host sent after a Resize. The decoder
+// rebuilds for the new size on the next keyframe, as at the start.
+func (cc *conn) resized(js []byte, logf func(string, ...any)) {
+	p, err := ParseProfile(js)
+	if err != nil || p == nil {
+		logf("planck: resized profile: %v", err)
+		return
+	}
+	cc.profile.Store(p)
+	cc.decoding.Store(false)
+	logf("planck: the host streams at %dx%d", p.Width, p.Height)
 }
 
 // Disconnect says goodbye to the host and stops playback.

@@ -90,6 +90,9 @@ type HostConfig struct {
 
 	// OpenVideo replaces DefaultVideoOpener.
 	OpenVideo VideoOpener
+	// OpenVirtualDisplay replaces SudoVDA: it makes a session's virtual
+	// display for p, with a stable ID from seed.
+	OpenVirtualDisplay func(p VideoParams, seed []byte, primary bool) (VirtualDisplay, error)
 	// Capabilities replaces the probe of this machine's encoders, displays
 	// and virtual display driver. Without it, a host with its own
 	// OpenVideo does not offer wire.FeatureCapabilities: it cannot know
@@ -377,7 +380,7 @@ func (h *Host) Start(ctx context.Context) error {
 		}
 	}
 	if h.cfg.OpenVideo == nil || h.cfg.Capabilities != nil {
-		scfg.Capabilities, scfg.Resolve = h.capabilitiesJSON, h.resolve
+		scfg.Capabilities, scfg.Resolve, scfg.Resize = h.capabilitiesJSON, h.resolve, true
 	}
 	srv, err := transport.Listen(h.cfg.ListenAddr, scfg)
 	if err != nil {
@@ -627,6 +630,13 @@ func (h *Host) onControl(m wire.Message) {
 		h.mu.Lock()
 		h.report = *m
 		h.mu.Unlock()
+	case *wire.Resize:
+		h.mu.Lock()
+		st := h.cur
+		h.mu.Unlock()
+		if st != nil {
+			st.requestResize(int(m.Width), int(m.Height))
+		}
 	}
 }
 

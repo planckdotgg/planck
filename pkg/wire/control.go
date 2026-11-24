@@ -38,11 +38,15 @@ const (
 	MsgGoodbye
 	// MsgCapabilities goes both ways, once, right after AuthOK.
 	MsgCapabilities MsgType = 10
-	// MsgProfile goes host to client, right after SessionReady.
+	// MsgProfile goes host to client, right after SessionReady, and again
+	// when a Resize changed the stream.
 	MsgProfile MsgType = 11
+	// MsgResize goes client to host, only to a host whose Hello carries
+	// FeatureResize.
+	MsgResize MsgType = 12
 	// MsgPeerState goes both ways, to a peer with FeaturePeerState, at the
 	// start of a session and whenever it changes.
-	MsgPeerState MsgType = 12
+	MsgPeerState MsgType = 13
 )
 
 // Message is a control-stream message. The set is closed: only types in this
@@ -80,14 +84,17 @@ const (
 	// FeatureCapabilities says the peer sends and reads Capabilities and
 	// Profile. Both Hellos must carry it before either message is sent.
 	FeatureCapabilities uint32 = 1 << 2
+	// FeatureResize, from a host, says it takes Resize: a stream on a
+	// virtual display follows the client's window size.
+	FeatureResize uint32 = 1 << 3
 	// FeaturePeerState says the peer reads PeerState. A peer sends it only
 	// to a peer whose Hello carries this bit.
-	FeaturePeerState uint32 = 1 << 3
+	FeaturePeerState uint32 = 1 << 4
 	// FeatureMic, from a host, says it accepts the client's microphone as
 	// FlowMic audio datagrams.
-	FeatureMic uint32 = 1 << 4
+	FeatureMic uint32 = 1 << 5
 	// FeatureClipboard says the peer reads clipboard streams.
-	FeatureClipboard uint32 = 1 << 5
+	FeatureClipboard uint32 = 1 << 6
 )
 
 type AuthMethod uint8
@@ -200,6 +207,13 @@ type Profile struct {
 	JSON []byte
 }
 
+// Resize asks the host to stream at the client window's new size, in
+// pixels. The host answers with a Profile once the stream changed, or
+// keeps the stream as it is.
+type Resize struct {
+	Width, Height uint16
+}
+
 // PeerState is what one side does with the session's optional flows.
 type PeerState struct {
 	// ClipboardSend: this side sends its clipboard changes.
@@ -237,6 +251,7 @@ func (*StatsReport) Type() MsgType   { return MsgStatsReport }
 func (*Goodbye) Type() MsgType       { return MsgGoodbye }
 func (*Capabilities) Type() MsgType  { return MsgCapabilities }
 func (*Profile) Type() MsgType       { return MsgProfile }
+func (*Resize) Type() MsgType        { return MsgResize }
 func (*PeerState) Type() MsgType     { return MsgPeerState }
 
 func (m *Hello) appendBody(b []byte) []byte {
@@ -373,6 +388,16 @@ func (m *Profile) appendBody(b []byte) []byte { return appendJSON(b, m.JSON) }
 func (m *Profile) decodeBody(d *decoder)      { m.JSON = d.json() }
 func (m *Profile) bodyTooLarge() bool         { return len(m.JSON) > MaxCapsJSON }
 
+func (m *Resize) appendBody(b []byte) []byte {
+	b = binary.BigEndian.AppendUint16(b, m.Width)
+	return binary.BigEndian.AppendUint16(b, m.Height)
+}
+
+func (m *Resize) decodeBody(d *decoder) {
+	m.Width = d.u16()
+	m.Height = d.u16()
+}
+
 func (m *PeerState) appendBody(b []byte) []byte {
 	b = append(b, boolByte(m.ClipboardSend), boolByte(m.ClipboardRecv))
 	b = appendString(b, m.MicDevice)
@@ -483,6 +508,8 @@ func newMessage(t MsgType) Message {
 		return &Capabilities{}
 	case MsgProfile:
 		return &Profile{}
+	case MsgResize:
+		return &Resize{}
 	case MsgPeerState:
 		return &PeerState{}
 	}

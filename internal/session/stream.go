@@ -2,9 +2,13 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
+	"net/netip"
 	"runtime"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,7 +45,10 @@ type stream struct {
 	once   sync.Once
 
 	invalid chan uint32
-	pts     [ptsRingSize]struct {
+	// resize holds the client window's latest size, in pixels, for the
+	// video loop.
+	resize chan [2]int
+	pts    [ptsRingSize]struct {
 		id  uint32
 		pts int64
 	}
@@ -75,7 +82,8 @@ func newStream(h *Host, sess *transport.Session) *stream {
 	if p.BitrateKbps <= 0 {
 		p.BitrateKbps = int(acc.BitrateKbps)
 	}
-	st := &stream{h: h, sess: sess, params: p, done: make(chan struct{}), invalid: make(chan uint32, 16), encodeMs: newWindow(encodeWindow)}
+	st := &stream{h: h, sess: sess, params: p, done: make(chan struct{}), invalid: make(chan uint32, 16), resize: make(chan [2]int, 1),
+		encodeMs: newWindow(encodeWindow)}
 	if ua, ok := sess.RemoteControlAddr().(*net.UDPAddr); ok {
 		st.addr = ua.String()
 		st.path = ratectl.ClassifyAddr(ua.AddrPort().Addr())
@@ -100,29 +108,119 @@ func newStream(h *Host, sess *transport.Session) *stream {
 	return st
 }
 
+// VirtualDisplay is a session's virtual display, which the pipeline
+// captures.
+type VirtualDisplay interface {
+	// Name is the display capture opens: a GDI name on Windows.
+	Name() string
+	// Resize gives the display a new size; on an error it is gone.
+	Resize(w, h int) error
+	Close() error
+}
+
 // openVirtualDisplay makes the session's virtual display and points the
 // pipeline at it. Without one the stream falls back to the physical
 // display on its own GPU.
-func (st *stream) openVirtualDisplay() (func() error, error) {
+func (st *stream) openVirtualDisplay() (VirtualDisplay, error) {
 	fp := st.sess.PeerFingerprint()
-	gdi, closeVD, err := st.h.vdd.create(st.params, fp[:], st.h.cfg.VDDPrimary)
+	open := st.h.cfg.OpenVirtualDisplay
+	if open == nil {
+		open = st.h.vdd.create
+	}
+	vd, err := open(st.params, fp[:], st.h.cfg.VDDPrimary)
 	if err != nil {
 		st.params.VirtualDisplay, st.params.Adapter = false, ""
 		return nil, err
 	}
-	st.params.Display = gdi
+	st.useVirtualDisplay(vd)
+	st.h.logf("planck: virtual display %s %dx%d@%d on %s", vd.Name(), st.params.Width, st.params.Height, st.params.FPS, st.params.Adapter)
+	return vd, nil
+}
+
+func (st *stream) useVirtualDisplay(vd VirtualDisplay) {
+	st.params.Display = vd.Name()
 	st.mu.Lock()
-	st.vdName = gdi
+	st.vdName = vd.Name()
 	st.mu.Unlock()
-	st.h.logf("planck: virtual display %s %dx%d@%d on %s", gdi, st.params.Width, st.params.Height, st.params.FPS, st.params.Adapter)
-	return func() error {
-		err := closeVD()
-		st.mu.Lock()
-		st.vdName = ""
-		st.mu.Unlock()
-		st.h.logf("planck: virtual display %s removed (err %v)", gdi, err)
-		return err
-	}, nil
+}
+
+func (st *stream) closeVirtualDisplay(vd VirtualDisplay) {
+	name := vd.Name()
+	err := vd.Close()
+	st.mu.Lock()
+	st.vdName = ""
+	st.mu.Unlock()
+	st.h.logf("planck: virtual display %s removed (err %v)", name, err)
+}
+
+// requestResize leaves the client window's size for the video loop,
+// replacing one it has not taken yet.
+func (st *stream) requestResize(w, h int) {
+	for {
+		select {
+		case st.resize <- [2]int{w, h}:
+			return
+		default:
+		}
+		select {
+		case <-st.resize:
+		default:
+		}
+	}
+}
+
+// resizeTo moves a stream on a virtual display to the size the profile
+// resolves for a w x h client window: the pipeline closes, the display
+// takes the new size, the client hears of it in a new Profile, and the
+// loop opens the pipeline again with a keyframe. A display that fails to
+// resize is gone; the loop makes a new one.
+func (st *stream) resizeTo(w, h int, pipe *VideoPipe, vd *VirtualDisplay) {
+	if st.profile == nil || !st.params.VirtualDisplay || st.params.Codec == encode.PyroWave {
+		return
+	}
+	var cc clientCaps
+	if err := json.Unmarshal(st.sess.PeerCapabilities(), &cc); err != nil || cc.V != clientCapsVersion {
+		return
+	}
+	cc.Client.Display.ViewWidthPx, cc.Client.Display.ViewHeightPx = w, h
+	var remote netip.Addr
+	if ua, ok := st.sess.RemoteControlAddr().(*net.UDPAddr); ok {
+		remote = ua.AddrPort().Addr()
+	}
+	cc.Route.Kind = st.profile.Route
+	p := st.h.resolveProfile(cc, remote, st.path, st.sess.MaxDatagram() > wire.MaxDatagram)
+	if !p.VirtualDisplay || (p.Width == st.params.Width && p.Height == st.params.Height) {
+		return
+	}
+	if *pipe != nil {
+		(*pipe).Close()
+		*pipe = nil
+	}
+	from := fmt.Sprintf("%dx%d", st.params.Width, st.params.Height)
+	st.params.Width, st.params.Height = p.Width, p.Height
+	if *vd != nil {
+		if err := (*vd).Resize(p.Width, p.Height); err != nil {
+			st.h.fail("virtual display resize to %dx%d: %v", p.Width, p.Height, err)
+			st.closeVirtualDisplay(*vd)
+			*vd = nil
+		} else {
+			st.useVirtualDisplay(*vd)
+		}
+	}
+	prof := *st.profile
+	prof.Width, prof.Height = p.Width, p.Height
+	isRes := func(d defaults.Decision) bool { return d.Knob == "resolution" }
+	if i, j := slices.IndexFunc(prof.Decisions, isRes), slices.IndexFunc(p.Decisions, isRes); i >= 0 && j >= 0 {
+		prof.Decisions = slices.Clone(prof.Decisions)
+		prof.Decisions[i] = p.Decisions[j]
+	}
+	st.mu.Lock()
+	st.profile = &prof
+	st.mu.Unlock()
+	if js, err := json.Marshal(&prof); err == nil {
+		_ = st.sess.SendControl(&wire.Profile{JSON: js})
+	}
+	st.h.logf("planck: stream resized from %s to %dx%d for a %dx%d window", from, p.Width, p.Height, w, h)
 }
 
 func (st *stream) run(parent context.Context) {
@@ -207,7 +305,7 @@ func (st *stream) videoLoop() {
 		defer revert()
 	}
 	var pipe VideoPipe
-	var closeVD func() error
+	var vd VirtualDisplay
 	st.trace = newTracer[hostTraceRow](traceHostEnv)
 	// Deferred calls run while a panic unwinds this goroutine, so the
 	// virtual display goes with the session however it ends. A crash
@@ -216,8 +314,8 @@ func (st *stream) videoLoop() {
 		if pipe != nil {
 			pipe.Close()
 		}
-		if closeVD != nil {
-			closeVD()
+		if vd != nil {
+			st.closeVirtualDisplay(vd)
 		}
 		if err := st.trace.flush(); err != nil {
 			st.h.logf("planck: trace: %v", err)
@@ -237,9 +335,14 @@ func (st *stream) videoLoop() {
 	out := &sliceSender{sess: st.sess, slices: uint8(slices)}
 	emit := out.emit
 	for st.ctx.Err() == nil {
-		if pipe == nil && st.params.VirtualDisplay && closeVD == nil {
+		select {
+		case sz := <-st.resize:
+			st.resizeTo(sz[0], sz[1], &pipe, &vd)
+		default:
+		}
+		if pipe == nil && st.params.VirtualDisplay && vd == nil {
 			var err error
-			if closeVD, err = st.openVirtualDisplay(); err != nil {
+			if vd, err = st.openVirtualDisplay(); err != nil {
 				st.h.fail("virtual display: %v; capturing the physical display", err)
 			}
 		}
@@ -493,8 +596,8 @@ func (st *stream) fill(out *HostStats) {
 	out.EncodeMs = st.encodeMs.summary()
 	out.FECParityPct = st.parityPct
 	out.VirtualDisplay = st.vdName
-	st.mu.Unlock()
 	out.Profile = st.profile
+	st.mu.Unlock()
 }
 
 func abs(v int) int {

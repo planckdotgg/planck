@@ -214,3 +214,50 @@ func TestLiveCrash(t *testing.T) {
 	waitGone(t, gpu.LUID(idd), target, 4*time.Second)
 	t.Logf("watchdog removed target %d %v after the child exited", target, time.Since(exited))
 }
+
+// TestLiveResize resizes a display to a mode it offers, to sizes it does
+// not, and through a burst: each time Windows shows the new mode on one
+// monitor, and after Close no SudoVDA monitor is left.
+func TestLiveResize(t *testing.T) {
+	drv, adapter := liveDriver(t)
+	before, err := Monitors()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := drv.CreateDisplay(DisplaySpec{Width: 1280, Height: 720, RefreshMilliHz: 60000,
+		ID: MonitorID([]byte("planck-live-resize")), RenderAdapter: adapter.LUID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range [][2]int{{1600, 900}, {1734, 968}, {2532, 1418}, {1920, 1080}, {2048, 1152}, {1280, 802}, {2560, 1600}} {
+		start := time.Now()
+		if err := v.Resize(s[0], s[1]); err != nil {
+			t.Fatalf("resize to %dx%d: %v", s[0], s[1], err)
+		}
+		dm, err := currentMode(v.GDIName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if w, h := *dm.u32(dmPelsWidthOff), *dm.u32(dmPelsHeightOff); int(w) != s[0] || int(h) != s[1] || v.RenderAdapter != adapter.LUID {
+			t.Fatalf("%s is %dx%d on 0x%x after resize to %dx%d", v.GDIName, w, h, uint64(v.RenderAdapter), s[0], s[1])
+		}
+		ms, err := Monitors()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(ms) != len(before)+1 {
+			t.Fatalf("%d SudoVDA monitors after resize to %dx%d, %d before the test", len(ms), s[0], s[1], len(before))
+		}
+		t.Logf("%dx%d on %s in %v", s[0], s[1], v.GDIName, time.Since(start))
+	}
+	if n := captureAnimated(t, v); n < 20 {
+		t.Fatalf("only %d frames after the resizes", n)
+	}
+	if err := v.Close(); err != nil {
+		t.Fatal(err)
+	}
+	waitGone(t, v.IddAdapter, v.TargetID, 4*time.Second)
+	if after, err := Monitors(); err != nil || len(after) != len(before) {
+		t.Fatalf("%d SudoVDA monitors after Close (%v), %d before", len(after), err, len(before))
+	}
+}

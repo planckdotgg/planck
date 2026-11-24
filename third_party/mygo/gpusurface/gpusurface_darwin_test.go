@@ -252,3 +252,25 @@ func TestResizeWhileWindowResizes(t *testing.T) {
 		t.Error("no frame presented")
 	}
 }
+
+// TestWindowedPresentKeepsAspect: out of direct mode a frame of another
+// shape than the window shows whole, letterboxed, not stretched.
+func TestWindowedPresentKeepsAspect(t *testing.T) {
+	frame := testIOSurface(t, 64, 36)
+	win, _, _ := testWindow(t, 400, 300)
+	var s *Surface
+	var err error
+	onMain(func() { s, err = New(Options{Window: win, Composite: true}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { onMain(s.Close) })
+	if err := s.Present(frame); err != nil {
+		t.Fatal(err)
+	}
+	dw, dh := s.Size()
+	want, _ := fitRect(64, 36, uintptr(dw), uintptr(dh))
+	if s.Direct() || s.fit != want || s.fit[1] >= 1 {
+		t.Fatalf("windowed fit %v in %dx%d (direct %v), want %v", s.fit, dw, dh, s.Direct(), want)
+	}
+}

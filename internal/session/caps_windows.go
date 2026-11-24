@@ -187,27 +187,31 @@ type vddManager struct {
 	drv *vdd.Driver
 }
 
-// create makes a virtual display for p on p.Adapter's GPU and returns its
-// GDI name and the function that removes it.
-func (m *vddManager) create(p VideoParams, seed []byte, primary bool) (string, func() error, error) {
+// sudoDisplay is a SudoVDA display as a session's VirtualDisplay.
+type sudoDisplay struct{ *vdd.VirtualDisplay }
+
+func (d sudoDisplay) Name() string { return d.GDIName }
+
+// create makes a virtual display for p on p.Adapter's GPU.
+func (m *vddManager) create(p VideoParams, seed []byte, primary bool) (VirtualDisplay, error) {
 	a, err := pickAdapter(p.Adapter)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.drv == nil {
 		if m.drv, err = vdd.Open(); err != nil {
 			m.drv = nil
-			return "", nil, err
+			return nil, err
 		}
 	}
 	vd, err := m.drv.CreateDisplay(vdd.DisplaySpec{Width: p.Width &^ 1, Height: p.Height &^ 1, RefreshMilliHz: p.FPS * 1000,
 		ID: vdd.MonitorID(seed), RenderAdapter: a.LUID, Primary: primary})
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
-	return vd.GDIName, vd.Close, nil
+	return sudoDisplay{vd}, nil
 }
 
 func (m *vddManager) close() error {

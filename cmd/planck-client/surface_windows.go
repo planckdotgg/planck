@@ -20,7 +20,11 @@ import (
 // topmost, shows where the UI paints nothing.
 const composeUnderUI = true
 
-var procFindWindowExW = syscall.NewLazyDLL("user32.dll").NewProc("FindWindowExW")
+var (
+	user32              = syscall.NewLazyDLL("user32.dll")
+	procFindWindowExW   = user32.NewProc("FindWindowExW")
+	procGetDpiForWindow = user32.NewProc("GetDpiForWindow")
+)
 
 // surfaceHost is a gpusurface composed under MyGo's target on the child
 // window MyGo draws the UI in, as MyGo shows web views; the window keeps
@@ -49,6 +53,17 @@ func (h *surfaceHost) fit() {}
 func (h *surfaceHost) resizeSurface(p *player.Player, _ *videoView) error { return p.Resize(0, 0) }
 
 func (h *surfaceHost) close() { h.surf.Close() }
+
+// windowPixels is the window's content size in pixels: its DIPs at the
+// window's DPI.
+func windowPixels(w *mygo.Window) (int, int) {
+	cw, ch := w.ContentSize()
+	dpi, _, _ := procGetDpiForWindow.Call(w.NativeHandle())
+	if dpi == 0 {
+		dpi = 96
+	}
+	return (cw*int(dpi) + 48) / 96, (ch*int(dpi) + 48) / 96
+}
 
 var errNoEncoder = errors.New("no hardware encoder")
 

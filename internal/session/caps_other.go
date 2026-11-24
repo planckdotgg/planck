@@ -12,8 +12,8 @@ func clientDecoders() []defaults.CodecCap            { return nil }
 
 type vddManager struct{}
 
-func (*vddManager) create(VideoParams, []byte, bool) (string, func() error, error) {
-	return "", nil, errNoBackend
+func (*vddManager) create(VideoParams, []byte, bool) (VirtualDisplay, error) {
+	return nil, errNoBackend
 }
 func (*vddManager) close() error { return nil }
 

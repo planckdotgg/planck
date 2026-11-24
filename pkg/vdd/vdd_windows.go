@@ -128,6 +128,7 @@ func (d *Driver) CreateDisplay(spec DisplaySpec) (*VirtualDisplay, error) {
 		Height:         spec.Height,
 		RefreshMilliHz: spec.RefreshMilliHz,
 		drv:            d,
+		spec:           spec,
 	}
 	d.track(v)
 	d.mu.Unlock()
@@ -210,6 +211,58 @@ func (v *VirtualDisplay) matchOutput(spec DisplaySpec, until time.Time) error {
 		}
 		time.Sleep(attachPollInterval)
 	}
+}
+
+// Resize gives the display a w x h mode: in place when the monitor offers
+// that size, else by removing it and adding it again under the same ID,
+// by which Windows keeps its settings. The display may then have another
+// GDIName. On an error the display is removed.
+func (v *VirtualDisplay) Resize(w, h int) error {
+	spec := v.spec
+	spec.Width, spec.Height = w, h
+	spec, err := spec.normalize()
+	if err != nil {
+		return err
+	}
+	if w == v.Width && h == v.Height {
+		return nil
+	}
+	// SudoVDA's monitors list the common modes beside the one they were
+	// added with; any other size fails here quickly (DISP_CHANGE_BADMODE).
+	if setMode(v.GDIName, w, h, spec.RefreshMilliHz) == nil {
+		v.Width, v.Height, v.spec = w, h, spec
+		return nil
+	}
+	d := v.drv
+	d.mu.Lock()
+	if d.closed {
+		d.mu.Unlock()
+		return ErrClosed
+	}
+	if err := remove(d.h, v.ID); err != nil {
+		d.mu.Unlock()
+		return err
+	}
+	if spec.RenderAdapter != 0 {
+		err = setRenderAdapter(d.h, spec.RenderAdapter)
+	}
+	var out addOut
+	if err == nil {
+		out, err = add(d.h, spec)
+	}
+	if err != nil {
+		d.untrack(v.ID)
+		d.mu.Unlock()
+		return err
+	}
+	v.IddAdapter, v.TargetID, v.GDIName, v.RenderAdapter = luidOf(out.AdapterLUID), out.TargetID, "", 0
+	v.Width, v.Height, v.spec = w, h, spec
+	d.mu.Unlock()
+	if err := v.attach(spec); err != nil {
+		v.Close()
+		return err
+	}
+	return nil
 }
 
 // Close sends REMOVE. Idempotent; the driver's STATUS_NOT_FOUND counts as success.
