@@ -79,27 +79,63 @@ func (*vddManager) close() error                                             { r
 // the most frames a second its screen shows (ProMotion: 120). The main
 // display is the one with the menu bar, NSScreen.screens[0]; mainScreen is
 // the screen of the key window, which can be another display.
-func clientDisplay() defaults.ClientDisplay {
+func clientDisplay() defaults.ClientDisplay { return WindowDisplay(0) }
+
+// WindowDisplay is clientDisplay for the display the NSWindow win is on,
+// which a full-screen window fills; with win 0, or a window on no screen,
+// it is the main display's. Call it on the main thread.
+func WindowDisplay(win uintptr) defaults.ClientDisplay {
 	loadCG()
+	var scr objc.ID
+	if win != 0 {
+		scr = objc.ID(win).Send(objc.RegisterName("screen"))
+	}
+	return screenDisplay(scr)
+}
+
+// screenDisplay reads the NSScreen scr's display, or the main display's
+// when scr is 0.
+func screenDisplay(scr objc.ID) defaults.ClientDisplay {
+	id := cgMainDisplayID()
+	if scr != 0 {
+		if n, ok := screenDisplayID(scr); ok {
+			id = n
+		}
+	} else if cls := objc.ID(objc.GetClass("NSScreen")); cls != 0 {
+		scr = firstScreen(cls)
+	}
 	var d defaults.ClientDisplay
-	if mode := cgDisplayCopyDisplayMode(cgMainDisplayID()); mode != 0 {
+	if mode := cgDisplayCopyDisplayMode(id); mode != 0 {
 		d.WidthPx, d.HeightPx = int(cgDisplayModeGetPixelWidth(mode)), int(cgDisplayModeGetPixelHeight(mode))
 		d.MaxHz = int(math.Round(cgDisplayModeGetRefreshRate(mode)))
 		cgDisplayModeRelease(mode)
 	}
-	if cls := objc.ID(objc.GetClass("NSScreen")); cls != 0 {
-		if scr := firstScreen(cls); scr != 0 {
-			if hz := objc.Send[int](scr, objc.RegisterName("maximumFramesPerSecond")); hz > 0 {
-				d.MaxHz = hz
-			}
-			d.Scale = objc.Send[float64](scr, objc.RegisterName("backingScaleFactor"))
+	if scr != 0 {
+		if hz := objc.Send[int](scr, objc.RegisterName("maximumFramesPerSecond")); hz > 0 {
+			d.MaxHz = hz
 		}
+		d.Scale = objc.Send[float64](scr, objc.RegisterName("backingScaleFactor"))
 	}
 	if d.MaxHz <= 0 {
 		d.MaxHz = 60
 	}
 	d.MinHz = min(24, d.MaxHz)
 	return d
+}
+
+// screenDisplayID is the CGDirectDisplayID of an NSScreen.
+func screenDisplayID(scr objc.ID) (uint32, bool) {
+	desc := scr.Send(objc.RegisterName("deviceDescription"))
+	if desc == 0 {
+		return 0, false
+	}
+	key := apple.String("NSScreenNumber")
+	defer apple.CFRelease(key)
+	num := desc.Send(objc.RegisterName("objectForKey:"), key)
+	if num == 0 {
+		return 0, false
+	}
+	return objc.Send[uint32](num, objc.RegisterName("unsignedIntValue")), true
 }
 
 func firstScreen(cls objc.ID) objc.ID {

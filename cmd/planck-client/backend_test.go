@@ -391,3 +391,18 @@ func TestBackendOverlayAndSoundPersist(t *testing.T) {
 		t.Fatalf("next run layout %+v, want %+v", gl, l)
 	}
 }
+
+// TestBackendCapabilitiesWindowDisplay: the capabilities a stream offers
+// carry the display the window is on, a second 3440x1440 75 Hz one here,
+// and fall back to the probe without a window.
+func TestBackendCapabilitiesWindowDisplay(t *testing.T) {
+	second := defaults.ClientDisplay{WidthPx: 3440, HeightPx: 1440, Scale: 1, MaxHz: 75, MinHz: 24}
+	b := &backend{display: func() defaults.ClientDisplay { return second }}
+	if got := b.capabilities().Display; got != second {
+		t.Fatalf("display %+v, want the window's %+v", got, second)
+	}
+	b.display = func() defaults.ClientDisplay { return defaults.ClientDisplay{} }
+	if got, want := b.capabilities().Display, session.ProbeClientCapabilities().Display; got != want {
+		t.Fatalf("no window: display %+v, want the probe's %+v", got, want)
+	}
+}

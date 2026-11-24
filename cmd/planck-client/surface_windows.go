@@ -10,6 +10,7 @@ import (
 
 	"github.com/planckdotgg/planck/internal/ui"
 	"github.com/planckdotgg/planck/pkg/capture/dxgi"
+	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/encode"
 	"github.com/planckdotgg/planck/pkg/gpu"
 	"github.com/planckdotgg/planck/pkg/player"
@@ -64,6 +65,9 @@ func windowPixels(w *mygo.Window) (int, int) {
 	}
 	return (cw*int(dpi) + 48) / 96, (ch*int(dpi) + 48) / 96
 }
+
+// windowDisplay leaves the display to the probe: the primary display.
+func windowDisplay(*mygo.Window) defaults.ClientDisplay { return defaults.ClientDisplay{} }
 
 var errNoEncoder = errors.New("no hardware encoder")
 

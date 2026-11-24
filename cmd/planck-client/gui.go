@@ -16,6 +16,7 @@ import (
 	"github.com/planckdotgg/planck/internal/ui"
 	"github.com/planckdotgg/planck/internal/ui/theme"
 	"github.com/planckdotgg/planck/pkg/decode"
+	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/player"
 	"github.com/planckdotgg/planck/pkg/tailscale"
 )
@@ -39,7 +40,7 @@ func runGUI(o options) error {
 			c.DiscoveryAddr = fmt.Sprintf(":%d", o.discoveryPort)
 			return c
 		},
-		encoders: localEncoders(), logf: logf, overrides: o.overrides, viewSize: video.pixelSize, onCursor: ptr.setHost,
+		encoders: localEncoders(), logf: logf, overrides: o.overrides, viewSize: video.liveSize, display: video.display, onCursor: ptr.setHost,
 	})
 	if err != nil {
 		return err
@@ -63,11 +64,20 @@ func runGUI(o options) error {
 		video.attach(win)
 		app.SetWindow(fullScreenHook{win})
 		app.SetCursor(cursorHook{ptr})
+		// settled is whether the window was in full screen when its last
+		// transition ended. The style mask, IsFullScreen, flips as one
+		// starts; the sizes macOS reports until it ends are not final, and
+		// its end sends the final one. Main thread only.
+		settled := win.IsFullScreen()
 		win.OnResize(func() {
 			video.resized()
+			if win.IsFullScreen() != settled {
+				return
+			}
 			resizer.changed(video.pixelSize())
 		})
 		fullScreen := func() {
+			settled = win.IsFullScreen()
 			video.resized()
 			video.applyDirect()
 			resizer.now(video.pixelSize())
@@ -131,6 +141,24 @@ func (v *videoView) storeSize(w *mygo.Window) {
 func (v *videoView) pixelSize() (int, int) { return unpackSize(v.pixels.Load()) }
 
 func (v *videoView) contentSize() (int, int) { return unpackSize(v.size.Load()) }
+
+// liveSize reads the window's size in pixels now, for a stream that
+// starts before a resize or a full-screen transition was heard of.
+func (v *videoView) liveSize() (int, int) {
+	if w := v.win.Load(); w != nil {
+		mygo.RunOnMain(func() { v.storeSize(w) })
+	}
+	return v.pixelSize()
+}
+
+// display is the display the window is on.
+func (v *videoView) display() defaults.ClientDisplay {
+	var d defaults.ClientDisplay
+	if w := v.win.Load(); w != nil {
+		mygo.RunOnMain(func() { d = windowDisplay(w) })
+	}
+	return d
+}
 
 func packSize(w, h int) uint64       { return uint64(uint32(w))<<32 | uint64(uint32(h)) }
 func unpackSize(s uint64) (int, int) { return int(s >> 32), int(uint32(s)) }

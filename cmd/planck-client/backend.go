@@ -48,6 +48,7 @@ type backend struct {
 	// overrides are the command line's, over the stored ones.
 	overrides defaults.UserOverrides
 	viewSize  func() (w, h int)
+	display   func() defaults.ClientDisplay
 	onCursor  func(wire.CursorState)
 
 	mu       sync.Mutex
@@ -82,6 +83,9 @@ type backendConfig struct {
 	overrides  defaults.UserOverrides
 	// viewSize is the stream window's size in pixels.
 	viewSize func() (w, h int)
+	// display is the display the stream window is on; nil, or a zero
+	// width, is the main display.
+	display func() defaults.ClientDisplay
 	// onCursor hears the host's cursor state.
 	onCursor func(wire.CursorState)
 }
@@ -100,7 +104,7 @@ func newBackend(c backendConfig) (*backend, error) {
 		return nil, err
 	}
 	b := &backend{dir: dir, name: c.name, finder: c.finder, ts: c.tailscale, openSink: c.openSink, hostConfig: c.hostConfig,
-		encoders: c.encoders, logf: c.logf, routeConfig: c.route, overrides: c.overrides, viewSize: c.viewSize, onCursor: c.onCursor, settings: settingsFrom(stored), pinned: stored.PinnedHosts, aliases: stored.HostAliases,
+		encoders: c.encoders, logf: c.logf, routeConfig: c.route, overrides: c.overrides, viewSize: c.viewSize, display: c.display, onCursor: c.onCursor, settings: settingsFrom(stored), pinned: stored.PinnedHosts, aliases: stored.HostAliases,
 		storedAll: stored.Overrides, storedHosts: stored.HostOverrides, layout: layoutFrom(stored.Overlay)}
 	host, err := config.LoadHostConfig(dir)
 	if err != nil {
@@ -415,7 +419,7 @@ func (b *backend) dial(ctx context.Context, t session.Target, pin string) error 
 	c, err := session.NewClient(session.ClientConfig{
 		ConfigDir: b.dir, Name: b.name, PIN: pin, NoAudio: !s.AudioEnabled, Quality: legacyQuality(ov), Overrides: ov,
 		OpenSink: b.openSink, Tailscale: b.ts, Logf: b.logf, Route: b.route(ov), ViewSize: b.viewSize, Clipboard: clipboardOf(s),
-		OnCursor: b.onCursor,
+		OnCursor: b.onCursor, Capabilities: b.capabilities,
 	})
 	if err != nil {
 		return err
@@ -633,6 +637,18 @@ func (b *backend) current() *session.Client {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.client
+}
+
+// capabilities are this device's, with the display the stream window is
+// on in place of the main one.
+func (b *backend) capabilities() defaults.ClientCapabilities {
+	c := session.ProbeClientCapabilities()
+	if b.display != nil {
+		if d := b.display(); d.WidthPx > 0 && d.HeightPx > 0 {
+			c.Display = d
+		}
+	}
+	return c
 }
 
 // resizeStream offers the stream, if there is one, the window's new size.

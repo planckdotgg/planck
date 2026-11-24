@@ -7,7 +7,9 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/gpusurface"
 
+	"github.com/planckdotgg/planck/internal/session"
 	"github.com/planckdotgg/planck/internal/ui"
+	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/player"
 )
 
@@ -59,6 +61,11 @@ func windowPixels(w *mygo.Window) (int, int) {
 		scale = 1
 	}
 	return int(math.Round(float64(cw) * scale)), int(math.Round(float64(ch) * scale))
+}
+
+// windowDisplay is the display w is on. Main thread.
+func windowDisplay(w *mygo.Window) defaults.ClientDisplay {
+	return session.WindowDisplay(w.NativeHandle())
 }
 
 func localEncoders() []ui.EncoderInfo {
