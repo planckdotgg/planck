@@ -7,9 +7,9 @@ package amf
 import (
 	"errors"
 	"fmt"
-	"syscall"
 	"os"
 	"runtime"
+	"syscall"
 	"time"
 	"unsafe"
 
