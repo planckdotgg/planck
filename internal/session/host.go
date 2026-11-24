@@ -204,7 +204,7 @@ type Host struct {
 	pin   string
 
 	srv      *transport.Server
-	disc     net.PacketConn
+	disc     *discovery.Port
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 	stopOnce sync.Once
@@ -424,7 +424,7 @@ func (h *Host) Start(ctx context.Context) error {
 }
 
 func (h *Host) startDiscovery(ctx context.Context) error {
-	conn, err := net.ListenPacket("udp4", h.cfg.DiscoveryAddr)
+	conn, err := discovery.OpenPort(h.cfg.DiscoveryAddr)
 	if err != nil {
 		return fmt.Errorf("session: discovery: %w", err)
 	}
@@ -440,7 +440,7 @@ func (h *Host) startDiscovery(ctx context.Context) error {
 		b.Name = h.Name()
 		return b
 	}
-	h.wg.Go(func() { _ = discovery.ServeFunc(ctx, conn, beacon) })
+	h.wg.Go(func() { _ = conn.Serve(ctx, beacon) })
 	if ua, ok := conn.LocalAddr().(*net.UDPAddr); ok && !ua.IP.IsLoopback() {
 		dst := discovery.BroadcastAddrs(uint16(ua.Port))
 		h.wg.Go(func() { _ = discovery.AnnounceFunc(ctx, conn, beacon, dst, 2*time.Second) })

@@ -120,17 +120,17 @@ func Probe(ctx context.Context, addr netip.AddrPort) (Beacon, time.Duration, err
 	defer stop()
 
 	dst := net.UDPAddrFromAddrPort(netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port()))
-	var mu sync.Mutex
-	sent := map[uint64]int64{}
+	sent := newProbeSet()
+	defer sent.forget()
 	sendOne := func() error {
 		nonce := rand.Uint64() | 1
 		pkt, err := encode(message{Type: msgProbe, Nonce: nonce})
 		if err != nil {
 			return err
 		}
-		mu.Lock()
-		sent[nonce] = transport.Mono()
-		mu.Unlock()
+		if !sent.add(nonce) {
+			return net.ErrClosed
+		}
 		_, err = conn.WriteTo(pkt, dst)
 		return err
 	}
@@ -168,12 +168,51 @@ func Probe(ctx context.Context, addr netip.AddrPort) (Beacon, time.Duration, err
 		if err != nil || m.Type != msgReply {
 			continue
 		}
-		mu.Lock()
-		at, ok := sent[m.Nonce]
-		mu.Unlock()
-		if ok {
+		if at, ok := sent.at(m.Nonce); ok {
 			return *m.Beacon, time.Duration(transport.Mono() - at), nil
 		}
+	}
+}
+
+// ownProbes are the nonces of the probes this process has out, which a
+// Port with no host on it hears without yielding (Port.yield): the
+// client's own LAN probes loop back to its port.
+var ownProbes sync.Map
+
+// probeSet is the probes one call has out, by nonce, with when each went.
+type probeSet struct {
+	mu   sync.Mutex
+	sent map[uint64]int64
+	done bool
+}
+
+func newProbeSet() *probeSet { return &probeSet{sent: map[uint64]int64{}} }
+
+// add records a probe about to go, unless the call has ended.
+func (s *probeSet) add(nonce uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.done {
+		return false
+	}
+	s.sent[nonce] = transport.Mono()
+	ownProbes.Store(nonce, struct{}{})
+	return true
+}
+
+func (s *probeSet) at(nonce uint64) (int64, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	at, ok := s.sent[nonce]
+	return at, ok
+}
+
+func (s *probeSet) forget() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.done = true
+	for n := range s.sent {
+		ownProbes.Delete(n)
 	}
 }
 
@@ -193,8 +232,8 @@ func ProbeAll(ctx context.Context, dst []netip.AddrPort, found func(Announcement
 	stop := context.AfterFunc(ctx, func() { conn.SetReadDeadline(time.Unix(1, 0)) })
 	defer stop()
 
-	var mu sync.Mutex
-	sent := map[uint64]int64{}
+	sent := newProbeSet()
+	defer sent.forget()
 	go func() {
 		for i := 0; i < 3; i++ {
 			for _, d := range dst {
@@ -203,9 +242,9 @@ func ProbeAll(ctx context.Context, dst []netip.AddrPort, found func(Announcement
 				if err != nil {
 					return
 				}
-				mu.Lock()
-				sent[nonce] = transport.Mono()
-				mu.Unlock()
+				if !sent.add(nonce) {
+					return
+				}
 				conn.WriteTo(pkt, net.UDPAddrFromAddrPort(d))
 			}
 			select {
@@ -229,10 +268,7 @@ func ProbeAll(ctx context.Context, dst []netip.AddrPort, found func(Announcement
 		if err != nil || m.Type != msgReply {
 			continue
 		}
-		mu.Lock()
-		at, ok := sent[m.Nonce]
-		mu.Unlock()
-		if ok {
+		if at, ok := sent.at(m.Nonce); ok {
 			found(Announcement{Beacon: *m.Beacon, Addr: netip.AddrPortFrom(from.Addr().Unmap(), from.Port()),
 				Kind: PathLANDirect, RTT: time.Duration(transport.Mono() - at)})
 		}

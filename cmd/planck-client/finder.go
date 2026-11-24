@@ -98,15 +98,13 @@ func (f *finder) changed() {
 // run listens and probes until ctx ends.
 func (f *finder) run(ctx context.Context) {
 	if f.lanAddr != "" {
-		conn, err := net.ListenPacket("udp4", f.lanAddr)
+		port, err := discovery.OpenPort(f.lanAddr)
 		if err != nil {
-			// A host on this machine holds the port; probes still find it.
+			// Another app holds the port alone; probes still find hosts.
 			f.logf("planck: not listening for LAN beacons on %s: %v", f.lanAddr, err)
 		} else {
-			go func() {
-				_ = discovery.Listen(ctx, conn, f.add)
-				conn.Close()
-			}()
+			defer port.Close()
+			go func() { _ = port.Listen(ctx, f.add) }()
 		}
 	}
 	t := time.NewTicker(refreshEvery)

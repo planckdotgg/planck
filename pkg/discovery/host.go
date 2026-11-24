@@ -49,12 +49,12 @@ func ServeFunc(ctx context.Context, conn net.PacketConn, beacon func() Beacon) e
 // Announce sends the beacon to every address in dst now and then once per
 // interval until ctx ends. Send errors on one address do not stop the others;
 // interfaces come and go.
-func Announce(ctx context.Context, conn net.PacketConn, b Beacon, dst []netip.AddrPort, interval time.Duration) error {
+func Announce(ctx context.Context, conn PacketWriter, b Beacon, dst []netip.AddrPort, interval time.Duration) error {
 	return AnnounceFunc(ctx, conn, func() Beacon { return b }, dst, interval)
 }
 
 // AnnounceFunc is Announce with the beacon read before each round.
-func AnnounceFunc(ctx context.Context, conn net.PacketConn, beacon func() Beacon, dst []netip.AddrPort, interval time.Duration) error {
+func AnnounceFunc(ctx context.Context, conn PacketWriter, beacon func() Beacon, dst []netip.AddrPort, interval time.Duration) error {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {

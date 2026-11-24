@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/planckdotgg/planck/internal/session"
@@ -749,7 +751,7 @@ func (b *backend) SetHosting(ctx context.Context, on bool) error {
 			err = h.Start(context.Background())
 		}
 		if err != nil {
-			state.Err = err.Error()
+			state.Err = hostingError(err)
 			h = nil
 		} else {
 			state.On = true
@@ -761,6 +763,24 @@ func (b *backend) SetHosting(ctx context.Context, on bool) error {
 	b.mu.Unlock()
 	b.changed()
 	return err
+}
+
+// hostingError is what the hosting card says of a failure to host.
+func hostingError(err error) string {
+	var op *net.OpError
+	if errors.As(err, &op) && op.Addr != nil && addrInUse(err) {
+		if _, port, e := net.SplitHostPort(op.Addr.String()); e == nil {
+			return fmt.Sprintf("Another app is using %s port %s.", strings.ToUpper(strings.TrimRight(op.Net, "46")), port)
+		}
+	}
+	return err.Error()
+}
+
+// wsaeAddrInUse is Windows' WSAEADDRINUSE, which syscall.EADDRINUSE is not.
+const wsaeAddrInUse = syscall.Errno(10048)
+
+func addrInUse(err error) bool {
+	return errors.Is(err, syscall.EADDRINUSE) || errors.Is(err, wsaeAddrInUse)
 }
 
 func encoderLabel(gpu string, all []ui.EncoderInfo) string {
