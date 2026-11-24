@@ -110,7 +110,7 @@ func TestComposite(t *testing.T) {
 	if w, h := s.Size(); w != 480 || h != 270 {
 		t.Fatalf("surface %dx%d after resize, want 480x270", w, h)
 	}
-	if err := s.Present(solid(t, s, 64, 64, 0xffff0000)); err != nil {
+	if err := s.Present(solid(t, s, 64, 36, 0xffff0000)); err != nil {
 		t.Fatal(err)
 	}
 	pumpFor(300 * time.Millisecond)
