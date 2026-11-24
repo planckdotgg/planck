@@ -59,6 +59,7 @@ type options struct {
 	noAudio     bool
 	silentAudio bool
 	inputProbe  bool
+	micTone     bool
 	inputEvery  time.Duration
 	json        bool
 	pathMode    pathMode
@@ -120,6 +121,7 @@ func parseOptions(args []string, out io.Writer) (options, error) {
 	fs.BoolVar(&o.noAudio, "no-audio", false, "headless: do not ask for audio")
 	fs.BoolVar(&o.silentAudio, "silent-audio", false, "headless: receive and decode audio but play none of it")
 	fs.BoolVar(&o.inputProbe, "input-probe", false, "headless: send a zero mouse move once a second, which moves nothing")
+	fs.BoolVar(&o.micTone, "mic-tone", false, "headless: unmute the microphone and send a 440 Hz tone in place of it, into the host's virtual mic")
 	fs.DurationVar(&o.inputEvery, "input-probe-every", time.Second, "headless: how often -input-probe sends")
 	fs.BoolVar(&o.json, "json", false, "headless: print the summary as JSON")
 	fs.StringVar(&mode, "path-mode", string(pathAuto), "auto, lan or tailscale; headless, lan and tailscale race only those paths and fail on another")

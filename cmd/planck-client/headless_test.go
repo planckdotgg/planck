@@ -112,17 +112,21 @@ type fakeHost struct {
 	inputs atomic.Int64
 }
 
-func startFakeHost(t *testing.T, discovery string) *fakeHost {
+func startFakeHost(t *testing.T, discovery string, edit ...func(*session.HostConfig)) *fakeHost {
 	t.Helper()
 	fh := &fakeHost{}
-	h, err := session.NewHost(session.HostConfig{
+	cfg := session.HostConfig{
 		ConfigDir: t.TempDir(), Name: "fake-host", ListenAddr: "127.0.0.1:0", DiscoveryAddr: discovery,
 		FPS: 120, BitrateKbps: 40_000, Slices: 2, NoTailscale: true, PIN: "246810",
 		OpenVideo: func(p session.VideoParams) (session.VideoPipe, error) { return &fakePipe{fps: p.FPS}, nil },
 		OpenAudio: func() (audio.Capturer, error) { return &toneCapturer{}, nil },
 		OnInput:   func(input.Event) { fh.inputs.Add(1) },
 		Logf:      t.Logf,
-	})
+	}
+	for _, e := range edit {
+		e(&cfg)
+	}
+	h, err := session.NewHost(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,6 +180,39 @@ func TestHeadlessLoopback(t *testing.T) {
 	}
 	if got := sink.units.Load(); uint64(got) != s.FramesDecoded {
 		t.Errorf("sink saw %d units, summary %d", got, s.FramesDecoded)
+	}
+}
+
+// micSink counts the loud samples the client's microphone played into
+// the host's virtual mic.
+type micSink struct{ loud atomic.Int64 }
+
+func (s *micSink) Write(pcm []int16) error {
+	for _, v := range pcm {
+		if v > 4000 || v < -4000 {
+			s.loud.Add(1)
+		}
+	}
+	return nil
+}
+func (s *micSink) Close() error   { return nil }
+func (s *micSink) Device() string { return "Fake Mic" }
+
+// TestHeadlessMicTone sends -mic-tone's tone into the host's virtual mic.
+func TestHeadlessMicTone(t *testing.T) {
+	sink := &micSink{}
+	h := startFakeHost(t, "off", func(c *session.HostConfig) {
+		c.FindVirtualMic = func(string) (audio.VirtualMic, error) { return audio.VirtualMic{ID: "fake", Name: "Fake Mic", Input: "Fake Mic"}, nil }
+		c.OpenMicSink = func(audio.VirtualMic) (audio.MicSink, error) { return sink, nil }
+	})
+	deps := headlessDeps{openSink: (&countSink{}).open(), tailscale: noTailnet{}, logf: t.Logf}
+	o := headlessOpts(t, "-connect", h.Addr().String(), "-pin", "246810", "-duration", "1500ms", "-silent-audio", "-mic-tone")
+	s, err := headless(context.Background(), o, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.MicDevice != "Fake Mic" || s.MicPackets < 50 || sink.loud.Load() < 48_000/2 {
+		t.Errorf("mic %q, %d packets sent, %d loud samples played (hint %q)", s.MicDevice, s.MicPackets, sink.loud.Load(), s.MicHint)
 	}
 }
 

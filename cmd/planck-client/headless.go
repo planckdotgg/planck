@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
 	"os/signal"
 	"slices"
@@ -72,6 +73,11 @@ type Summary struct {
 	AudioPackets uint64  `json:"audio_packets"`
 	AudioBufMs   float64 `json:"audio_buf_ms"`
 	InputSent    uint64  `json:"input_sent"`
+	// MicPackets is what -mic-tone sent; MicDevice is the host's virtual
+	// mic it played into, or MicHint why there is none.
+	MicPackets uint64 `json:"mic_packets"`
+	MicDevice  string `json:"mic_device,omitempty"`
+	MicHint    string `json:"mic_hint,omitempty"`
 
 	// Stage times over the last frames the client kept (up to 600); the
 	// round trip is sampled ten times a second.
@@ -140,6 +146,33 @@ type silentPlayer struct{}
 func (silentPlayer) Write([]int16) error { return nil }
 func (silentPlayer) Close() error        { return nil }
 
+// toneMic stands in for the microphone with a 440 Hz tone in 10 ms chunks.
+type toneMic struct{ wg sync.WaitGroup }
+
+func (m *toneMic) Start(ctx context.Context, onPCM func([]int16, int64)) error {
+	m.wg.Go(func() {
+		pcm := make([]int16, audio.SampleRate/100)
+		var phase float64
+		t := time.NewTicker(10 * time.Millisecond)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+			}
+			for i := range pcm {
+				pcm[i] = int16(8000 * math.Sin(phase))
+				phase = math.Mod(phase+2*math.Pi*440/audio.SampleRate, 2*math.Pi)
+			}
+			onPCM(pcm, 0)
+		}
+	})
+	return nil
+}
+
+func (m *toneMic) Close() error { m.wg.Wait(); return nil }
+
 func headless(ctx context.Context, o options, d headlessDeps) (Summary, error) {
 	logf := d.logf
 	if logf == nil {
@@ -179,6 +212,9 @@ func headless(ctx context.Context, o options, d headlessDeps) (Summary, error) {
 	if o.silentAudio {
 		cfg.OpenAudioPlayer = func() (audio.Player, error) { return silentPlayer{}, nil }
 	}
+	if o.micTone {
+		cfg.OpenMic = func() (audio.MicCapturer, error) { return &toneMic{}, nil }
+	}
 	c, err := session.NewClient(cfg)
 	if err != nil {
 		return Summary{}, err
@@ -196,7 +232,7 @@ func headless(ctx context.Context, o options, d headlessDeps) (Summary, error) {
 		}
 		return Summary{}, err
 	}
-	defer c.Disconnect()
+	defer c.Close()
 	if st := c.Stats(); !pathAllowed(o.pathMode, st.Path) {
 		return Summary{}, fmt.Errorf("connected over %s, but -path-mode is %s", st.Path, o.pathMode)
 	}
@@ -209,6 +245,7 @@ func headless(ctx context.Context, o options, d headlessDeps) (Summary, error) {
 	end := time.After(o.duration)
 	start := time.Now()
 	var last session.ClientStats
+	micLive := false
 loop:
 	for {
 		select {
@@ -225,6 +262,16 @@ loop:
 				}
 			}
 		case <-tick.C:
+			if o.micTone && !micLive {
+				// The host says whether it has a virtual mic just after
+				// the handshake; until then unmuting fails.
+				err := c.SetMicMuted(false)
+				micLive = err == nil
+				if err != nil && time.Since(start) > time.Second {
+					logf("planck: mic tone: %v", err)
+					o.micTone = false
+				}
+			}
 			if st := c.Stats(); st.Connected {
 				last = st
 				if st.RTTMs > 0 {
@@ -239,10 +286,13 @@ loop:
 	if st := c.Stats(); st.Connected {
 		last = st
 	}
+	// Frames still arriving would make the sink's counts disagree.
+	c.Disconnect()
 	sinkMu.Lock()
 	cs := sink
 	sinkMu.Unlock()
 	s := summarize(last, time.Since(start), rtts, audioBuf)
+	s.MicPackets, s.MicDevice, s.MicHint = last.Mic.Packets, last.Mic.Device, last.Mic.Hint
 	if cs != nil {
 		s.FramesDecoded = cs.frames.Load()
 		if span := time.Duration(cs.last.Load() - cs.first.Load()); span > 0 && s.FramesDecoded > 1 {
