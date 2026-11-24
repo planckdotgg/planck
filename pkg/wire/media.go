@@ -11,6 +11,11 @@ import (
 // fit within it.
 const MaxDatagram = 1152
 
+// MaxLANDatagram is the media UDP payload on a LAN path with a 1500-byte
+// MTU, after IPv6 and UDP headers: 22% fewer datagrams per frame than
+// MaxDatagram. Hosts use it only when both ends agree (FeatureLANDatagram).
+const MaxLANDatagram = 1452
+
 // Media datagram kinds, carried in the first plaintext byte.
 const (
 	KindVideo    byte = 0x11

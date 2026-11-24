@@ -31,6 +31,9 @@ type ClientConfig struct {
 	// SimulateLoss drops this fraction of outgoing media datagrams, for
 	// tests and diagnostics.
 	SimulateLoss float64
+	// LANPath says the host was reached LAN direct. The client then offers
+	// wire.MaxLANDatagram when its route to the host has a 1500-byte MTU.
+	LANPath bool
 }
 
 // Dial connects to a host, authenticates, negotiates the session and brings
@@ -72,7 +75,11 @@ func clientHandshake(ctx context.Context, conn *quic.Conn, cfg ClientConfig) (*S
 	stop := context.AfterFunc(ctx, func() { ctrl.CancelRead(0); ctrl.CancelWrite(0) })
 	defer stop()
 
-	if err := wire.WriteMessage(ctrl, &wire.Hello{Version: wire.Version, Role: wire.RoleClient, Name: cfg.Name}); err != nil {
+	var features uint32
+	if cfg.LANPath && lanDatagramOK(conn.RemoteAddr().(*net.UDPAddr).AddrPort().Addr()) {
+		features |= wire.FeatureLANDatagram
+	}
+	if err := wire.WriteMessage(ctrl, &wire.Hello{Version: wire.Version, Role: wire.RoleClient, Name: cfg.Name, Features: features}); err != nil {
 		return nil, err
 	}
 	var hello *wire.Hello
@@ -145,6 +152,7 @@ func clientHandshake(ctx context.Context, conn *quic.Conn, cfg ClientConfig) (*S
 		peer:         peer,
 		pingInterval: cfg.PingInterval,
 		simLoss:      cfg.SimulateLoss,
+		peerFeatures: hello.Features,
 	})
 	if err != nil {
 		udp.Close()

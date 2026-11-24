@@ -311,7 +311,7 @@ func (c *Client) connect(ctx context.Context, t Target) (*conn, error) {
 	}
 	sess, err := transport.Dial(ctx, addr, transport.ClientConfig{
 		Certificate: cert, Name: cfg.Name, VerifyHost: verify, Auth: method, PIN: cfg.PIN, Session: req,
-		HandshakeTimeout: cfg.HandshakeTimeout, SimulateLoss: cfg.SimulateLoss,
+		HandshakeTimeout: cfg.HandshakeTimeout, SimulateLoss: cfg.SimulateLoss, LANPath: path == discovery.PathLANDirect,
 		Handlers: transport.Handlers{
 			VideoFrame: cc.onFrame,
 			Audio:      cc.onAudio,

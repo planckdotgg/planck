@@ -60,6 +60,18 @@ type Hello struct {
 	Features uint32
 }
 
+// Hello feature bits. A peer that does not know a bit ignores it, so
+// either side may set one without breaking an older peer.
+const (
+	// FeatureLANDatagram, from a client, says its route to the host is a
+	// LAN interface with a 1500-byte MTU: the host may then use
+	// MaxLANDatagram for the session.
+	FeatureLANDatagram uint32 = 1 << 0
+	// FeatureInputDedup, from a host, says it drops input events whose Seq
+	// it has seen, so the client may send redundant copies.
+	FeatureInputDedup uint32 = 1 << 1
+)
+
 type AuthMethod uint8
 
 const (

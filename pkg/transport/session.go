@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
+	"github.com/planckdotgg/planck/internal/rtprio"
 	"github.com/planckdotgg/planck/pkg/fec"
 	"github.com/planckdotgg/planck/pkg/ratectl"
 	"github.com/planckdotgg/planck/pkg/wire"
@@ -30,6 +31,11 @@ const (
 	minPLIInterval      = 100 * time.Millisecond
 	sentRingSize        = 256
 	udpBufferBytes      = 8 << 20
+	// redundantInputFor is how long after the client last saw a media
+	// datagram go missing it sends each input event twice.
+	redundantInputFor = 2 * time.Second
+	// redundantInputAge bounds how old an event may be to go out again.
+	redundantInputAge = 100 * time.Millisecond
 )
 
 // VideoSlice is one rebuilt slice. Data is valid only during the callback.
@@ -65,6 +71,10 @@ type SessionStats struct {
 	PLIsSent         uint64
 	PLIsReceived     uint64
 	FeedbackReceived uint64
+	// InputResent counts the client's redundant input copies, and
+	// InputDuplicates the copies the host dropped.
+	InputResent     uint64
+	InputDuplicates uint64
 }
 
 type sentFrame struct {
@@ -89,6 +99,8 @@ type Session struct {
 	identity  string
 	peerFP    [32]byte
 	h         Handlers
+	// peerFeatures are the wire.Feature bits of the peer's Hello.
+	peerFeatures uint32
 
 	udp      *net.UDPConn
 	sealMu   sync.Mutex
@@ -98,10 +110,17 @@ type Session struct {
 	impair   *Impairer
 	txBuf    []byte
 	pingSeq  uint32
+	// lastInput is the client's previous input event and when it went out,
+	// sent again ahead of the next one while loss is recent.
+	lastInput   wire.Input
+	lastInputAt int64
+	// lossAt is when the client last saw a frame miss a datagram.
+	lossAt atomic.Int64
 
 	opener   *Opener
 	rxBuf    []byte
 	lastFrom netip.AddrPort
+	inputs   seqWindow
 
 	videoMu   sync.Mutex
 	enc       *fec.Encoder
@@ -136,7 +155,7 @@ type Session struct {
 	pingInterval time.Duration
 
 	stats struct {
-		sent, recv, authFail, simDrop, complete, lost, recovered, pliSent, pliRecv, feedback atomic.Uint64
+		sent, recv, authFail, simDrop, complete, lost, recovered, pliSent, pliRecv, feedback, inputResent, inputDup atomic.Uint64
 	}
 
 	mediaUp     chan struct{}
@@ -164,6 +183,7 @@ type sessionParams struct {
 	rate         ratectl.Config
 	path         ratectl.Path
 	fecPolicy    *fec.Policy
+	peerFeatures uint32
 }
 
 func newSession(p sessionParams) (*Session, error) {
@@ -199,6 +219,7 @@ func newSession(p sessionParams) (*Session, error) {
 		identity:     p.identity,
 		peerFP:       p.peerFP,
 		h:            p.handlers,
+		peerFeatures: p.peerFeatures,
 		udp:          p.udp,
 		sealer:       sealer,
 		opener:       opener,
@@ -309,6 +330,8 @@ func (s *Session) Stats() SessionStats {
 		PLIsSent:         s.stats.pliSent.Load(),
 		PLIsReceived:     s.stats.pliRecv.Load(),
 		FeedbackReceived: s.stats.feedback.Load(),
+		InputResent:      s.stats.inputResent.Load(),
+		InputDuplicates:  s.stats.inputDup.Load(),
 	}
 }
 
@@ -397,13 +420,25 @@ func (s *Session) SendRumble(r wire.Rumble) error {
 	return s.sealAndWriteLocked(s.txBuf[:AEADHeaderLen+len(pl)])
 }
 
-// SendInput sends one input event (client only).
+// SendInput sends one input event (client only). For two seconds after a
+// frame missed a datagram, and when the host drops duplicate Seqs, the
+// previous event goes out again just ahead of it, so one lost datagram
+// does not lose an event.
 func (s *Session) SendInput(in wire.Input) error {
 	if s.isHost {
 		return ErrWrongRole
 	}
 	s.sealMu.Lock()
 	defer s.sealMu.Unlock()
+	now := Mono()
+	if loss := s.lossAt.Load(); loss != 0 && now-loss < int64(redundantInputFor) &&
+		s.peerFeatures&wire.FeatureInputDedup != 0 && s.lastInputAt != 0 && now-s.lastInputAt < int64(redundantInputAge) {
+		pl := s.lastInput.Put(s.txBuf[AEADHeaderLen:])
+		if s.sealAndWriteLocked(s.txBuf[:AEADHeaderLen+len(pl)]) == nil {
+			s.stats.inputResent.Add(1)
+		}
+	}
+	s.lastInput, s.lastInputAt = in, now
 	pl := in.Put(s.txBuf[AEADHeaderLen:])
 	return s.sealAndWriteLocked(s.txBuf[:AEADHeaderLen+len(pl)])
 }
@@ -456,10 +491,15 @@ func (s *Session) SendControl(m wire.Message) error {
 	}
 }
 
+// recvLoop reads, opens and handles every media datagram on one OS thread
+// at a raised class, which ends with it: input reaches its handler, and a
+// video shard the FEC decoder, with no hand-off to another goroutine.
 func (s *Session) recvLoop() {
 	defer s.wg.Done()
+	_ = rtprio.Boost()
+	read := newMediaReader(s.udp)
 	for {
-		n, from, err := s.udp.ReadFromUDPAddrPort(s.rxBuf)
+		n, from, err := read(s.rxBuf)
 		if err != nil {
 			select {
 			case <-s.done:
@@ -529,9 +569,14 @@ func (s *Session) handleMedia(plain []byte, now int64) {
 		}
 	case wire.KindInput:
 		var in wire.Input
-		if s.isHost && s.h.Input != nil && in.Parse(plain) == nil {
-			s.h.Input(in)
+		if !s.isHost || s.h.Input == nil || in.Parse(plain) != nil {
+			return
 		}
+		if s.inputs.seen(in.Seq) {
+			s.stats.inputDup.Add(1)
+			return
+		}
+		s.h.Input(in)
 	case wire.KindRumble:
 		var r wire.Rumble
 		if !s.isHost && s.h.Rumble != nil && r.Parse(plain) == nil {
@@ -583,6 +628,9 @@ func (s *Session) onFrameFinal(st fec.FrameStats) {
 	s.finID = st.FrameID
 	s.hasFin = true
 	s.stats.recovered.Add(uint64(st.SlicesRecovered))
+	if st.RecvShards < st.SentShards {
+		s.lossAt.Store(Mono())
+	}
 	if st.Complete {
 		return
 	}

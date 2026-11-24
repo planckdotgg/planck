@@ -49,7 +49,10 @@ type ServerConfig struct {
 	Negotiate func(req wire.SessionConfig) (wire.SessionConfig, error)
 	// MediaAddr is the local address for media sockets; default ":0".
 	MediaAddr string
-	// MaxDatagram caps sealed media datagrams; default wire.MaxDatagram.
+	// MaxDatagram caps sealed media datagrams. Zero takes
+	// wire.MaxLANDatagram on a LAN path both ends route over a 1500-byte
+	// MTU (the client says so with wire.FeatureLANDatagram), and
+	// wire.MaxDatagram otherwise.
 	MaxDatagram int
 	// Rate configures the bitrate controller. Zero fields take
 	// ratectl.DefaultConfig values; MaxKbps is further capped by the
@@ -141,7 +144,7 @@ func (sv *Server) handshake(parent context.Context, conn *quic.Conn) (*Session, 
 		_ = wire.WriteMessage(ctrl, &wire.Goodbye{Reason: wire.GoodbyeProtocolError, Message: "unsupported version"})
 		return nil, fmt.Errorf("client hello version %d role %d", hello.Version, hello.Role)
 	}
-	if err := wire.WriteMessage(ctrl, &wire.Hello{Version: wire.Version, Role: wire.RoleHost, Name: sv.cfg.Name}); err != nil {
+	if err := wire.WriteMessage(ctrl, &wire.Hello{Version: wire.Version, Role: wire.RoleHost, Name: sv.cfg.Name, Features: wire.FeatureInputDedup}); err != nil {
 		return nil, err
 	}
 
@@ -161,9 +164,17 @@ func (sv *Server) handshake(parent context.Context, conn *quic.Conn) (*Session, 
 			return nil, err
 		}
 	}
+	remote := conn.RemoteAddr().(*net.UDPAddr).AddrPort()
+	path := sv.cfg.Path
+	if path == ratectl.PathUnknown {
+		path = ratectl.ClassifyAddr(remote.Addr())
+	}
 	maxDgram := sv.cfg.MaxDatagram
 	if maxDgram <= 0 {
 		maxDgram = wire.MaxDatagram
+		if hello.Features&wire.FeatureLANDatagram != 0 && path == ratectl.PathLAN && lanDatagramOK(remote.Addr()) {
+			maxDgram = wire.MaxLANDatagram
+		}
 	}
 	shard := maxDgram - AEADOverhead - wire.VideoHeaderLen
 	if shard < 64 {
@@ -190,11 +201,6 @@ func (sv *Server) handshake(parent context.Context, conn *quic.Conn) (*Session, 
 		Config:    accepted,
 	}
 
-	remote := conn.RemoteAddr().(*net.UDPAddr).AddrPort()
-	path := sv.cfg.Path
-	if path == ratectl.PathUnknown {
-		path = ratectl.ClassifyAddr(remote.Addr())
-	}
 	rate := sv.cfg.Rate
 	if accepted.BitrateKbps > 0 {
 		if rate.MaxKbps <= 0 {
@@ -220,6 +226,7 @@ func (sv *Server) handshake(parent context.Context, conn *quic.Conn) (*Session, 
 		rate:         rate,
 		path:         path,
 		fecPolicy:    policy,
+		peerFeatures: hello.Features,
 	})
 	if err != nil {
 		udp.Close()
