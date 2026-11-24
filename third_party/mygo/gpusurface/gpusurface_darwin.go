@@ -266,6 +266,8 @@ func New(opts Options) (s *Surface, err error) {
 	}
 	s = &Surface{}
 	s.timings.recs = make([]Timing, opts.Timings)
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	pool, _, _ := purego.SyscallN(lib.poolPush)
 	defer purego.SyscallN(lib.poolPop, pool)
 	defer func() {
@@ -395,6 +397,8 @@ func (s *Surface) Resize(w, h int) error {
 	if w <= 0 || h <= 0 {
 		return fmt.Errorf("gpusurface: size %dx%d", w, h)
 	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	pool, _, _ := purego.SyscallN(lib.poolPush)
 	defer purego.SyscallN(lib.poolPop, pool)
 	if s.host == 0 {
@@ -534,6 +538,8 @@ func (s *Surface) planeTexture(surface uintptr, plane int, format uintptr) uintp
 		w, _, _ = purego.SyscallN(lib.ioPlaneWidth, surface, uintptr(plane))
 		h, _, _ = purego.SyscallN(lib.ioPlaneHeight, surface, uintptr(plane))
 	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	pool, _, _ := purego.SyscallN(lib.poolPush)
 	defer purego.SyscallN(lib.poolPop, pool)
 	d := send(class("MTLTextureDescriptor"), "texture2DDescriptorWithPixelFormat:width:height:mipmapped:", format, w, h, false)
