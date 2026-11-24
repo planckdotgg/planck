@@ -90,8 +90,6 @@ type RouteConfig struct {
 	// stream leaves it; zero is DefaultStallTimeout. The host pings four
 	// times a second, so a live route is never quiet this long.
 	StallTimeout time.Duration
-	// Probe replaces discovery.Probe.
-	Probe func(ctx context.Context, addr netip.AddrPort) (discovery.Beacon, time.Duration, error)
 }
 
 const (
@@ -263,9 +261,6 @@ type conn struct {
 	trace *tracer[clientTraceRow]
 }
 
-// capturedAt maps a frame, by the PTS its picture carries, to the host's
-// capture time on the client's clock, for pictures that reach the screen
-// after the decode loop moved on.
 // route is one transport session of a stream and the path it runs on.
 type route struct {
 	sess *transport.Session
@@ -278,14 +273,19 @@ type route struct {
 
 func (cc *conn) session() *transport.Session { return cc.live.Load().sess }
 
-// end stops the stream for good; the first reason sticks.
+// end stops the stream for good, and its goroutines; the first reason
+// sticks.
 func (cc *conn) end(err error) {
 	cc.endOnce.Do(func() {
 		cc.err = err
 		close(cc.done)
+		cc.cancel()
 	})
 }
 
+// capturedAt maps a frame, by the PTS its picture carries, to the host's
+// capture time on the client's clock, for pictures that reach the screen
+// after the decode loop moved on.
 type capturedAt struct {
 	frame uint32
 	at    int64
@@ -505,7 +505,7 @@ func (c *Client) resolve(ctx context.Context, t Target) (resolved, error) {
 			rctx, cancel = context.WithTimeout(ctx, raceBeforeAddr)
 			defer cancel()
 		}
-		res, err := discovery.Racer{Probe: c.cfg.Route.Probe}.Race(rctx, t.Candidates)
+		res, err := discovery.Racer{}.Race(rctx, t.Candidates)
 		if err == nil {
 			return r.from(res), nil
 		}
@@ -575,10 +575,6 @@ func (c *Client) watchRoutes(cc *conn, t Target) {
 	if rc.StallTimeout <= 0 {
 		rc.StallTimeout = DefaultStallTimeout
 	}
-	probe := rc.Probe
-	if probe == nil {
-		probe = discovery.Probe
-	}
 	var lan []discovery.Candidate
 	for _, cand := range t.Candidates {
 		if cand.Kind == discovery.PathLANDirect {
@@ -635,7 +631,7 @@ func (c *Client) watchRoutes(cc *conn, t Target) {
 			continue
 		}
 		probedAt = now
-		res, err := c.probeLAN(cc.ctx, lan, probe, rc.ProbeInterval)
+		res, err := probeLAN(cc.ctx, lan, rc.ProbeInterval)
 		if err != nil {
 			lanAnswer = 0
 			continue
@@ -655,10 +651,10 @@ func (c *Client) watchRoutes(cc *conn, t Target) {
 
 // probeLAN races the LAN candidates once, within a second or the probe
 // interval if shorter.
-func (c *Client) probeLAN(ctx context.Context, lan []discovery.Candidate, probe func(context.Context, netip.AddrPort) (discovery.Beacon, time.Duration, error), every time.Duration) (discovery.Result, error) {
+func probeLAN(ctx context.Context, lan []discovery.Candidate, every time.Duration) (discovery.Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, min(time.Second, every))
 	defer cancel()
-	return discovery.Racer{Probe: probe}.Race(ctx, lan)
+	return discovery.Racer{}.Race(ctx, lan)
 }
 
 // reroute moves cc off dead, trying routes of another kind first, until
@@ -989,8 +985,8 @@ func (cc *conn) stats() ClientStats {
 
 func (cc *conn) close() {
 	cc.cancel()
-	cc.session().Close()
 	cc.wg.Wait()
+	cc.session().Close()
 	cc.end(transport.ErrClosed)
 	if err := cc.trace.flush(); err != nil {
 		log.Printf("planck: trace: %v", err)

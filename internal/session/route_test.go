@@ -258,8 +258,8 @@ func TestRouteFailoverOnStall(t *testing.T) {
 	checkRoute(t, r, onTailscale.after(1))
 }
 
-// TestRouteHostGoodbyeEnds: a host that stops ends the stream; the client
-// does not try other routes back to it.
+// TestRouteHostGoodbyeEnds: a host that stops ends the stream and its
+// loops; the client does not try other routes back to it.
 func TestRouteHostGoodbyeEnds(t *testing.T) {
 	h := startRouteHost(t)
 	lan := newLANResponder(t, h)
@@ -271,12 +271,18 @@ func TestRouteHostGoodbyeEnds(t *testing.T) {
 		t.Fatal(err)
 	}
 	checkRoute(t, r, onLAN)
+	r.client.mu.Lock()
+	cc := r.client.conn
+	r.client.mu.Unlock()
 	done := r.client.Done()
 	h.Stop()
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("stream still running after the host stopped")
+	}
+	if cc.ctx.Err() == nil {
+		t.Fatal("the ended stream's decode and audio loops still run")
 	}
 	if n := h.Stats().Sessions; n != 1 {
 		t.Fatalf("host saw %d sessions, want 1", n)
