@@ -12,10 +12,7 @@ import (
 
 var procRecvfrom = syscall.NewLazyDLL("ws2_32.dll").NewProc("recvfrom")
 
-const (
-	socketError    = ^uintptr(0)
-	wsaEWouldBlock = 10035
-)
+const wsaEWouldBlock = 10035
 
 // rawReader reads with a blocking recvfrom on the calling thread. Go's own
 // read waits on the I/O completion port, and the goroutine it wakes runs
@@ -51,14 +48,15 @@ func (r *rawReader) read(b []byte) (int, netip.AddrPort, error) {
 	r.fromSz = int32(unsafe.Sizeof(r.from))
 	n, _, errno := syscall.Syscall6(procRecvfrom.Addr(), 6, r.h, uintptr(unsafe.Pointer(&b[0])), uintptr(len(b)), 0,
 		uintptr(unsafe.Pointer(&r.from)), uintptr(unsafe.Pointer(&r.fromSz)))
-	if n == socketError {
+	// recvfrom returns a C int: SOCKET_ERROR is -1 in the low 32 bits.
+	if int32(n) == -1 {
 		if errno == wsaEWouldBlock {
 			r.fallback = true
 			return r.conn.ReadFromUDPAddrPort(b)
 		}
 		return 0, netip.AddrPort{}, &net.OpError{Op: "recvfrom", Net: "udp", Err: errno}
 	}
-	return int(n), r.addr(), nil
+	return int(int32(n)), r.addr(), nil
 }
 
 func (r *rawReader) addr() netip.AddrPort {
