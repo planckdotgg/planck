@@ -215,14 +215,14 @@ func (a *App) hudDrawer(c *mui.Context, t Telemetry) mui.Element {
 		}
 		caption(c, "Changes here are for "+e.scope.name+" and restart the stream. Settings has every option.")
 		for _, k := range []knob{knobCodec, knobChroma, knobBitDepth, knobFPS} {
-			drawerRow(c, k.title, func() { e.knobControl(c, k) })
+			drawerRow(c, k.title, e.inherited(k), func() { e.knobControl(c, k) })
 		}
-		drawerRow(c, "Bitrate", func() {
+		drawerRow(c, "Bitrate", e.inheritedBitrate(), func() {
 			c.Key("knob:" + e.scope.hostID + ":drawerBitrate")
 			pickFrom(c, "Bitrate", drawerBitrates, mbpsLabels(drawerBitrates), &e.o.BitrateMbps)
 		})
 		for _, k := range []knob{knobVDD, knobDirect} {
-			drawerRow(c, k.title, func() { e.knobControl(c, k) })
+			drawerRow(c, k.title, e.inherited(k), func() { e.knobControl(c, k) })
 		}
 		mui.Row(c).FillWidth().Gap(theme.Space6).Children(func() {
 			mui.Box(c).Grow(1).Basis(0).Children(func() { switchRow(c, "Audio", "", &s.AudioEnabled, false) })
@@ -248,9 +248,15 @@ func (a *App) hudDrawer(c *mui.Context, t Telemetry) mui.Element {
 	return d
 }
 
-func drawerRow(c *mui.Context, name string, control func()) {
-	mui.Row(c).FillWidth().AlignItems(mui.Center).Children(func() {
-		label(c, name).Grow(1)
+// drawerRow is a control with its name and, when set, a hint under it.
+func drawerRow(c *mui.Context, name, hint string, control func()) {
+	mui.Row(c).FillWidth().AlignItems(mui.Center).Gap(theme.Space4).Children(func() {
+		mui.Column(c).Grow(1).Shrink(1).Gap(2).Children(func() {
+			label(c, name)
+			if hint != "" {
+				caption(c, hint)
+			}
+		})
 		control()
 	})
 }

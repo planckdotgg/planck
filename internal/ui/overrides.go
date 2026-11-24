@@ -126,6 +126,14 @@ func (e *overrideEdit) inherited(k knob) string {
 	return "Auto follows all hosts: " + k.labels[indexOf(k.values, v)]
 }
 
+// inheritedBitrate is inherited for the bitrate, which is not a knob.
+func (e *overrideEdit) inheritedBitrate() string {
+	if e.base == nil || e.o.BitrateMbps != 0 || e.base.BitrateMbps <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("Auto follows all hosts: %d Mbps", e.base.BitrateMbps)
+}
+
 // knobControl is the knob's segmented control, keyed by knob and scope so
 // its state stays its own as rows come and go.
 func (e *overrideEdit) knobControl(c *mui.Context, k knob) {
@@ -168,8 +176,8 @@ func (a *App) resolutionRow(c *mui.Context, e *overrideEdit) {
 // bitrateRow is Auto or Manual, with a slider under Manual.
 func (e *overrideEdit) bitrateRow(c *mui.Context) {
 	desc := "Auto starts from the route and follows it."
-	if e.base != nil && e.o.BitrateMbps == 0 && e.base.BitrateMbps > 0 {
-		desc = fmt.Sprintf("Auto follows all hosts: %d Mbps", e.base.BitrateMbps)
+	if s := e.inheritedBitrate(); s != "" {
+		desc = s
 	}
 	settingRow(c, "Bitrate", desc, func() {
 		mode := 0

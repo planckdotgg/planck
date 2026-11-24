@@ -199,6 +199,24 @@ func TestDrawerOverrides(t *testing.T) {
 	}
 }
 
+// TestDrawerShowsInherited: as in Settings, the drawer's auto knobs say
+// what they follow from every host's overrides.
+func TestDrawerShowsInherited(t *testing.T) {
+	f := newFake()
+	f.tel = sampleTelemetry()
+	f.overrides[""] = defaults.UserOverrides{Codec: "hevc", BitrateMbps: 300}
+	a, tt := newTester(t, f)
+	a.setHUD(HUDDrawer)
+	tt.Frame()
+	if !tt.HasText("Auto follows all hosts: HEVC") || !tt.HasText("Auto follows all hosts: 300 Mbps") {
+		t.Fatalf("inherited values not shown: %q", tt.Texts())
+	}
+	click(t, tt, "Codec: AV1")
+	if tt.HasText("Auto follows all hosts: HEVC") {
+		t.Fatal("a knob set for this host still says it follows all hosts")
+	}
+}
+
 // TestDrawerChange: OnDrawerChange hears each open and close, from the
 // pill's button, the hotkey and disconnecting, and nothing else.
 func TestDrawerChange(t *testing.T) {
