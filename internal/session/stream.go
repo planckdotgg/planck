@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"runtime"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -201,6 +202,11 @@ func (st *stream) resizeTo(w, h int, pipe *VideoPipe, vd *VirtualDisplay) {
 	}
 	prof := *st.profile
 	prof.Width, prof.Height = p.Width, p.Height
+	isRes := func(d defaults.Decision) bool { return d.Knob == "resolution" }
+	if i, j := slices.IndexFunc(prof.Decisions, isRes), slices.IndexFunc(p.Decisions, isRes); i >= 0 && j >= 0 {
+		prof.Decisions = slices.Clone(prof.Decisions)
+		prof.Decisions[i] = p.Decisions[j]
+	}
 	st.mu.Lock()
 	st.profile = &prof
 	st.mu.Unlock()

@@ -138,6 +138,15 @@ func windowClient(t *testing.T, pin string, o defaults.UserOverrides, view *atom
 	return r
 }
 
+func decisionOf(p *defaults.ResolvedProfile, knob string) defaults.Decision {
+	for _, d := range p.Decisions {
+		if d.Knob == knob {
+			return d
+		}
+	}
+	return defaults.Decision{}
+}
+
 func profileSize(r *clientRig) (int, int) {
 	p := r.client.Stats().Profile
 	if p == nil {
@@ -171,6 +180,9 @@ func TestResizeFollowsWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, "the 1600x1000 profile", func() bool { w, hh := profileSize(r); return w == 1600 && hh == 1000 })
+	if d := decisionOf(r.client.Stats().Profile, "resolution"); d.Value != "1600x1000" || d.Why != "client window" {
+		t.Fatalf("resolution decision after the resize: %+v", d)
+	}
 	waitFor(t, "the pipeline at 1600x1000", func() bool { p, _ := pipes.last(); return p.Width == 1600 && p.Height == 1000 })
 	p, opens := pipes.last()
 	if live, made, last := vdd.state(); live != 1 || made != 1 || last != [2]int{1600, 1000} || p.Display != `\\.\DISPLAY41` {
