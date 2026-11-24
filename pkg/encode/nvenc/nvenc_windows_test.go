@@ -3,12 +3,19 @@
 package nvenc
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
+	"time"
+	"unsafe"
 
+	"golang.org/x/sys/windows"
+
+	"github.com/planckdotgg/planck/internal/clock"
 	"github.com/planckdotgg/planck/pkg/capture"
 	"github.com/planckdotgg/planck/pkg/capture/dxgi"
 	"github.com/planckdotgg/planck/pkg/encode"
@@ -211,4 +218,82 @@ func TestPolicyBoundToThisExecutable(t *testing.T) {
 	if err != nil || !set || v != 1 {
 		t.Fatalf("driver profile holds set=%v value=%d err=%v, want prefer maximum performance (1)", set, v, err)
 	}
+}
+
+// TestSliceStreaming checks that EncodeSlices hands each slice on before
+// the picture is done, with exactly the bytes and boundaries of the final
+// packet, and logs the locks and the thread's CPU time per frame.
+func TestSliceStreaming(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	d := encodetest.Device(t, "NVIDIA")
+	for _, slices := range []int{4, 8} {
+		t.Run(fmt.Sprintf("%d_slices", slices), func(t *testing.T) {
+			cfg := hevc(encode.NV12, capture.FormatBGRA8)
+			cfg.Slices, cfg.SubFrame = slices, true
+			e := open(t, d, cfg, Options{})
+			frames := encodetest.Frames(t, d, cfg.Source, cfg.Width, cfg.Height, 8)
+			const n = 240
+			dst := make([]byte, 0, 4<<20)
+			type got struct {
+				index int
+				start int
+				data  []byte
+				key   bool
+				at    time.Duration
+			}
+			var emitted []got
+			var early, polls int
+			var cpu time.Duration
+			for i := 0; i < n; i++ {
+				emitted = emitted[:0]
+				c0 := threadCPU(t)
+				pkt, err := e.EncodeSlices(frames[i%len(frames)], i == 0, dst, func(idx int, s []byte, key bool) error {
+					start := int(uintptr(unsafe.Pointer(unsafe.SliceData(s))) - uintptr(unsafe.Pointer(unsafe.SliceData(dst[:1]))))
+					emitted = append(emitted, got{idx, start, append([]byte(nil), s...), key, clock.Now()})
+					return nil
+				})
+				done := clock.Now()
+				cpu += threadCPU(t) - c0
+				if err != nil {
+					t.Fatal(err)
+				}
+				polls += e.polls
+				if len(emitted) != slices || len(pkt.SliceEnds) != slices {
+					t.Fatalf("frame %d: %d slices emitted, %d slice ends, want %d", i, len(emitted), len(pkt.SliceEnds), slices)
+				}
+				start := 0
+				for j, g := range emitted {
+					end := pkt.SliceEnds[j]
+					if g.index != j || g.start != start || !bytes.Equal(g.data, pkt.Data[start:end]) {
+						t.Fatalf("frame %d slice %d: index %d at %d, %d bytes; packet has it at %d..%d", i, j, g.index, g.start, len(g.data), start, end)
+					}
+					if g.key != pkt.Keyframe {
+						t.Fatalf("frame %d slice %d: keyframe %v, packet %v", i, j, g.key, pkt.Keyframe)
+					}
+					start = end
+				}
+				if done-emitted[0].at > 100*time.Microsecond {
+					early++
+				}
+			}
+			t.Logf("%d slices: first slice emitted >100 us before the picture was done in %d of %d frames; %.1f locks and %.0f us of thread CPU per frame",
+				slices, early, n, float64(polls)/n, float64(cpu.Microseconds())/n)
+			if early < n/2 {
+				t.Fatalf("the first slice left early in only %d of %d frames", early, n)
+			}
+		})
+	}
+}
+
+var procGetThreadTimes = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetThreadTimes")
+
+func threadCPU(t *testing.T) time.Duration {
+	var c, x, k, u windows.Filetime
+	if r, _, err := procGetThreadTimes.Call(uintptr(windows.CurrentThread()), uintptr(unsafe.Pointer(&c)), uintptr(unsafe.Pointer(&x)),
+		uintptr(unsafe.Pointer(&k)), uintptr(unsafe.Pointer(&u))); r == 0 {
+		t.Fatal(err)
+	}
+	ft := func(f windows.Filetime) time.Duration { return time.Duration(int64(f.HighDateTime)<<32|int64(f.LowDateTime)) * 100 }
+	return ft(k) + ft(u)
 }

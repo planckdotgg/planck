@@ -45,14 +45,21 @@ func openDisplay(p VideoParams) (VideoPipe, error) {
 		return nil, err
 	}
 	fps := p.FPS
-	if fps == 0 {
-		fps = max(int(src.Display.Refresh+0.5), 60)
+	refresh := int(src.Display.Refresh + 0.5)
+	switch {
+	case fps == 0:
+		fps = max(refresh, 60)
+	case refresh > 0 && refresh < fps:
+		// The display changes at most refresh times a second: rate control
+		// and the one-frame VBV are sized for the frames that come.
+		fps = refresh
 	}
 	p.FPS = fps
+	prio := win.Device{Object: win.ObjectAt(src.Device.Handle)}.RaiseGPUThreadPriority()
 	return &sourcePipe{
 		src: src, devices: []gpu.Device{src.Device}, params: p, power: power,
 		info: VideoInfo{Width: src.Display.Width, Height: src.Display.Height, FPS: fps, Codec: p.Codec, Chroma: p.Chroma,
-			Adapter: src.Device.Adapter, Power: power.Mode, Source: "display " + d.ID},
+			Adapter: src.Device.Adapter, Power: power.Mode, GPUPriority: prio, Source: "display " + d.ID},
 	}, nil
 }
 
@@ -108,9 +115,10 @@ func openSynth(p VideoParams) (VideoPipe, error) {
 		frames = append(frames, capture.Frame{Surface: uintptr(unsafe.Pointer(tex.Object)), Adapter: a.LUID, Format: format, Width: w, Height: h})
 	}
 	device := gpu.Device{Adapter: dev.Info, Handle: uintptr(unsafe.Pointer(dev.D3D.Object))}
+	prio := dev.D3D.RaiseGPUThreadPriority()
 	return &sourcePipe{
 		src: newSynthPattern(frames, p.FPS, release), devices: []gpu.Device{device}, params: p, power: power,
-		info: VideoInfo{Width: w, Height: h, FPS: p.FPS, Codec: p.Codec, Chroma: p.Chroma, Adapter: a, Power: power.Mode, Source: "synthetic"},
+		info: VideoInfo{Width: w, Height: h, FPS: p.FPS, Codec: p.Codec, Chroma: p.Chroma, Adapter: a, Power: power.Mode, GPUPriority: prio, Source: "synthetic"},
 	}, nil
 }
 

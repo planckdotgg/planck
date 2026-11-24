@@ -29,6 +29,7 @@ type VideoParams struct {
 	BitrateKbps int
 	Slices      int
 	SubFrame    bool
+	Split       encode.Split
 	// Synth replaces display capture with generated frames on Adapter's GPU.
 	Synth bool
 }
@@ -40,7 +41,9 @@ type VideoInfo struct {
 	Chroma             encode.Chroma
 	Adapter            gpu.Adapter
 	Power              gpu.PowerMode
-	Source             string
+	// GPUPriority is the encoding device's GPU thread priority, -7 to 7.
+	GPUPriority int
+	Source      string
 }
 
 // VideoPipe is one open capture-to-bitstream pipeline.
@@ -72,18 +75,40 @@ type sourcePipe struct {
 	info    VideoInfo
 	enc     encode.Encoder
 	wrap    func(encode.Encoder) encode.Encoder
-	srcFmt  capture.Format
-	w, h    int
-	power   *gpu.PowerGuard
-	closers []func()
-	st      pipeStages
+	cfg     encode.Config // the encoder's, after fallbacks
+	// emit and emitTS are the current NextSlices call's; encSlice, made
+	// once, forwards the encoder's slices to them.
+	emit     sliceEmit
+	emitTS   int64
+	encSlice func(int, []byte, bool) error
+	srcFmt   capture.Format
+	w, h     int
+	power    *gpu.PowerGuard
+	closers  []func()
+	st       pipeStages
 }
 
+// sliceEmit receives a slice of a picture as soon as the encoder finished
+// it, with the picture's capture time on transport.Mono.
+type sliceEmit func(captureTS int64, index int, slice []byte, keyframe bool) error
+
 func (p *sourcePipe) Next(timeout time.Duration, forceKey bool, dst []byte) (encode.Packet, int64, error) {
+	pkt, captureTS, _, err := p.next(timeout, forceKey, dst, nil)
+	return pkt, captureTS, err
+}
+
+// NextSlices is Next that hands each slice to emit as the encoder finishes
+// it, when the encoder can (encode.SliceEncoder); streamed reports whether
+// it did.
+func (p *sourcePipe) NextSlices(timeout time.Duration, forceKey bool, dst []byte, emit sliceEmit) (pkt encode.Packet, captureTS int64, streamed bool, err error) {
+	return p.next(timeout, forceKey, dst, emit)
+}
+
+func (p *sourcePipe) next(timeout time.Duration, forceKey bool, dst []byte, emit sliceEmit) (encode.Packet, int64, bool, error) {
 	p.st = pipeStages{WaitStart: transport.Mono()}
 	f, err := p.src.Next(timeout)
 	if err != nil {
-		return encode.Packet{}, 0, err
+		return encode.Packet{}, 0, false, err
 	}
 	defer p.src.Release()
 	captureTS := transport.Mono()
@@ -96,12 +121,24 @@ func (p *sourcePipe) Next(timeout time.Duration, forceKey bool, dst []byte) (enc
 	}
 	if p.enc == nil || f.Format != p.srcFmt || f.Width != p.w || f.Height != p.h {
 		if err := p.openEncoder(f); err != nil {
-			return encode.Packet{}, 0, err
+			return encode.Packet{}, 0, false, err
 		}
 		forceKey = true
 	}
 	p.st.EncStart = transport.Mono()
-	pkt, err := p.enc.Encode(f, forceKey, dst)
+	var pkt encode.Packet
+	se, streamed := p.enc.(encode.SliceEncoder)
+	streamed = streamed && emit != nil && p.cfg.SubFrame
+	if streamed {
+		if p.encSlice == nil {
+			p.encSlice = p.forwardSlice
+		}
+		p.emit, p.emitTS = emit, captureTS
+		pkt, err = se.EncodeSlices(f, forceKey, dst, p.encSlice)
+		p.emit = nil
+	} else {
+		pkt, err = p.enc.Encode(f, forceKey, dst)
+	}
 	p.st.EncEnd = transport.Mono()
 	if fs, ok := p.enc.(interface{ FirstSlice() time.Duration }); ok && fs.FirstSlice() > 0 {
 		p.st.FirstSlice = p.st.EncStart + int64(fs.FirstSlice())
@@ -112,7 +149,11 @@ func (p *sourcePipe) Next(timeout time.Duration, forceKey bool, dst []byte) (enc
 		s, q, n := a.Stages()
 		p.st.SubmitNs, p.st.QueryNs, p.st.Tries = int64(s), int64(q), n
 	}
-	return pkt, captureTS, err
+	return pkt, captureTS, streamed, err
+}
+
+func (p *sourcePipe) forwardSlice(i int, s []byte, key bool) error {
+	return p.emit(p.emitTS, i, s, key)
 }
 
 // pipeStages are the transport.Mono times of the last Next.
@@ -133,7 +174,7 @@ func (p *sourcePipe) openEncoder(f capture.Frame) error {
 	cfg := encode.Config{
 		Codec: p.params.Codec, Chroma: p.params.Chroma, Source: f.Format,
 		Width: f.Width &^ 1, Height: f.Height &^ 1, FPS: p.params.FPS, BitrateKbps: p.params.BitrateKbps,
-		Slices: p.params.Slices, SubFrame: p.params.SubFrame,
+		Slices: p.params.Slices, SubFrame: p.params.SubFrame, Split: p.params.Split,
 	}
 	enc, err := encode.Open(cfg, p.devices...)
 	if errors.Is(err, encode.ErrUnsupported) && (cfg.Slices > 1 || cfg.SubFrame) {
@@ -148,7 +189,7 @@ func (p *sourcePipe) openEncoder(f capture.Frame) error {
 	if p.wrap != nil {
 		enc = p.wrap(enc)
 	}
-	p.enc, p.srcFmt, p.w, p.h = enc, f.Format, f.Width, f.Height
+	p.enc, p.cfg, p.srcFmt, p.w, p.h = enc, cfg, f.Format, f.Width, f.Height
 	p.info.Width, p.info.Height = cfg.Width, cfg.Height
 	return nil
 }

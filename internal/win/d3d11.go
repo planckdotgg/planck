@@ -205,3 +205,28 @@ func (c Context) WaitIdle(q Query) {
 	for c.GetData(q, unsafe.Pointer(&done), 4) != 0 {
 	}
 }
+
+var IID_IDXGIDevice = NewGUID(0x54ec77fa, 0x1377, 0x44e6, [8]byte{0x8c, 0x32, 0x88, 0xfd, 0x5f, 0x44, 0xc8, 0x4c})
+
+const (
+	dxgiDeviceSetGPUThreadPriority = 10
+	dxgiDeviceGetGPUThreadPriority = 11
+)
+
+// RaiseGPUThreadPriority asks the GPU scheduler to run the device's work
+// ahead of other processes' (IDXGIDevice::SetGPUThreadPriority, +7) and
+// returns the priority in effect. Without the privilege to raise it the
+// device keeps the default, 0.
+func (d Device) RaiseGPUThreadPriority() int {
+	dx, err := d.QueryInterface(&IID_IDXGIDevice)
+	if err != nil {
+		return 0
+	}
+	defer dx.Release()
+	dx.call1(dxgiDeviceSetGPUThreadPriority, 7)
+	var p int32
+	if hr(dx.call(dxgiDeviceGetGPUThreadPriority, uintptr(unsafe.Pointer(&p)))) != nil {
+		return 0
+	}
+	return int(p)
+}

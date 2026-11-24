@@ -71,6 +71,10 @@ func newStream(h *Host, sess *transport.Session) *stream {
 		st.addr = ua.String()
 		st.path = ratectl.ClassifyAddr(ua.AddrPort().Addr())
 	}
+	st.params.Split = h.cfg.Split
+	if st.params.Split == encode.SplitAuto && st.path != ratectl.PathLAN {
+		st.params.Split = encode.SplitOff
+	}
 	return st
 }
 
@@ -140,6 +144,8 @@ func (st *stream) videoLoop() {
 	mirror.MinLoss = st.h.cfg.FECMinLoss
 	shard := st.sess.ShardSize()
 	slices := max(1, int(st.sess.Config().Slices))
+	out := &sliceSender{sess: st.sess, slices: uint8(slices)}
+	emit := out.emit
 	for st.ctx.Err() == nil {
 		if pipe == nil {
 			p := st.params
@@ -153,9 +159,12 @@ func (st *stream) videoLoop() {
 				}
 				continue
 			}
+			info := pipe.Info()
 			st.mu.Lock()
-			st.info = pipe.Info()
+			st.info = info
 			st.mu.Unlock()
+			st.h.logf("planck: video %s %dx%d@%d on %s (%s), power %s, GPU priority %d", info.Codec, info.Width, info.Height, info.FPS,
+				info.Adapter.Name, info.Source, info.Power, info.GPUPriority)
 			forceKey = true
 		}
 		if st.sess.KeyframeRequested() {
@@ -170,8 +179,23 @@ func (st *stream) videoLoop() {
 			}
 			setRate = transport.Mono() - t0
 		}
-		pkt, captureTS, err := pipe.Next(captureWait, forceKey, buf)
+		var pkt encode.Packet
+		var captureTS int64
+		var err error
+		streamed := false
+		if sp, ok := pipe.(slicePipe); ok && st.params.SubFrame {
+			out.start(frameID)
+			pkt, captureTS, streamed, err = sp.NextSlices(captureWait, forceKey, buf, emit)
+			if err != nil && out.begun {
+				// Some slices of this frame went out: its ID is taken.
+				frameID++
+			}
+		} else {
+			pkt, captureTS, err = pipe.Next(captureWait, forceKey, buf)
+		}
 		switch {
+		case errors.Is(err, transport.ErrClosed) || st.ctx.Err() != nil:
+			return
 		case errors.Is(err, capture.ErrTimeout):
 			continue
 		case errors.Is(err, encode.ErrDropped):
@@ -191,7 +215,7 @@ func (st *stream) videoLoop() {
 			}
 			continue
 		}
-		if len(pkt.Data) < slices {
+		if !streamed && len(pkt.Data) < slices {
 			continue
 		}
 		if pkt.Keyframe {
@@ -201,7 +225,11 @@ func (st *stream) videoLoop() {
 		info := wire.VideoInfo{FrameID: frameID, Keyframe: pkt.Keyframe, CaptureTS: captureTS, EncodeTS: transport.Mono()}
 		slot := &st.pts[frameID%ptsRingSize]
 		slot.id, slot.pts = frameID, pkt.PTS
-		err = st.sess.SendVideoFrame(info, pkt.Data)
+		if streamed {
+			info = out.info
+		} else {
+			err = st.sess.SendVideoFrame(info, pkt.Data)
+		}
 		frameID++
 		buf = pkt.Data[:0]
 		if err != nil {
@@ -233,6 +261,33 @@ func (st *stream) videoLoop() {
 		st.mu.Unlock()
 		st.sent.add(info.EncodeTS, len(pkt.Data))
 	}
+}
+
+// slicePipe is a VideoPipe that can send slices as the encoder finishes
+// them (sourcePipe).
+type slicePipe interface {
+	NextSlices(timeout time.Duration, forceKey bool, dst []byte, emit sliceEmit) (encode.Packet, int64, bool, error)
+}
+
+// sliceSender sends one frame's slices as they come. Every slice of a
+// frame carries the same VideoInfo, stamped when the first one was ready:
+// EncodeTS is then when sending began.
+type sliceSender struct {
+	sess   *transport.Session
+	slices uint8
+	frame  uint32
+	info   wire.VideoInfo
+	begun  bool
+}
+
+func (s *sliceSender) start(frame uint32) { s.frame, s.begun = frame, false }
+
+func (s *sliceSender) emit(captureTS int64, index int, slice []byte, key bool) error {
+	if !s.begun {
+		s.info = wire.VideoInfo{FrameID: s.frame, Keyframe: key, CaptureTS: captureTS, EncodeTS: transport.Mono(), SliceCount: s.slices}
+		s.begun = true
+	}
+	return s.sess.SendVideoSlice(s.info, index, slice)
 }
 
 // applyInvalidations forwards lost reference frames to the encoder and

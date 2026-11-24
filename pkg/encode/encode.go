@@ -82,6 +82,46 @@ type Config struct {
 	// Adapter selects the encoding GPU. Zero means the adapter that owns the
 	// captured surface (zero copy); any other LUID means cross-adapter offload.
 	Adapter gpu.LUID
+	// Split chooses whether a GPU with two or more encode engines splits
+	// each picture between them; see SplitFrame.
+	Split Split
+}
+
+// Split is a choice of split-frame encode: each picture divided between a
+// GPU's encode engines finishes sooner, at about a third more bits for the
+// same quality. Measured on an RTX 4080: 1440p120 encode p50 2.17 to 1.49
+// ms, 1080p240 1.35 to 1.03 ms, frames 32 to 33% larger.
+type Split uint8
+
+const (
+	// SplitAuto splits where it pays: see SplitFrame.
+	SplitAuto Split = iota
+	SplitOn
+	SplitOff
+)
+
+func (s Split) String() string {
+	switch s {
+	case SplitOn:
+		return "on"
+	case SplitOff:
+		return "off"
+	}
+	return "auto"
+}
+
+// SplitFrame reports whether the encoder should split each picture between
+// its engines. SplitAuto splits at 1440 lines and up, and at 1080 lines
+// from 200 fps, where one engine takes a large share of the frame interval;
+// never with codec slices, which the engines do not split.
+func (c Config) SplitFrame() bool {
+	switch c.Split {
+	case SplitOn:
+		return true
+	case SplitOff:
+		return false
+	}
+	return c.Slices <= 1 && (c.Height >= 1440 || c.Height >= 1080 && c.FPS >= 200)
 }
 
 var ErrUnsupported = errors.New("encode: unsupported by this encoder")
@@ -145,6 +185,18 @@ type Encoder interface {
 	Encode(frame capture.Frame, forceKey bool, dst []byte) (Packet, error)
 	SetBitrate(kbps int) error
 	Close() error
+}
+
+// SliceEncoder is an Encoder with sub-frame output (Config.SubFrame): it
+// hands each codec slice on as soon as the hardware finished it, so the
+// first slices travel while the rest of the picture is still encoding.
+type SliceEncoder interface {
+	// EncodeSlices is Encode that also calls emit with each slice, in
+	// order, as it becomes readable: its index, its bytes (a part of the
+	// Packet's Data, valid until Encode or EncodeSlices runs again) and
+	// whether the picture is a keyframe. An error from emit ends the
+	// encode with that error.
+	EncodeSlices(frame capture.Frame, forceKey bool, dst []byte, emit func(index int, slice []byte, keyframe bool) error) (Packet, error)
 }
 
 // RefInvalidator is an Encoder that can stop predicting from pictures the

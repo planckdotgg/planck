@@ -58,6 +58,10 @@ type HostConfig struct {
 	BitrateKbps int
 	Slices      int
 	SubFrame    bool
+	// Split is split-frame encode; SplitAuto applies encode.Config's rule
+	// on LAN paths and stays off elsewhere, where the extra bits cost more
+	// than the time saved.
+	Split encode.Split
 	// Synth streams a generated pattern at Width x Height and FPS on the
 	// Adapter GPU instead of a display, for benchmarks without a monitor.
 	Synth bool

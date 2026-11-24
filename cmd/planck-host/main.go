@@ -18,6 +18,7 @@ import (
 
 	"github.com/planckdotgg/planck/internal/session"
 	"github.com/planckdotgg/planck/pkg/discovery"
+	"github.com/planckdotgg/planck/pkg/encode"
 )
 
 func main() {
@@ -47,6 +48,7 @@ func parseConfig(args []string, out io.Writer) (session.HostConfig, time.Duratio
 		chroma        = fs.String("chroma", "nv12", "coded chroma: nv12, p010, yuv444 or yuv444p10")
 		noInput       = fs.Bool("no-input", false, "ignore client keyboard, mouse and gamepad input")
 		stats         = fs.Duration("stats", 2*time.Second, "print stats this often while a client is connected (0 disables)")
+		split         = fs.String("split", "auto", "split-frame encode across the GPU's engines: auto (1440p and up, or 1080p from 200 fps, on LAN, without -slices), on or off")
 	)
 	fs.StringVar(&cfg.ConfigDir, "config", "", "config directory (default: the user config dir /planck)")
 	fs.StringVar(&cfg.Name, "name", "", "host name shown to clients (default: the machine name)")
@@ -73,6 +75,16 @@ func parseConfig(args []string, out io.Writer) (session.HostConfig, time.Duratio
 	}
 	if cfg.Chroma, err = session.ParseChroma(*chroma); err != nil {
 		return cfg, 0, err
+	}
+	switch *split {
+	case "auto":
+		cfg.Split = encode.SplitAuto
+	case "on":
+		cfg.Split = encode.SplitOn
+	case "off":
+		cfg.Split = encode.SplitOff
+	default:
+		return cfg, 0, fmt.Errorf("-split %q: want auto, on or off", *split)
 	}
 	cfg.ListenAddr, cfg.MediaPort = *listen, *mediaPort
 	cfg.DiscoveryAddr = "off"
