@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -72,8 +73,9 @@ type ServerConfig struct {
 
 // Server accepts client sessions on a QUIC control listener.
 type Server struct {
-	cfg ServerConfig
-	ln  *quic.Listener
+	cfg  ServerConfig
+	ln   *quic.Listener
+	name atomic.Pointer[string]
 }
 
 // Listen starts a host control listener on addr.
@@ -88,10 +90,15 @@ func Listen(addr string, cfg ServerConfig) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{cfg: cfg, ln: ln}, nil
+	sv := &Server{cfg: cfg, ln: ln}
+	sv.SetName(cfg.Name)
+	return sv, nil
 }
 
 func (sv *Server) Addr() net.Addr { return sv.ln.Addr() }
+
+// SetName changes the host name later handshakes send.
+func (sv *Server) SetName(name string) { sv.name.Store(&name) }
 func (sv *Server) Close() error   { return sv.ln.Close() }
 
 // HandshakeError is a failed handshake of one connection; the server keeps
@@ -144,7 +151,7 @@ func (sv *Server) handshake(parent context.Context, conn *quic.Conn) (*Session, 
 		_ = wire.WriteMessage(ctrl, &wire.Goodbye{Reason: wire.GoodbyeProtocolError, Message: "unsupported version"})
 		return nil, fmt.Errorf("client hello version %d role %d", hello.Version, hello.Role)
 	}
-	if err := wire.WriteMessage(ctrl, &wire.Hello{Version: wire.Version, Role: wire.RoleHost, Name: sv.cfg.Name, Features: wire.FeatureInputDedup}); err != nil {
+	if err := wire.WriteMessage(ctrl, &wire.Hello{Version: wire.Version, Role: wire.RoleHost, Name: *sv.name.Load(), Features: wire.FeatureInputDedup}); err != nil {
 		return nil, err
 	}
 
@@ -227,6 +234,7 @@ func (sv *Server) handshake(parent context.Context, conn *quic.Conn) (*Session, 
 		path:         path,
 		fecPolicy:    policy,
 		peerFeatures: hello.Features,
+		peerName:     hello.Name,
 	})
 	if err != nil {
 		udp.Close()

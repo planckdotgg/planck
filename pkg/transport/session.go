@@ -100,6 +100,7 @@ type Session struct {
 	h         Handlers
 	// peerFeatures are the wire.Feature bits of the peer's Hello.
 	peerFeatures uint32
+	peerName     string
 
 	udp      *net.UDPConn
 	sealMu   sync.Mutex
@@ -183,6 +184,7 @@ type sessionParams struct {
 	path         ratectl.Path
 	fecPolicy    *fec.Policy
 	peerFeatures uint32
+	peerName     string
 }
 
 func newSession(p sessionParams) (*Session, error) {
@@ -219,6 +221,7 @@ func newSession(p sessionParams) (*Session, error) {
 		peerFP:       p.peerFP,
 		h:            p.handlers,
 		peerFeatures: p.peerFeatures,
+		peerName:     p.peerName,
 		udp:          p.udp,
 		sealer:       sealer,
 		opener:       opener,
@@ -284,6 +287,8 @@ func (s *Session) waitMedia(timeout time.Duration) error {
 func (s *Session) ID() uint64                  { return s.id }
 func (s *Session) Config() wire.SessionConfig  { return s.cfg }
 func (s *Session) ShardSize() int              { return s.shardSize }
+func (s *Session) MaxDatagram() int            { return s.maxDgram }
+func (s *Session) PeerName() string            { return s.peerName }
 func (s *Session) Identity() string            { return s.identity }
 func (s *Session) PeerFingerprint() [32]byte   { return s.peerFP }
 func (s *Session) Clock() *ClockEstimator      { return &s.clock }

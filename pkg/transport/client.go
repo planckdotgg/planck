@@ -153,6 +153,7 @@ func clientHandshake(ctx context.Context, conn *quic.Conn, cfg ClientConfig) (*S
 		pingInterval: cfg.PingInterval,
 		simLoss:      cfg.SimulateLoss,
 		peerFeatures: hello.Features,
+		peerName:     hello.Name,
 	})
 	if err != nil {
 		udp.Close()
