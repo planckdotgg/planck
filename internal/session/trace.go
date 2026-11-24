@@ -40,6 +40,10 @@ type hostTraceRow struct {
 	// SetRateNs is how long a bitrate change before this frame took, 0
 	// without one.
 	SetRateNs int64
+	// SubmitNs and QueryNs split an AMF encode into SubmitInput and the
+	// wait in QueryOutput; Tries counts the QueryOutput calls.
+	SubmitNs, QueryNs int64
+	Tries             int
 }
 
 // clientTraceRow is one frame on the client. Host stamps are mapped onto

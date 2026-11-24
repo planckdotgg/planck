@@ -106,6 +106,12 @@ func (p *sourcePipe) Next(timeout time.Duration, forceKey bool, dst []byte) (enc
 	if fs, ok := p.enc.(interface{ FirstSlice() time.Duration }); ok && fs.FirstSlice() > 0 {
 		p.st.FirstSlice = p.st.EncStart + int64(fs.FirstSlice())
 	}
+	if a, ok := p.enc.(interface {
+		Stages() (time.Duration, time.Duration, int)
+	}); ok {
+		s, q, n := a.Stages()
+		p.st.SubmitNs, p.st.QueryNs, p.st.Tries = int64(s), int64(q), n
+	}
 	return pkt, captureTS, err
 }
 
@@ -113,6 +119,8 @@ func (p *sourcePipe) Next(timeout time.Duration, forceKey bool, dst []byte) (enc
 type pipeStages struct {
 	WaitStart, Acquired, EncStart, EncEnd, FirstSlice int64
 	Accum                                             int
+	SubmitNs, QueryNs                                 int64
+	Tries                                             int
 }
 
 func (p *sourcePipe) stages() pipeStages { return p.st }

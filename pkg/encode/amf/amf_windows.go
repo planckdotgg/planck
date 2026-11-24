@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"syscall"
+	"time"
 	"unsafe"
 
+	"github.com/planckdotgg/planck/internal/clock"
 	"github.com/planckdotgg/planck/internal/win"
 	"github.com/planckdotgg/planck/pkg/capture"
 	"github.com/planckdotgg/planck/pkg/encode"
@@ -314,6 +316,9 @@ type Encoder struct {
 	forceIDR, outType     *variant
 	nameForce, nameType   *uint16
 	pts                   *int64
+
+	submitted, queried time.Duration
+	tries              int
 }
 
 // AMF_VIDEO_ENCODER_HEVC_PICTURE_TYPE_IDR and the output data types.
@@ -419,7 +424,14 @@ func (e *Encoder) Caps() encode.Caps {
 
 var errNoOutput = errors.New("amf: no output within the query timeout")
 
+// Stages is how long the last Encode spent in SubmitInput and in waiting on
+// QueryOutput, and how many QueryOutput calls it made.
+func (e *Encoder) Stages() (submit, query time.Duration, tries int) {
+	return e.submitted, e.queried, e.tries
+}
+
 func (e *Encoder) Encode(f capture.Frame, forceKey bool, dst []byte) (encode.Packet, error) {
+	t0 := clock.Now()
 	if err := check("CreateSurfaceFromDX11Native", e.s.ctx.call3(ctxCreateSurfaceFromDX11Native, f.Surface,
 		uintptr(unsafe.Pointer(&e.surface)), 0)); err != nil {
 		return encode.Packet{}, err
@@ -435,6 +447,8 @@ func (e *Encoder) Encode(f capture.Frame, forceKey bool, dst []byte) (encode.Pac
 		}
 	}
 	r := e.comp.call3(compSubmitInput, uintptr(unsafe.Pointer(e.surface)), 0, 0)
+	t1 := clock.Now()
+	e.submitted = t1 - t0
 	e.surface.release()
 	e.surface = nil
 	if err := check("SubmitInput", r); err != nil {
@@ -443,6 +457,7 @@ func (e *Encoder) Encode(f capture.Frame, forceKey bool, dst []byte) (encode.Pac
 	for tries := 0; ; tries++ {
 		e.comp.call3(compQueryOutput, uintptr(unsafe.Pointer(&e.data)), 0, 0)
 		if e.data != nil {
+			e.queried, e.tries = clock.Now()-t1, tries+1
 			break
 		}
 		if tries > 40 {

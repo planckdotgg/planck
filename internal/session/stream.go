@@ -217,6 +217,7 @@ func (st *stream) videoLoop() {
 			if sp, ok := pipe.(interface{ stages() pipeStages }); ok {
 				g := sp.stages()
 				row.WaitStart, row.Acquired, row.EncStart, row.EncEnd, row.FirstSlice, row.Accum = g.WaitStart, g.Acquired, g.EncStart, g.EncEnd, g.FirstSlice, g.Accum
+				row.SubmitNs, row.QueryNs, row.Tries = g.SubmitNs, g.QueryNs, g.Tries
 			}
 			st.trace.add(row)
 		}
