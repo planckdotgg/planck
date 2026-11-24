@@ -63,13 +63,15 @@ func (v *videoView) overlayChanged(shown bool) {
 	})
 }
 
-// applyDirect runs on the main thread. A swap asks for a keyframe, so the
-// new present path starts on one.
+// applyDirect runs on the main thread. A swap shows the picture again in
+// the drawables' new size, and asks for a keyframe, so the new present
+// path starts on one.
 func (v *videoView) applyDirect() {
-	w, h := v.win.Load(), v.cur.Load()
-	if w == nil || h == nil {
+	w, s := v.win.Load(), v.cur.Load()
+	if w == nil || s == nil {
 		return
 	}
+	h := s.host
 	want := directWanted(v.mode.allowed.Load(), w.IsFullScreen(), v.mode.overlay.Load())
 	if h.surf.Direct() == want {
 		return
@@ -83,6 +85,7 @@ func (v *videoView) applyDirect() {
 	v.mode.last = time.Now()
 	v.mode.mu.Unlock()
 	v.drawable.Store(packSize(h.surf.Size()))
+	v.refit()
 	if v.keyframe != nil {
 		v.keyframe()
 	}

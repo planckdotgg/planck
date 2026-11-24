@@ -56,8 +56,8 @@ type Observer interface {
 	Glass(pts int64, glass, since time.Duration)
 }
 
-// Player decodes and presents. Submit, Format, Resize and Close are called
-// from one goroutine; Stats and Timings from any.
+// Player decodes and presents. Submit, Format and Close are called from
+// one goroutine; Resize, Stats and Timings from any.
 type Player struct {
 	surf   *gpusurface.Surface
 	dec    decode.Decoder

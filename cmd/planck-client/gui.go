@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sync"
 	"sync/atomic"
 
 	"github.com/egoist/mygo"
@@ -62,8 +63,8 @@ func runGUI(o options) error {
 			resizer.changed(video.pixelSize())
 		})
 		fullScreen := func() {
+			video.resized()
 			video.applyDirect()
-			video.storeSize(win)
 			resizer.now(video.pixelSize())
 		}
 		win.OnEnterFullScreen(fullScreen)
@@ -79,10 +80,10 @@ func runGUI(o options) error {
 type videoView struct {
 	logf func(string, ...any)
 	win  atomic.Pointer[mygo.Window]
-	cur  atomic.Pointer[surfaceHost]
+	cur  atomic.Pointer[surfaceSink]
 	// size is the window's content size in DIPs and pixels in pixels,
-	// width in the high half; resize tells the presenting thread it
-	// changed.
+	// width in the high half; resize says the surface has yet to follow
+	// a change of it.
 	size   atomic.Uint64
 	pixels atomic.Uint64
 	resize atomic.Bool
@@ -127,18 +128,27 @@ func (v *videoView) videoSize() (fw, fh, dw, dh int) {
 	return fw, fh, dw, dh
 }
 
-// resized runs on the main thread after the window's size changed; the
-// presenting thread resizes the surface before its next picture.
+// resized runs on the main thread after the window's size changed.
 func (v *videoView) resized() {
 	w := v.win.Load()
 	if w == nil {
 		return
 	}
 	v.storeSize(w)
-	if h := v.cur.Load(); h != nil {
-		h.fit()
+	if s := v.cur.Load(); s != nil {
+		s.host.fit()
 	}
+	v.refit()
+}
+
+// refit has the surface take the window's size and show its picture
+// again, fitted anew, at once rather than with the next picture: a host
+// whose screen is still sends none for seconds. It does not wait.
+func (v *videoView) refit() {
 	v.resize.Store(true)
+	if s := v.cur.Load(); s != nil {
+		go s.refit(true)
+	}
 }
 
 var errNoWindow = errors.New("no window to show the stream in")
@@ -164,9 +174,15 @@ func (v *videoView) open(cfg decode.Config) (session.Sink, error) {
 		mygo.RunOnMain(h.close)
 		return nil, err
 	}
-	v.cur.Store(h)
+	s := &surfaceSink{v: v, host: h, p: p}
+	s.resize = func() error {
+		err := h.resizeSurface(p, v)
+		v.drawable.Store(packSize(h.surf.Size()))
+		return err
+	}
+	v.cur.Store(s)
 	v.resize.Store(true)
-	return &surfaceSink{v: v, host: h, p: p}, nil
+	return s, nil
 }
 
 // surfaceSink decodes on the session's decode goroutine; the player
@@ -175,17 +191,37 @@ type surfaceSink struct {
 	v    *videoView
 	host *surfaceHost
 	p    *player.Player
+	// resize resizes the surface to the window and shows the picture on
+	// it again; resizing keeps one at a time.
+	resize   func() error
+	resizing sync.Mutex
+}
+
+// refit resizes the surface if the window changed since it last did.
+// With wait false, as on the decode goroutine, it leaves a resize under
+// way to finish on its own.
+func (s *surfaceSink) refit(wait bool) {
+	if !s.v.resize.Load() {
+		return
+	}
+	if wait {
+		s.resizing.Lock()
+	} else if !s.resizing.TryLock() {
+		return
+	}
+	defer s.resizing.Unlock()
+	if s.v.cur.Load() != s || !s.v.resize.Swap(false) {
+		return
+	}
+	if err := s.resize(); err != nil {
+		s.v.logf("planck: resize the video surface: %v", err)
+	}
 }
 
 func (s *surfaceSink) SetObserver(o player.Observer) { s.p.SetObserver(o) }
 
 func (s *surfaceSink) Submit(au []byte, pts int64) (player.Timing, error) {
-	if s.v.resize.Swap(false) {
-		if err := s.host.resizeSurface(s.p, s.v); err != nil {
-			s.v.logf("planck: resize the video surface: %v", err)
-		}
-		s.v.drawable.Store(packSize(s.host.surf.Size()))
-	}
+	s.refit(false)
 	t, err := s.p.Submit(au, pts)
 	if err == nil {
 		_, w, h := s.p.Format()
@@ -197,8 +233,10 @@ func (s *surfaceSink) Submit(au []byte, pts int64) (player.Timing, error) {
 // Close leaves direct mode before the surface goes, so the window's own
 // layers composite again.
 func (s *surfaceSink) Close() error {
+	s.resizing.Lock()
 	err := s.p.Close()
-	s.v.cur.CompareAndSwap(s.host, nil)
+	s.v.cur.CompareAndSwap(s, nil)
+	s.resizing.Unlock()
 	mygo.RunOnMain(func() {
 		if s.host.surf.Direct() {
 			_ = s.host.surf.SetDirect(false)
