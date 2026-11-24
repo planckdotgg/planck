@@ -162,7 +162,7 @@ function Build-Driver {
         '/MERGE:_TEXT=.text;_PAGE=PAGE', '/SECTION:INIT,d', '/DEBUG', '/debugtype:pdata', '/RELEASE', '/OPT:REF', '/OPT:ICF',
         '/INTEGRITYCHECK', '/guard:cf', '/DYNAMICBASE', '/NXCOMPAT', '/MACHINE:X64',
         '/IGNORE:4198,4010,4037,4039,4065,4070,4078,4087,4089,4221,4108,4088,4218,4235',
-        "/OUT:$OutDir\PlanckVAD.sys", "/PDB:$OutDir\PlanckVAD.pdb"
+        "/OUT:$OutDir\PlanckVAD.sys", "/PDB:$OutDir\PlanckVAD.pdb", '/PDBALTPATH:%_PDB%'
     )
     Invoke-Tool (Join-Path $Msvc.Bin 'link.exe') ($lflags + $objs + @($res) + $libs)
 }
@@ -209,32 +209,36 @@ function New-Catalog {
 }
 
 # Makes a throwaway code-signing certificate, signs with it, and deletes the
-# private key: only the public .cer is kept, for a test machine's trust store.
-# The certificate passes through Cert:\CurrentUser\My only for the moment
-# New-SelfSignedCertificate needs; no trust store is touched.
+# certificate and its private key: only the public .cer is kept, for a test
+# machine's trust store. signtool signs from Cert:\CurrentUser\My by
+# thumbprint, because signing from a PFX imports a persistent copy of the key
+# into the user's key storage provider on every call. signtool can also copy
+# the certificate into Cert:\CurrentUser\CA, so that copy is removed too.
 function Invoke-TestSign {
     param([string[]]$Files)
     $signDir = Join-Path $BuildDir 'testsign'
     New-Item -ItemType Directory -Force $signDir | Out-Null
-    $pfx = Join-Path $signDir 'PlanckVAD-test.pfx'
     $cer = Join-Path $signDir 'PlanckVAD-test.cer'
-    $password = [Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 } | ForEach-Object { [byte]$_ }))
     $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=Planck VAD Test Signing (ephemeral)' `
-        -CertStoreLocation Cert:\CurrentUser\My -KeyExportPolicy Exportable -HashAlgorithm SHA256 -NotAfter (Get-Date).AddDays(30)
+        -CertStoreLocation Cert:\CurrentUser\My -KeyExportPolicy NonExportable -HashAlgorithm SHA256 -NotAfter (Get-Date).AddDays(30)
+    $thumb = $cert.Thumbprint
+    $key = [Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($cert)
+    $keyName = $key.Key.KeyName
+    $keyProvider = $key.Key.Provider
+    $key.Dispose()
     try {
-        Export-PfxCertificate -Cert $cert -FilePath $pfx -Password (ConvertTo-SecureString $password -AsPlainText -Force) | Out-Null
         Export-Certificate -Cert $cert -FilePath $cer | Out-Null
+        Invoke-Tool (Join-Path $SdkBin 'signtool.exe') (@('sign', '/fd', 'SHA256', '/s', 'My', '/sha1', $thumb) + $Files)
     } finally {
-        Remove-Item "Cert:\CurrentUser\My\$($cert.Thumbprint)" -DeleteKey
-    }
-    try {
-        foreach ($f in $Files) {
-            Invoke-Tool (Join-Path $SdkBin 'signtool.exe') @('sign', '/fd', 'SHA256', '/f', $pfx, '/p', $password, $f)
+        Remove-Item "Cert:\CurrentUser\My\$thumb" -DeleteKey
+        foreach ($store in 'My', 'CA') {
+            if (Test-Path "Cert:\CurrentUser\$store\$thumb") { Remove-Item "Cert:\CurrentUser\$store\$thumb" }
         }
-    } finally {
-        Remove-Item $pfx
     }
-    $cert.Thumbprint
+    if ([Security.Cryptography.CngKey]::Exists($keyName, $keyProvider)) {
+        throw "The test-signing private key $keyName is still in $keyProvider"
+    }
+    $thumb
 }
 
 # signtool verify always ends in CERT_E_UNTRUSTEDROOT for a certificate no

@@ -61,6 +61,10 @@ if ($testSigned) {
         throw 'This package is test-signed and test signing is off, so Windows would refuse to load it. Install it on a test machine with test signing on (see README.md).'
     }
     if ($TrustTestCertificate) {
+        $trusted = New-Object Security.Cryptography.X509Certificates.X509Certificate2 (Resolve-Path $TestCertificate).Path
+        if ($trusted.Thumbprint -ne $signature.SignerCertificate.Thumbprint) {
+            throw "$TestCertificate ($($trusted.Thumbprint)) is not the certificate that signed this package ($($signature.SignerCertificate.Thumbprint)); refusing to trust it."
+        }
         Import-Certificate -FilePath $TestCertificate -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
         Import-Certificate -FilePath $TestCertificate -CertStoreLocation Cert:\LocalMachine\TrustedPublisher | Out-Null
         Write-Host "Trusted $TestCertificate on this machine."
