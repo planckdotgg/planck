@@ -52,7 +52,7 @@ func runGUI(o options) error {
 	}
 	video.hudHidden = func() bool { return app.HUD() == ui.HUDHidden }
 	app.OnDrawerChange(video.drawerChanged)
-	fwd := &inputForwarder{send: b.SendInput}
+	fwd := &inputForwarder{send: b.SendInput, video: video.videoSize}
 	app.SetStreamView(fwd.view)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -83,7 +83,10 @@ type videoView struct {
 	// resize tells the presenting thread it changed.
 	size   atomic.Uint64
 	resize atomic.Bool
-	mode   directMode
+	// frame is the size of the pictures decoded last and drawable the
+	// surface's, in pixels, width in the high half, for the pointer.
+	frame, drawable atomic.Uint64
+	mode            directMode
 	// stats reads the live session for the pill drawn into the video, and
 	// hudHidden whether the user hid the HUD.
 	stats     func() (session.ClientStats, bool)
@@ -98,12 +101,18 @@ func (v *videoView) attach(w *mygo.Window) {
 
 func (v *videoView) storeSize(w *mygo.Window) {
 	cw, ch := w.ContentSize()
-	v.size.Store(uint64(uint32(cw))<<32 | uint64(uint32(ch)))
+	v.size.Store(packSize(cw, ch))
 }
 
-func (v *videoView) contentSize() (int, int) {
-	s := v.size.Load()
-	return int(s >> 32), int(uint32(s))
+func (v *videoView) contentSize() (int, int) { return unpackSize(v.size.Load()) }
+
+func packSize(w, h int) uint64       { return uint64(uint32(w))<<32 | uint64(uint32(h)) }
+func unpackSize(s uint64) (int, int) { return int(s >> 32), int(uint32(s)) }
+
+func (v *videoView) videoSize() (fw, fh, dw, dh int) {
+	fw, fh = unpackSize(v.frame.Load())
+	dw, dh = unpackSize(v.drawable.Load())
+	return fw, fh, dw, dh
 }
 
 // resized runs on the main thread after the window's size changed; the
@@ -167,8 +176,14 @@ func (s *surfaceSink) Submit(au []byte, pts int64) (player.Timing, error) {
 		if err := s.host.resizeSurface(s.p, s.v); err != nil {
 			s.v.logf("planck: resize the video surface: %v", err)
 		}
+		s.v.drawable.Store(packSize(s.host.surf.Size()))
 	}
-	return s.p.Submit(au, pts)
+	t, err := s.p.Submit(au, pts)
+	if err == nil {
+		_, w, h := s.p.Format()
+		s.v.frame.Store(packSize(w, h))
+	}
+	return t, err
 }
 
 // Close leaves direct mode before the surface goes, so the window's own

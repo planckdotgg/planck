@@ -41,6 +41,7 @@ func (v *videoView) applyDirect() {
 		v.mode.allowed.Store(false)
 		return
 	}
+	v.drawable.Store(packSize(h.surf.Size()))
 	v.logf("planck: direct display %v", want)
 }
 
