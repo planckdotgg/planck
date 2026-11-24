@@ -213,6 +213,10 @@ type Host struct {
 	sessions atomic.Uint64
 	inputs   atomic.Uint64
 	inputErr atomic.Uint64
+	// absMoves counts the absolute moves injected, and absTarget holds
+	// the last one's, X in the high half, for warpCapture.
+	absMoves  atomic.Uint32
+	absTarget atomic.Uint32
 
 	inputTrace *tracer[inputTraceRow]
 
@@ -606,6 +610,9 @@ func (h *Host) onInput(in wire.Input) {
 	if h.inject != nil {
 		if err := h.inject.Inject(ev); err != nil {
 			h.inputErr.Add(1)
+		} else if ev.Type == input.TypeMouseMoveAbs {
+			h.absTarget.Store(uint32(ev.MouseAbs.X)<<16 | uint32(ev.MouseAbs.Y))
+			h.absMoves.Add(1)
 		}
 	}
 }
