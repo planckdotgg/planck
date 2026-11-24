@@ -10,30 +10,26 @@ import (
 	"github.com/planckdotgg/planck/pkg/player"
 )
 
-func TestDirectModeFollowsHUD(t *testing.T) {
-	var m directMode
-	m.allowed.Store(true)
+// TestDirectModeFollowsDrawer: direct mode needs full screen, a profile
+// that allows it and the drawer closed, and the UI's drawer callback
+// moves it.
+func TestDirectModeFollowsDrawer(t *testing.T) {
+	v := &videoView{logf: t.Logf}
+	v.mode.allowed.Store(true)
 	want := func(step string, fullScreen, direct bool) {
 		t.Helper()
-		if got := directWanted(m.allowed.Load(), fullScreen, m.drawerOpen()); got != direct {
+		if got := directWanted(v.mode.allowed.Load(), fullScreen, v.mode.drawer.Load()); got != direct {
 			t.Errorf("%s: direct %v, want %v", step, got, direct)
 		}
 	}
 	want("pill, windowed", false, false)
 	want("pill, full screen", true, true)
-	m.hotkey()
-	want("drawer", true, false)
-	m.hotkey()
-	want("hidden", true, true)
-	m.hotkey()
-	want("pill again", true, true)
-	m.clicked.Store(true)
-	want("click in the pill band", true, false)
-	m.hotkey()
-	want("hotkey after the click: drawer", true, false)
-	m.hotkey()
-	want("hidden after the click", true, true)
-	m.allowed.Store(false)
+	v.drawerChanged(true)
+	want("drawer open", true, false)
+	v.drawerChanged(false)
+	want("drawer closed", true, true)
+	want("drawer closed, windowed", false, false)
+	v.mode.allowed.Store(false)
 	want("profile forbids it", true, false)
 }
 

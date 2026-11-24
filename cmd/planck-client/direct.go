@@ -15,43 +15,16 @@ import (
 	"github.com/planckdotgg/planck/pkg/player"
 )
 
-// hudStep mirrors ui.App's HUD hotkey cycle: pill, drawer, hidden.
-const (
-	hudStepPill = iota
-	hudStepDrawer
-	hudStepHidden
-	hudSteps
-)
-
 // directMode decides when the stream's surface scans out directly. In
 // direct mode MyGo's layers stop compositing, so its pill and drawer do not
-// show: the pill is drawn into the video instead, and anything that may
-// open the drawer leaves direct mode first.
-//
-// The UI does not report its drawer yet. Until it does, the HUD hotkey's
-// cycle is mirrored here, and a click in the pill's band counts as the
-// drawer opening; it stays composited until the hotkey moves the HUD on
-// or the window enters full screen again.
+// show: the pill is drawn into the video instead, and the drawer opening
+// leaves direct mode until it closes.
 type directMode struct {
 	allowed atomic.Bool
-	step    atomic.Int32
-	clicked atomic.Bool
+	drawer  atomic.Bool
 }
 
 func directWanted(allowed, fullScreen, drawer bool) bool { return allowed && fullScreen && !drawer }
-
-func (m *directMode) drawerOpen() bool {
-	return m.step.Load() == hudStepDrawer || m.clicked.Load()
-}
-
-// hotkey follows one press of the HUD hotkey.
-func (m *directMode) hotkey() {
-	m.step.Store((m.step.Load() + 1) % hudSteps)
-	m.clicked.Store(false)
-}
-
-// pillBandPt is the top of the stream where the pill sits, in points.
-const pillBandPt = player.HUDPillTopPt + player.HUDPillHeightPt + player.HUDPillPadPt
 
 // applyDirect runs on the main thread.
 func (v *videoView) applyDirect() {
@@ -59,7 +32,7 @@ func (v *videoView) applyDirect() {
 	if w == nil || h == nil {
 		return
 	}
-	want := directWanted(v.mode.allowed.Load(), w.IsFullScreen(), v.mode.drawerOpen())
+	want := directWanted(v.mode.allowed.Load(), w.IsFullScreen(), v.mode.drawer.Load())
 	if h.surf.Direct() == want {
 		return
 	}
@@ -71,22 +44,11 @@ func (v *videoView) applyDirect() {
 	v.logf("planck: direct display %v", want)
 }
 
-func (v *videoView) enteredFullScreen() {
-	v.mode.clicked.Store(false)
-	v.applyDirect()
-}
-
-// hudEvent runs on the main thread, from the stream's input surface.
-func (v *videoView) hudEvent(hotkey bool, yPt float32) {
-	switch {
-	case hotkey:
-		v.mode.hotkey()
-	case yPt <= pillBandPt:
-		v.mode.clicked.Store(true)
-	default:
-		return
-	}
-	v.applyDirect()
+// drawerChanged hears the UI's stream drawer open or close. It runs inside
+// the UI's frame, so the surface changes after it, on the main thread.
+func (v *videoView) drawerChanged(open bool) {
+	v.mode.drawer.Store(open)
+	go mygo.RunOnMain(v.applyDirect)
 }
 
 // hudLoop feeds the pill drawn into the video while direct mode hides the
@@ -100,7 +62,7 @@ func (v *videoView) hudLoop(s *surfaceSink, stop <-chan struct{}) {
 			return
 		case <-t.C:
 		}
-		st := player.HUDState{Visible: s.host.surf.Direct() && v.mode.step.Load() != hudStepHidden}
+		st := player.HUDState{Visible: s.host.surf.Direct() && (v.hudHidden == nil || !v.hudHidden())}
 		if st.Visible && v.stats != nil {
 			if cs, ok := v.stats(); ok {
 				st = hudState(cs, s.profile.Load())

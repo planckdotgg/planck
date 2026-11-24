@@ -50,7 +50,9 @@ func runGUI(o options) error {
 		s := c.Stats()
 		return s, s.Connected
 	}
-	fwd := &inputForwarder{send: b.SendInput, onHUD: video.hudEvent}
+	video.hudHidden = func() bool { return app.HUD() == ui.HUDHidden }
+	app.OnDrawerChange(video.drawerChanged)
+	fwd := &inputForwarder{send: b.SendInput}
 	app.SetStreamView(fwd.view)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -63,7 +65,7 @@ func runGUI(o options) error {
 		})
 		video.attach(win)
 		win.OnResize(video.resized)
-		win.OnEnterFullScreen(video.enteredFullScreen)
+		win.OnEnterFullScreen(video.applyDirect)
 		win.OnLeaveFullScreen(video.applyDirect)
 	})
 	err = mygo.App.Run()
@@ -82,8 +84,10 @@ type videoView struct {
 	size   atomic.Uint64
 	resize atomic.Bool
 	mode   directMode
-	// stats reads the live session for the pill drawn into the video.
-	stats func() (session.ClientStats, bool)
+	// stats reads the live session for the pill drawn into the video, and
+	// hudHidden whether the user hid the HUD.
+	stats     func() (session.ClientStats, bool)
+	hudHidden func() bool
 }
 
 // attach runs on the main thread.
