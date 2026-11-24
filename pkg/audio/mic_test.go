@@ -25,6 +25,20 @@ func TestPickVirtualMic(t *testing.T) {
 	}
 }
 
+func TestPairedInput(t *testing.T) {
+	inputs := []string{"Microphone (Parsec Virtual Audio)", "Microphone (Steam Streaming Microphone)", "CABLE Output (VB-Audio Virtual Cable)"}
+	for out, want := range map[string]int{
+		"Speakers (Steam Streaming Microphone)": 1,
+		"CABLE Input (VB-Audio Virtual Cable)":  2,
+		"Speakers (Steam Streaming Speakers)":   -1,
+		"BlackHole 2ch":                         -1,
+	} {
+		if got := pairedInput(out, inputs); got != want {
+			t.Errorf("pairedInput(%q) = %d, want %d", out, got, want)
+		}
+	}
+}
+
 // The mic path end to end without devices: a 5 ms PCM stream and a 10 ms
 // mono Opus VoIP stream, each with one packet lost, through the jitter
 // buffer and play-out.

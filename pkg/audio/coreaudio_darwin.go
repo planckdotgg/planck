@@ -152,6 +152,11 @@ func outputDevices() ([]VirtualMic, error) {
 	return out, nil
 }
 
+// prepareVirtualMic has nothing to check on macOS: a virtual device such as
+// BlackHole records on the device it plays on, and Core Audio converts
+// formats.
+func prepareVirtualMic(*VirtualMic) error { return nil }
+
 // processObject is the Core Audio process object of pid, or 0 when the
 // process has not touched audio.
 func processObject(pid int32) uint32 {

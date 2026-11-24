@@ -24,6 +24,9 @@ const VirtualMicHint = "Virtual mic not detected — install Steam Streaming Mic
 var (
 	// ErrNoVirtualMic: no user-installed virtual input device matched.
 	ErrNoVirtualMic = errors.New("audio: " + VirtualMicHint)
+	// ErrVirtualMicSetup: a virtual mic was found but will not pass audio
+	// as it is set up; the error says what to change.
+	ErrVirtualMicSetup = errors.New("audio: virtual mic needs setup")
 	// ErrUnsupported: this platform has no backend for the call yet.
 	ErrUnsupported = errors.New("audio: not supported on this platform")
 )
@@ -45,10 +48,31 @@ type MicSink interface {
 }
 
 // VirtualMic is a user-installed virtual audio device: Planck writes to
-// its playback side (ID, Name) and apps record from its input side.
+// its playback side (ID, Name) and apps record from its input side (Input).
 type VirtualMic struct {
-	ID   string
-	Name string
+	ID    string
+	Name  string
+	Input string
+	// inputGainDB is the input side's volume, which the sink takes off
+	// what it writes when positive.
+	inputGainDB float32
+}
+
+// pairedInput picks the input device fed by output: one whose name holds
+// the part of output's name in parentheses ("Speakers (Steam Streaming
+// Microphone)" feeds "Microphone (Steam Streaming Microphone)"), or the
+// whole name. It returns -1 when none does.
+func pairedInput(output string, inputs []string) int {
+	key := output
+	if i, j := strings.LastIndex(output, "("), strings.LastIndex(output, ")"); i >= 0 && j > i+1 {
+		key = output[i+1 : j]
+	}
+	for i, n := range inputs {
+		if strings.Contains(n, key) {
+			return i
+		}
+	}
+	return -1
 }
 
 // knownVirtualMics are playback-side device names, as substrings, of
@@ -100,7 +124,12 @@ func FindVirtualMic(want string) (VirtualMic, error) {
 		}
 		return VirtualMic{}, ErrNoVirtualMic
 	}
-	return devs[i], nil
+	dev := devs[i]
+	dev.Input = dev.Name
+	if err := prepareVirtualMic(&dev); err != nil {
+		return dev, err
+	}
+	return dev, nil
 }
 
 // PutPCM16 writes pcm as little-endian bytes into b and returns their

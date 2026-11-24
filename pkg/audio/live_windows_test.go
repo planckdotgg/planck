@@ -2,7 +2,6 @@ package audio
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 )
@@ -42,20 +41,14 @@ func TestLiveVirtualMicRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// "Speakers (Steam Streaming Microphone)" feeds "Microphone (Steam
-	// Streaming Microphone)": match the name in parentheses.
-	key := vm.Name
-	if i := strings.Index(key, "("); i >= 0 {
-		key = strings.TrimSuffix(key[i+1:], ")")
-	}
 	var input VirtualMic
 	for _, d := range inputs {
-		if strings.Contains(d.Name, key) {
+		if d.Name == vm.Input {
 			input = d
 		}
 	}
 	if input.ID == "" {
-		t.Skipf("no input device matches %q", key)
+		t.Skipf("no input device is called %q", vm.Input)
 	}
 	t.Logf("writing to %q, recording %q", vm.Name, input.Name)
 	sink, err := OpenMicSink(vm)
@@ -99,5 +92,8 @@ func TestLiveVirtualMicRoundTrip(t *testing.T) {
 	t.Logf("recorded %.2f s from the virtual mic; 440 Hz level %.1f (written at %d)", float64(len(pcm))/SampleRate, lvl, toneAmp)
 	if lvl < toneAmp/4 {
 		t.Fatalf("the tone written to %q did not come out of %q", vm.Name, input.Name)
+	}
+	if lvl > 4*toneAmp {
+		t.Fatalf("the tone came out %.1fx louder: the input side's gain was not taken off", lvl/toneAmp)
 	}
 }

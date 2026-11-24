@@ -11,3 +11,4 @@ func NewCapturer(CaptureOptions) (Capturer, error) { return nil, ErrUnsupported 
 func NewMicCapturer() (MicCapturer, error)         { return nil, ErrUnsupported }
 func OpenMicSink(VirtualMic) (MicSink, error)      { return nil, ErrUnsupported }
 func outputDevices() ([]VirtualMic, error)         { return nil, ErrUnsupported }
+func prepareVirtualMic(*VirtualMic) error          { return nil }

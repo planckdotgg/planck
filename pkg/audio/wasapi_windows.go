@@ -4,10 +4,13 @@ package audio
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -50,6 +53,7 @@ var (
 	iidIUnknown             = guid{0x00000000, 0x0000, 0x0000, [8]byte{0xC0, 0, 0, 0, 0, 0, 0, 0x46}}
 	iidIAgileObject         = guid{0x94EA2B94, 0xE9CC, 0x49E0, [8]byte{0xC0, 0xFF, 0xEE, 0x64, 0xCA, 0x8F, 0x5B, 0x90}}
 	iidActivateCompletion   = guid{0x41D949AB, 0x9862, 0x444A, [8]byte{0x80, 0xF6, 0xC2, 0x61, 0x33, 0x4D, 0xA5, 0xEB}}
+	iidEndpointVolume       = guid{0x5CDF2C82, 0x841E, 0x4546, [8]byte{0x97, 0x22, 0x0C, 0xF7, 0x40, 0x78, 0x22, 0x9A}}
 	pkeyDeviceFriendlyName  = propertyKey{guid{0xA45C254E, 0xDF1C, 0x4EFD, [8]byte{0x80, 0x20, 0x67, 0xD1, 0x46, 0xA8, 0x50, 0xE0}}, 14}
 )
 
@@ -67,6 +71,7 @@ const (
 	streamFlagsSRCDefault = 0x08000000
 	bufferFlagsSilent     = 0x2
 	waveFormatPCM         = 1
+	waveFormatFloat       = 3
 	vtLPWSTR              = 31
 	vtBlob                = 65
 	eNoInterface          = 0x80004002
@@ -88,6 +93,7 @@ const (
 	clientInitialize            = 3
 	clientGetBufferSize         = 4
 	clientGetCurrentPadding     = 6
+	clientGetMixFormat          = 8
 	clientStart                 = 10
 	clientStop                  = 11
 	clientSetEventHandle        = 13
@@ -98,6 +104,9 @@ const (
 	renderGetBuffer             = 3
 	renderReleaseBuffer         = 4
 	activateOpGetResult         = 3
+	volGetMasterLevel           = 8
+	volSetMute                  = 14
+	volGetMute                  = 15
 )
 
 // comObject is a COM interface pointer; its first word is the vtable.
@@ -294,31 +303,93 @@ func newEnumerator() (*comObject, error) {
 	return enum, hresult("CoCreateInstance", r)
 }
 
-// endpointClient activates an IAudioClient on the default endpoint of flow
-// (eRender or eCapture), or on the endpoint with id when it is set.
-func endpointClient(flow uintptr, id string) (*comObject, error) {
+// openDevice returns the endpoint with id, or the default endpoint of
+// flow (eRender or eCapture) when id is empty.
+func openDevice(flow uintptr, id string) (*comObject, error) {
 	enum, err := newEnumerator()
 	if err != nil {
 		return nil, err
 	}
 	defer enum.release()
 	var device *comObject
-	if id != "" {
-		p, err := syscall.UTF16PtrFromString(id)
-		if err != nil {
-			return nil, err
-		}
-		err = hresult("GetDevice", enum.call2(enumGetDevice, uintptr(unsafe.Pointer(p)), uintptr(unsafe.Pointer(&device))))
-		if err != nil {
-			return nil, err
-		}
-	} else if err := hresult("GetDefaultAudioEndpoint", enum.call(enumGetDefaultAudioEndpoint, flow, eConsole, uintptr(unsafe.Pointer(&device)))); err != nil {
+	if id == "" {
+		return device, hresult("GetDefaultAudioEndpoint", enum.call(enumGetDefaultAudioEndpoint, flow, eConsole, uintptr(unsafe.Pointer(&device))))
+	}
+	p, err := syscall.UTF16PtrFromString(id)
+	if err != nil {
+		return nil, err
+	}
+	return device, hresult("GetDevice", enum.call2(enumGetDevice, uintptr(unsafe.Pointer(p)), uintptr(unsafe.Pointer(&device))))
+}
+
+func activate(device *comObject, iid *guid) (*comObject, error) {
+	var obj *comObject
+	return obj, hresult("Activate", device.call(deviceActivate, uintptr(unsafe.Pointer(iid)), clsctxAll, 0, uintptr(unsafe.Pointer(&obj))))
+}
+
+// endpointClient activates an IAudioClient on openDevice(flow, id).
+func endpointClient(flow uintptr, id string) (*comObject, error) {
+	device, err := openDevice(flow, id)
+	if err != nil {
 		return nil, err
 	}
 	defer device.release()
-	var client *comObject
-	err = hresult("Activate", device.call(deviceActivate, uintptr(unsafe.Pointer(&iidIAudioClient)), clsctxAll, 0, uintptr(unsafe.Pointer(&client))))
-	return client, err
+	return activate(device, &iidIAudioClient)
+}
+
+// endpointState is an endpoint's shared-mode mix format and volume.
+type endpointState struct {
+	channels, rate int
+	levelDB        float32
+	muted          bool
+}
+
+func readEndpoint(id string) (st endpointState, err error) {
+	device, err := openDevice(eRender, id)
+	if err != nil {
+		return st, err
+	}
+	defer device.release()
+	client, err := activate(device, &iidIAudioClient)
+	if err != nil {
+		return st, err
+	}
+	defer client.release()
+	var f *waveFormatEx
+	if err := hresult("GetMixFormat", client.call1(clientGetMixFormat, uintptr(unsafe.Pointer(&f)))); err != nil {
+		return st, err
+	}
+	st.channels, st.rate = int(f.channels), int(f.samplesPerSec)
+	procCoTaskFree.Call(uintptr(unsafe.Pointer(f)))
+	vol, err := activate(device, &iidEndpointVolume)
+	if err != nil {
+		return st, err
+	}
+	defer vol.release()
+	var muted int32
+	vol.call1(volGetMasterLevel, uintptr(unsafe.Pointer(&st.levelDB)))
+	vol.call1(volGetMute, uintptr(unsafe.Pointer(&muted)))
+	st.muted = muted != 0
+	return st, nil
+}
+
+// setMute mutes or unmutes an endpoint.
+func setMute(id string, mute bool) error {
+	device, err := openDevice(eRender, id)
+	if err != nil {
+		return err
+	}
+	defer device.release()
+	vol, err := activate(device, &iidEndpointVolume)
+	if err != nil {
+		return err
+	}
+	defer vol.release()
+	var b uintptr
+	if mute {
+		b = 1
+	}
+	return hresult("SetMute", vol.call2(volSetMute, b, 0))
 }
 
 func (c *WASAPICapturer) openClient() (client *comObject, mode string, channels int, loopback bool, err error) {
@@ -620,7 +691,45 @@ func onCOMThread(fn func() error) error {
 	return <-errc
 }
 
-// wasapiSink renders mono PCM into one endpoint.
+// prepareVirtualMic finds the input side of dev and its volume, and checks
+// that Steam Streaming Microphone passes audio: it copies bytes from its
+// playback side to its recording side without converting, so the two need
+// the same format.
+func prepareVirtualMic(dev *VirtualMic) error {
+	inputs, err := endpoints(eCapture)
+	if err != nil {
+		return err
+	}
+	names := make([]string, len(inputs))
+	for i, d := range inputs {
+		names[i] = d.Name
+	}
+	i := pairedInput(dev.Name, names)
+	if i < 0 {
+		return nil
+	}
+	dev.Input = inputs[i].Name
+	return onCOMThread(func() error {
+		out, err := readEndpoint(dev.ID)
+		if err != nil {
+			return err
+		}
+		in, err := readEndpoint(inputs[i].ID)
+		if err != nil {
+			return err
+		}
+		dev.inputGainDB = in.levelDB
+		if strings.Contains(dev.Name, "Steam Streaming Microphone") && (out.channels != in.channels || out.rate != in.rate) {
+			return fmt.Errorf("%w: %q plays %d ch at %d Hz but %q records %d ch at %d Hz; Steam's driver does not convert, so set both to the same format (Sound settings > device Properties > Advanced)",
+				ErrVirtualMicSetup, dev.Name, out.channels, out.rate, dev.Input, in.channels, in.rate)
+		}
+		return nil
+	})
+}
+
+// wasapiSink renders mono PCM into one endpoint as float32, scaled down by
+// the input side's gain (Steam Streaming Microphone records at +30 dB), and
+// unmutes the endpoint while it is open.
 type wasapiSink struct {
 	dev    VirtualMic
 	ring   *pcmRing
@@ -651,7 +760,7 @@ func OpenMicSink(dev VirtualMic) (MicSink, error) {
 	return s, nil
 }
 
-func (s *wasapiSink) Device() string { return s.dev.Name }
+func (s *wasapiSink) Device() string { return s.dev.Input }
 
 func (s *wasapiSink) Write(pcm []int16) error {
 	s.mu.Lock()
@@ -683,15 +792,26 @@ func (s *wasapiSink) renderLoop(ctx context.Context, ready chan<- error) {
 		return
 	}
 	defer procCoUninit.Call()
+	if st, err := readEndpoint(s.dev.ID); err == nil && st.muted {
+		if setMute(s.dev.ID, false) == nil {
+			defer setMute(s.dev.ID, true)
+		}
+	}
+	gain := float32(1)
+	if s.dev.inputGainDB > 0 {
+		gain = float32(math.Pow(10, -float64(s.dev.inputGainDB)/20))
+	}
 	client, err := endpointClient(eRender, s.dev.ID)
 	if err != nil {
 		fail(err)
 		return
 	}
 	defer client.release()
+	format := &waveFormatEx{formatTag: waveFormatFloat, channels: MicChannels, samplesPerSec: SampleRate,
+		avgBytesPerSec: SampleRate * MicChannels * 4, blockAlign: MicChannels * 4, bitsPerSample: 32}
 	const bufferDuration = 20 * time.Millisecond / 100
 	if err := hresult("Initialize", client.call(clientInitialize, shareModeShared, streamFlagsEvent|streamFlagsAutoConv|streamFlagsSRCDefault,
-		uintptr(bufferDuration), 0, uintptr(unsafe.Pointer(pcmFormat(MicChannels))), 0)); err != nil {
+		uintptr(bufferDuration), 0, uintptr(unsafe.Pointer(format)), 0)); err != nil {
 		fail(err)
 		return
 	}
@@ -729,6 +849,7 @@ func (s *wasapiSink) renderLoop(ctx context.Context, ready chan<- error) {
 
 	var padding uint32
 	var data unsafe.Pointer
+	scratch := make([]byte, int(bufFrames)*MicChannels*2)
 	for ctx.Err() == nil {
 		syscall.WaitForSingleObject(syscall.Handle(event), 10)
 		if hresult("GetCurrentPadding", client.call1(clientGetCurrentPadding, uintptr(unsafe.Pointer(&padding)))) != nil {
@@ -744,8 +865,12 @@ func (s *wasapiSink) renderLoop(ctx context.Context, ready chan<- error) {
 		if hresult("GetBuffer", render.call2(renderGetBuffer, uintptr(frames), uintptr(unsafe.Pointer(&data)))) != nil {
 			continue
 		}
-		n := s.ring.read(unsafe.Slice((*byte)(data), int(frames)*MicChannels*2))
-		clear(unsafe.Slice((*byte)(data), int(frames)*MicChannels*2)[n:])
+		n := s.ring.read(scratch[:int(frames)*MicChannels*2]) / 2
+		out := unsafe.Slice((*float32)(data), int(frames)*MicChannels)
+		for i := range n {
+			out[i] = float32(int16(binary.LittleEndian.Uint16(scratch[2*i:]))) / 32768 * gain
+		}
+		clear(out[n:])
 		render.call2(renderReleaseBuffer, uintptr(frames), 0)
 	}
 }
