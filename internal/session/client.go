@@ -98,6 +98,9 @@ const (
 	DefaultProbeInterval = 4 * time.Second
 	DefaultStallTimeout  = 2500 * time.Millisecond
 	lanUpgradeAfter      = 2
+	// raceBeforeAddr is how long the candidates may race before a target's
+	// address is dialed instead.
+	raceBeforeAddr = time.Second
 	// rerouteFor is how long a stream that lost its route tries the
 	// others before it ends.
 	rerouteFor = 10 * time.Second
@@ -495,7 +498,14 @@ type resolved struct {
 func (c *Client) resolve(ctx context.Context, t Target) (resolved, error) {
 	r := resolved{addr: t.Addr, hostID: t.HostID, fingerprint: t.Fingerprint, kind: discovery.PathLANDirect}
 	if len(t.Candidates) > 0 {
-		res, err := discovery.Racer{Probe: c.cfg.Route.Probe}.Race(ctx, t.Candidates)
+		rctx := ctx
+		if t.Addr != "" {
+			// A host with discovery off never answers; its address does.
+			var cancel context.CancelFunc
+			rctx, cancel = context.WithTimeout(ctx, raceBeforeAddr)
+			defer cancel()
+		}
+		res, err := discovery.Racer{Probe: c.cfg.Route.Probe}.Race(rctx, t.Candidates)
 		if err == nil {
 			return r.from(res), nil
 		}
@@ -556,7 +566,9 @@ func (c *Client) pin(key string, r resolved, name string, fp [32]byte) error {
 // stream off a route that stalls or drops, and onto the LAN when that is
 // preferred and answers.
 func (c *Client) watchRoutes(cc *conn, t Target) {
+	c.mu.Lock()
 	rc := c.cfg.Route
+	c.mu.Unlock()
 	if rc.ProbeInterval <= 0 {
 		rc.ProbeInterval = DefaultProbeInterval
 	}
@@ -616,7 +628,10 @@ func (c *Client) watchRoutes(cc *conn, t Target) {
 			moved()
 			continue
 		}
-		if !rc.PreferLAN || rt.kind == discovery.PathLANDirect || len(lan) == 0 || now.Sub(probedAt) < rc.ProbeInterval {
+		c.mu.Lock()
+		preferLAN := c.cfg.Route.PreferLAN
+		c.mu.Unlock()
+		if !preferLAN || rt.kind == discovery.PathLANDirect || len(lan) == 0 || now.Sub(probedAt) < rc.ProbeInterval {
 			continue
 		}
 		probedAt = now
@@ -1071,6 +1086,14 @@ func (c *Client) SetQuality(ctx context.Context, q Quality) error {
 		return nil
 	}
 	return c.Connect(ctx, t)
+}
+
+// SetPreferLAN turns the move of a stream on a tailnet route to the LAN
+// on or off, for the stream now and later ones.
+func (c *Client) SetPreferLAN(on bool) {
+	c.mu.Lock()
+	c.cfg.Route.PreferLAN = on
+	c.mu.Unlock()
 }
 
 // Disconnect says goodbye to the host and stops playback.
