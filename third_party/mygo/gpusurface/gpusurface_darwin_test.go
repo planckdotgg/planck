@@ -5,7 +5,10 @@ package gpusurface
 import (
 	"os"
 	"runtime"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"unsafe"
 
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
@@ -126,4 +129,126 @@ func TestCompositeUnderContent(t *testing.T) {
 			t.Errorf("content subviews after Close %#x, want only the UI view %#x", views, ui)
 		}
 	})
+}
+
+// testIOSurface makes a w x h BGRA IOSurface standing for a decoded frame.
+func testIOSurface(t *testing.T, w, h int) uintptr {
+	io, err := purego.Dlopen("/System/Library/Frameworks/IOSurface.framework/IOSurface", purego.RTLD_GLOBAL|purego.RTLD_NOW)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := func(name string) uintptr {
+		p, err := purego.Dlsym(io, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return **(**uintptr)(unsafe.Pointer(&p))
+	}
+	create, err := purego.Dlsym(io, "IOSurfaceCreate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var surface uintptr
+	onMain(func() {
+		props := send(class("NSMutableDictionary"), "dictionary")
+		for k, v := range map[string]int{
+			"kIOSurfaceWidth": w, "kIOSurfaceHeight": h, "kIOSurfaceBytesPerElement": 4,
+			"kIOSurfaceBytesPerRow": w * 4, "kIOSurfacePixelFormat": fourccBGRA,
+		} {
+			send(props, "setObject:forKey:", send(class("NSNumber"), "numberWithLongLong:", uintptr(v)), key(k))
+		}
+		surface, _, _ = purego.SyscallN(create, props)
+	})
+	if surface == 0 {
+		t.Fatal("cannot make an IOSurface")
+	}
+	t.Cleanup(func() { msg(surface, selRelease) })
+	return surface
+}
+
+// TestResizeWhileWindowResizes stands for dragging a streaming window's
+// edge: presenting goroutines resize their surfaces before each frame
+// while the main thread resizes the windows, and busy goroutines keep the
+// scheduler moving the presenting ones between threads. An autorelease
+// pool popped on another thread than the one that pushed it crashes.
+func TestResizeWhileWindowResizes(t *testing.T) {
+	const workers, rounds = 4, 400
+	frame := testIOSurface(t, 64, 64)
+	type target struct {
+		s       *Surface
+		content uintptr
+	}
+	var targets [workers]target
+	for i := range targets {
+		win, content, _ := testWindow(t, 400, 300)
+		var err error
+		onMain(func() { targets[i].s, err = New(Options{Window: win, Composite: true}) })
+		if err != nil {
+			t.Fatal(err)
+		}
+		targets[i].content = content
+		s := targets[i].s
+		t.Cleanup(func() { onMain(s.Close) })
+	}
+
+	stop := make(chan struct{})
+	var busy sync.WaitGroup
+	for range 2 * runtime.GOMAXPROCS(0) {
+		busy.Go(func() {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					runtime.Gosched()
+				}
+			}
+		})
+	}
+	dragged := make(chan struct{})
+	go func() {
+		defer close(dragged)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			onMain(func() {
+				for _, tg := range targets {
+					lib.msgSetSize(tg.content, objc.RegisterName("setFrameSize:"), cgSize{float64(300 + i%200), float64(200 + i%150)})
+				}
+			})
+		}
+	}()
+
+	var presented, noDrawable atomic.Int64
+	var workersDone sync.WaitGroup
+	for _, tg := range targets {
+		workersDone.Go(func() {
+			for i := range rounds {
+				if err := tg.s.Resize(600+i%400, 400+i%300); err != nil {
+					t.Error(err)
+					return
+				}
+				switch err := tg.s.Present(frame); err {
+				case nil:
+					presented.Add(1)
+				case errNoDrawable:
+					noDrawable.Add(1)
+				default:
+					t.Error(err)
+					return
+				}
+			}
+		})
+	}
+	workersDone.Wait()
+	close(stop)
+	busy.Wait()
+	<-dragged
+	t.Logf("%d resizes, %d frames presented, %d without a drawable", workers*rounds, presented.Load(), noDrawable.Load())
+	if presented.Load() == 0 {
+		t.Error("no frame presented")
+	}
 }
