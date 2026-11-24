@@ -35,6 +35,8 @@ func runGUI(o options) error {
 	ptr.sys = newSystemPointer(video.win.Load, ptr.motion)
 	ptr.cursor = newHostCursor(video.win.Load)
 	defer ptr.close()
+	sys := newSystemKeys(newKeyTap(video.win.Load), nil, logf)
+	defer sys.streamEnded()
 	b, err := newBackend(backendConfig{
 		dir: o.configDir, name: o.name, finder: f, tailscale: ts, openSink: video.open,
 		hostConfig: func(s ui.Settings) session.HostConfig {
@@ -44,6 +46,7 @@ func runGUI(o options) error {
 			return c
 		},
 		encoders: localEncoders(), logf: logf, overrides: o.overrides, viewSize: video.liveSize, display: video.display, onCursor: ptr.setHost, onCursorShape: ptr.setShape,
+		onSystemKeys: sys.setEnabled,
 	})
 	if err != nil {
 		return err
@@ -52,7 +55,10 @@ func runGUI(o options) error {
 	video.keyframe = b.RequestKeyframe
 	app.OnOverlayChange(video.overlayChanged)
 	ptr.send, ptr.changed = b.SendInput, app.Notify
-	fwd := &inputForwarder{send: b.SendInput, video: video.videoSize, lock: ptr}
+	sys.send, sys.changed = b.SendInput, app.Notify
+	sys.setEnabled(b.Settings().SystemKeysCapture)
+	app.SetSystemKeys(sys)
+	fwd := &inputForwarder{send: b.SendInput, video: video.videoSize, lock: ptr, sys: sys}
 	app.SetStreamView(fwd.view)
 	resizer := &viewResizer{delay: resizeSettle, send: b.resizeStream}
 
@@ -60,6 +66,7 @@ func runGUI(o options) error {
 	streams.videoLive = video.surfaceLive
 	streams.userClosed = app.StreamWindowClosed
 	streams.gone = func() {
+		sys.streamEnded()
 		video.detach()
 		ptr.reset()
 	}
@@ -107,7 +114,7 @@ func runGUI(o options) error {
 	}
 	app.SetStreamWindow(streamWindowHook{streams})
 	app.SetWindow(fullScreenHook{video.win.Load})
-	app.SetCursor(cursorHook{ptr})
+	app.SetCursor(cursorHook{ptr, sys})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -190,13 +197,25 @@ type videoView struct {
 	keyframe func()
 }
 
-// cursorHook is the mouse lock as the overlay drives it.
-type cursorHook struct{ l *pointerLock }
+// cursorHook is the mouse lock as the overlay drives it, and immersive
+// mode's keyboard capture, which the menu and the stream's end stop too.
+type cursorHook struct {
+	l   *pointerLock
+	sys *systemKeys
+}
 
 func (h cursorHook) CursorLocked() bool      { return h.l.locked() }
 func (h cursorHook) SetCursorLocked(on bool) { h.l.setLocked(on) }
-func (h cursorHook) SetMenuOpen(open bool)   { h.l.setMenuOpen(open) }
-func (h cursorHook) StreamEnded()            { h.l.reset() }
+
+func (h cursorHook) SetMenuOpen(open bool) {
+	h.sys.setMenuOpen(open)
+	h.l.setMenuOpen(open)
+}
+
+func (h cursorHook) StreamEnded() {
+	h.sys.streamEnded()
+	h.l.reset()
+}
 
 // fullScreenHook is the stream's window for the overlay's Fullscreen
 // switch.

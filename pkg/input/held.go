@@ -27,6 +27,30 @@ func (h *Held) Note(ev Event) {
 	}
 }
 
+// KeyDown reports whether the key with usage is held.
+func (h *Held) KeyDown(usage uint16) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return usage < uint16(len(h.keys)) && h.keys[usage]
+}
+
+// Modifiers is the modifier keys held, as Mod* bits.
+func (h *Held) Modifiers() uint8 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.modifiers()
+}
+
+func (h *Held) modifiers() uint8 {
+	var mods uint8
+	for u := KeyLeftControl; u <= KeyRightGUI; u++ {
+		if h.keys[u] {
+			mods |= 1 << (u - KeyLeftControl)
+		}
+	}
+	return mods
+}
+
 // Release forgets what is held and returns the events that let go of it:
 // buttons, then keys, then modifiers, each key event carrying the
 // modifiers still down after it.
@@ -39,12 +63,7 @@ func (h *Held) Release() []Event {
 			out = append(out, Event{Type: TypeMouseButton, Button: MouseButton{Button: Button(b)}})
 		}
 	}
-	var mods uint8
-	for u := KeyLeftControl; u <= KeyRightGUI; u++ {
-		if h.keys[u] {
-			mods |= 1 << (u - KeyLeftControl)
-		}
-	}
+	mods := h.modifiers()
 	for u, down := range h.keys {
 		if down && (uint16(u) < KeyLeftControl || uint16(u) > KeyRightGUI) {
 			out = append(out, Event{Type: TypeKey, Key: KeyEvent{Usage: uint16(u), Modifiers: mods}})

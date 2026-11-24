@@ -20,6 +20,9 @@ type inputForwarder struct {
 	// lock holds the pointer while the mouse is locked to the stream; nil
 	// leaves it free.
 	lock *pointerLock
+	// sys is immersive mode, whose hook takes the keyboard over while it
+	// captures; nil leaves the keyboard here.
+	sys *systemKeys
 
 	keys []mui.Key
 	mods uint8
@@ -46,7 +49,7 @@ func (f *inputForwarder) view(c *mui.Context) {
 	c.Key("planck-stream-input")
 	el := mui.Box(c).Fill().Label("Stream")
 	el.HandleInput(f.scroll)
-	f.keyboard(c.KeysDown(), c.Modifiers())
+	f.keysFrame(c.KeysDown(), c.Modifiers(), c.WindowActive())
 	x, y, over := el.PointerPosition()
 	hovered := el.Hovered()
 	b := el.Bounds()
@@ -214,6 +217,16 @@ func overlayKey(k mui.Key, m mui.Modifiers) bool {
 		return m&mui.Shift != 0
 	}
 	return false
+}
+
+// keysFrame sends the keyboard's changes, unless immersive mode's hook has
+// the keyboard: then the keys sent so far go up, and the hook sends every
+// key until it lets go.
+func (f *inputForwarder) keysFrame(held []mui.Key, m mui.Modifiers, active bool) {
+	if f.sys != nil && f.sys.frame(active) {
+		held, m = nil, 0
+	}
+	f.keyboard(held, m)
 }
 
 // keyboard sends the modifiers and keys that changed since the last
