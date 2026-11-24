@@ -10,9 +10,13 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
+
+	"github.com/planckdotgg/planck/pkg/defaults"
 )
 
 const (
@@ -57,6 +61,8 @@ type HostConfig struct {
 	AllowTailscaleSameUser bool   `json:"allowTailscaleSameUser"`
 	CertPath               string `json:"certPath"`
 	KeyPath                string `json:"keyPath"`
+	// Policy becomes HostCapabilities.Forced: it beats the client's overrides.
+	Policy defaults.UserOverrides `json:"policy"`
 }
 
 type ClientConfig struct {
@@ -67,6 +73,14 @@ type ClientConfig struct {
 	AudioEnabled    bool                  `json:"audioEnabled"`
 	ThemeName       string                `json:"themeName"`
 	PinnedHosts     map[string]PinnedHost `json:"pinnedHosts"`
+
+	Overrides     defaults.UserOverrides            `json:"overrides"`
+	HostOverrides map[string]defaults.UserOverrides `json:"hostOverrides,omitempty"` // key: HostID
+}
+
+// OverridesFor returns the global overrides with hostID's on top.
+func (c ClientConfig) OverridesFor(hostID string) defaults.UserOverrides {
+	return defaults.Merge(c.Overrides, c.HostOverrides[hostID])
 }
 
 // DefaultHostConfig returns settings for a new host in dir, with a fresh
@@ -129,8 +143,14 @@ func SaveHostConfig(dir string, cfg HostConfig) error {
 // not exist.
 func LoadClientConfig(dir string) (ClientConfig, error) {
 	cfg := DefaultClientConfig()
-	if err := loadJSON(filepath.Join(dir, ClientConfigFile), &cfg); err != nil {
+	var saved struct {
+		Overrides json.RawMessage `json:"overrides"`
+	}
+	if err := loadJSON(filepath.Join(dir, ClientConfigFile), &cfg, &saved); err != nil {
 		return ClientConfig{}, err
+	}
+	if saved.Overrides == nil {
+		cfg.migrateLegacyFormat()
 	}
 	if cfg.PinnedHosts == nil {
 		cfg.PinnedHosts = map[string]PinnedHost{}
@@ -145,6 +165,29 @@ func SaveClientConfig(dir string, cfg ClientConfig) error {
 	return saveJSON(filepath.Join(dir, ClientConfigFile), cfg)
 }
 
+// migrateLegacyFormat turns preferredCodec, preferredChroma and targetFPS
+// into overrides where they differ from the old defaults (hevc, nv12,
+// 120). It runs only for a file saved before overrides existed, so an
+// override the user later resets to auto stays auto.
+func (c *ClientConfig) migrateLegacyFormat() {
+	o := &c.Overrides
+	if c.PreferredCodec == "h264" || c.PreferredCodec == "av1" {
+		o.Codec = defaults.CodecPref(c.PreferredCodec)
+	}
+	switch c.PreferredChroma {
+	case "p010":
+		o.BitDepth = "10"
+	case "yuv444":
+		o.Chroma = "444"
+	case "yuv444p10":
+		o.Chroma, o.BitDepth = "444", "10"
+	}
+	switch c.TargetFPS {
+	case 60, 144, 240:
+		o.FPS = defaults.FPSPref(strconv.Itoa(c.TargetFPS))
+	}
+}
+
 func (c HostConfig) Validate() error {
 	switch {
 	case c.HostID == "":
@@ -156,12 +199,23 @@ func (c HostConfig) Validate() error {
 	case c.CertPath == "" || c.KeyPath == "":
 		return errors.New("config: host: certPath and keyPath are required")
 	}
+	if err := c.Policy.Validate(); err != nil {
+		return fmt.Errorf("config: host: policy: %w", err)
+	}
 	return validateFormat("host", c.Codec, c.Chroma)
 }
 
 func (c ClientConfig) Validate() error {
 	if c.TargetFPS <= 0 || c.MaxBitrateKbps <= 0 {
 		return fmt.Errorf("config: client: targetFPS %d and maxBitrateKbps %d must be positive", c.TargetFPS, c.MaxBitrateKbps)
+	}
+	if err := c.Overrides.Validate(); err != nil {
+		return fmt.Errorf("config: client: overrides: %w", err)
+	}
+	for _, id := range slices.Sorted(maps.Keys(c.HostOverrides)) {
+		if err := c.HostOverrides[id].Validate(); err != nil {
+			return fmt.Errorf("config: client: host %s overrides: %w", id, err)
+		}
 	}
 	return validateFormat("client", c.PreferredCodec, c.PreferredChroma)
 }
@@ -176,7 +230,7 @@ func validateFormat(who, codec, chroma string) error {
 	return nil
 }
 
-func loadJSON(path string, v any) error {
+func loadJSON(path string, vs ...any) error {
 	b, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
@@ -184,8 +238,10 @@ func loadJSON(path string, v any) error {
 	if err != nil {
 		return err
 	}
-	if err := json.Unmarshal(b, v); err != nil {
-		return fmt.Errorf("config: %s: %w", path, err)
+	for _, v := range vs {
+		if err := json.Unmarshal(b, v); err != nil {
+			return fmt.Errorf("config: %s: %w", path, err)
+		}
 	}
 	return nil
 }
