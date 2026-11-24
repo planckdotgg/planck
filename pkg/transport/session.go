@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
-	"github.com/planckdotgg/planck/internal/rtprio"
 	"github.com/planckdotgg/planck/pkg/fec"
 	"github.com/planckdotgg/planck/pkg/ratectl"
 	"github.com/planckdotgg/planck/pkg/wire"
@@ -491,12 +490,12 @@ func (s *Session) SendControl(m wire.Message) error {
 	}
 }
 
-// recvLoop reads, opens and handles every media datagram on one OS thread
-// at a raised class, which ends with it: input reaches its handler, and a
-// video shard the FEC decoder, with no hand-off to another goroutine.
+// recvLoop reads, opens and handles every media datagram on one goroutine
+// (on macOS and Windows its own thread at a raised class; see rawReader):
+// input reaches its handler, and a video shard the FEC decoder, with no
+// hand-off to another goroutine.
 func (s *Session) recvLoop() {
 	defer s.wg.Done()
-	_ = rtprio.Boost()
 	read := newMediaReader(s.udp)
 	for {
 		n, from, err := read(s.rxBuf)
