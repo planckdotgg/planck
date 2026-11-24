@@ -1,14 +1,28 @@
 package main
 
 import (
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
 )
 
-type sizeLog struct{ got [][2]int }
+type sizeLog struct {
+	mu  sync.Mutex
+	got [][2]int
+}
 
-func (l *sizeLog) send(w, h int) { l.got = append(l.got, [2]int{w, h}) }
+func (l *sizeLog) send(w, h int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.got = append(l.got, [2]int{w, h})
+}
+
+func (l *sizeLog) sent() [][2]int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([][2]int(nil), l.got...)
+}
 
 // TestViewResizerCoalescesDrag: a drag's sizes send once, the last, when
 // they stop for the settle time.
@@ -21,19 +35,19 @@ func TestViewResizerCoalescesDrag(t *testing.T) {
 			time.Sleep(16 * time.Millisecond)
 		}
 		synctest.Wait()
-		if len(l.got) != 0 {
-			t.Fatalf("sent during the drag: %v", l.got)
+		if got := l.sent(); len(got) != 0 {
+			t.Fatalf("sent during the drag: %v", got)
 		}
 		time.Sleep(resizeSettle)
 		synctest.Wait()
-		if len(l.got) != 1 || l.got[0] != [2]int{1470, 800} {
-			t.Fatalf("after the drag: %v, want one 1470x800", l.got)
+		if got := l.sent(); len(got) != 1 || got[0] != [2]int{1470, 800} {
+			t.Fatalf("after the drag: %v, want one 1470x800", got)
 		}
 		r.changed(1600, 900)
 		time.Sleep(resizeSettle + time.Millisecond)
 		synctest.Wait()
-		if len(l.got) != 2 || l.got[1] != [2]int{1600, 900} {
-			t.Fatalf("a second drag: %v", l.got)
+		if got := l.sent(); len(got) != 2 || got[1] != [2]int{1600, 900} {
+			t.Fatalf("a second drag: %v", got)
 		}
 	})
 }
@@ -47,13 +61,13 @@ func TestViewResizerFullScreenAtOnce(t *testing.T) {
 		r.changed(1400, 900)
 		time.Sleep(50 * time.Millisecond)
 		r.now(5120, 1440)
-		if len(l.got) != 1 || l.got[0] != [2]int{5120, 1440} {
-			t.Fatalf("full screen: %v", l.got)
+		if got := l.sent(); len(got) != 1 || got[0] != [2]int{5120, 1440} {
+			t.Fatalf("full screen: %v", got)
 		}
 		time.Sleep(2 * resizeSettle)
 		synctest.Wait()
-		if len(l.got) != 1 {
-			t.Fatalf("the drag's size came after full screen: %v", l.got)
+		if got := l.sent(); len(got) != 1 {
+			t.Fatalf("the drag's size came after full screen: %v", got)
 		}
 	})
 }
