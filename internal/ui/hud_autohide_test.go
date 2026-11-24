@@ -137,7 +137,8 @@ func TestHUDPinKeepsVisible(t *testing.T) {
 func TestHUDHotkeyRevealsHiddenPill(t *testing.T) {
 	a, tt, _, f := newStreamTester(t)
 	tt.Advance(hudReveal + time.Second)
-	for range 3 {
+	// The first press shows the hidden pill, the next three go round.
+	for range 4 {
 		tt.Key(mui.Ctrl|mui.Alt, mui.KeyH)
 		tt.Frame()
 	}
@@ -148,6 +149,7 @@ func TestHUDHotkeyRevealsHiddenPill(t *testing.T) {
 	if hudVisible(tt, f) {
 		t.Fatal("pill from the hotkey did not auto-hide")
 	}
+	a.CycleHUD()
 	a.CycleHUD()
 	a.CycleHUD()
 	tt.Frame()
