@@ -692,11 +692,15 @@ func (e *Encoder) emitSlices(dst *[]byte, from, to int, key bool, emit func(int,
 	data := unsafe.Slice((*byte)(win.Ptr(uintptr(get64(l, lockPtr)))), size)
 	*dst = append(*dst, data[len(*dst):]...)
 	for i := from; i < to; i++ {
-		end := size
+		// Slice 0 starts at 0: a keyframe's parameter sets come before it.
+		start, end := 0, size
+		if i > 0 {
+			start = int(e.sliceOffsets[i])
+		}
 		if i+1 < to {
 			end = int(e.sliceOffsets[i+1])
 		}
-		if err := emit(i, (*dst)[e.sliceOffsets[i]:end], key); err != nil {
+		if err := emit(i, (*dst)[start:end], key); err != nil {
 			return err
 		}
 	}
