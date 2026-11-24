@@ -20,6 +20,7 @@ import (
 
 	"github.com/planckdotgg/planck/internal/rtprio"
 	"github.com/planckdotgg/planck/pkg/audio"
+	"github.com/planckdotgg/planck/pkg/clipboard"
 	"github.com/planckdotgg/planck/pkg/config"
 	"github.com/planckdotgg/planck/pkg/decode"
 	"github.com/planckdotgg/planck/pkg/defaults"
@@ -74,6 +75,13 @@ type ClientConfig struct {
 	OpenSink SinkOpener
 	// OpenAudioPlayer replaces the default output device.
 	OpenAudioPlayer func() (audio.Player, error)
+	// OpenMic replaces audio.NewMicCapturer.
+	OpenMic func() (audio.MicCapturer, error)
+	// Clipboard is what this client shares: Send is client to host,
+	// Receive host to client.
+	Clipboard ClipboardConfig
+	// OpenClipboard replaces clipboard.Open.
+	OpenClipboard func() (clipboard.Board, error)
 	// Tailscale replaces the local daemon client for path detection.
 	Tailscale PathInfoer
 	// OnRumble receives gamepad rumble from the host.
@@ -190,6 +198,8 @@ type ClientStats struct {
 	AudioBufferMs   float64
 	AudioPackets    uint64
 	InputSent       uint64
+	Mic             MicStats
+	Clipboard       ClipboardStats
 }
 
 // Client connects to one host at a time.
@@ -203,6 +213,7 @@ type Client struct {
 	mu     sync.Mutex
 	conn   *conn
 	target Target
+	clip   *clipSync
 }
 
 // NewClient prepares a client; the identity is created on first Connect.
@@ -256,6 +267,7 @@ type conn struct {
 
 	jb       *audio.JitterBuffer
 	player   audio.Player
+	mic      *micSender
 	inputSeq atomic.Uint32
 
 	mu        sync.Mutex
@@ -402,6 +414,8 @@ func (c *Client) connect(ctx context.Context, t Target) (*conn, error) {
 		o.SetObserver(viewObserver{cc})
 	}
 	cc.ctx, cc.cancel = context.WithCancel(context.Background())
+	cc.mic = newMicSender(cc, cfg.OpenMic, c.logf)
+	c.startClipboard(cfg)
 	cc.wg.Go(func() { cc.decodeLoop(sink, c.logf) })
 	if cc.jb != nil && acc.AudioChannels > 0 {
 		openPlayer := cfg.OpenAudioPlayer
@@ -503,6 +517,7 @@ func (c *Client) dialRoute(ctx context.Context, cc *conn, r resolved) (*route, e
 					rt.bye.Store(true)
 				}
 			},
+			Clipboard: c.onClipboard,
 			Rumble: func(r wire.Rumble) {
 				if cfg.OnRumble != nil {
 					cfg.OnRumble(input.RumbleEvent{Index: r.Pad, LowFreq: r.Low, HighFreq: r.High, DurationMs: r.DurationMs})
@@ -514,6 +529,7 @@ func (c *Client) dialRoute(ctx context.Context, cc *conn, r resolved) (*route, e
 		return nil, err
 	}
 	rt.sess = sess
+	c.sendPeerState(sess)
 	if cfg.PIN != "" {
 		// A PIN pairs once; the host rotates it, and reconnects use the pin.
 		c.mu.Lock()
@@ -1097,6 +1113,7 @@ func (cc *conn) stats() ClientStats {
 
 func (cc *conn) close() {
 	cc.cancel()
+	cc.mic.close()
 	cc.wg.Wait()
 	cc.session().Close()
 	cc.end(transport.ErrClosed)
@@ -1119,7 +1136,14 @@ func (c *Client) Stats() ClientStats {
 		return ClientStats{}
 	default:
 	}
-	return cc.stats()
+	s := cc.stats()
+	s.Mic = cc.micStats()
+	c.mu.Lock()
+	if c.clip != nil {
+		s.Clipboard = c.clip.stats()
+	}
+	c.mu.Unlock()
+	return s
 }
 
 // Done is closed when the current stream ends, which a route change does
@@ -1202,6 +1226,116 @@ func (c *Client) SetPreferLAN(on bool) {
 	c.mu.Lock()
 	c.cfg.Route.PreferLAN = on
 	c.mu.Unlock()
+}
+
+func (c *Client) liveSession() *transport.Session {
+	c.mu.Lock()
+	cc := c.conn
+	c.mu.Unlock()
+	if cc == nil {
+		return nil
+	}
+	return cc.session()
+}
+
+// startClipboard starts sharing the clipboard the first time cfg asks for
+// it.
+func (c *Client) startClipboard(cfg ClientConfig) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.clip != nil || !cfg.Clipboard.any() {
+		return
+	}
+	c.clip = openClipSync(cfg.OpenClipboard, cfg.Clipboard, c.liveSession, func() bool {
+		s := c.liveSession()
+		return s != nil && s.PeerState().ClipboardRecv
+	}, c.logf)
+}
+
+func (c *Client) onClipboard(clip *wire.Clip) {
+	c.mu.Lock()
+	s := c.clip
+	c.mu.Unlock()
+	if s != nil {
+		s.incoming(clip)
+	}
+}
+
+// sendPeerState tells a host that reads it what this client does with the
+// clipboard.
+func (c *Client) sendPeerState(sess *transport.Session) {
+	if sess.PeerFeatures()&wire.FeaturePeerState == 0 {
+		return
+	}
+	c.mu.Lock()
+	cfg := c.cfg.Clipboard
+	if c.clip != nil {
+		cfg = c.clip.config()
+	}
+	c.mu.Unlock()
+	_ = sess.SendControl(&wire.PeerState{ClipboardSend: cfg.Send, ClipboardRecv: cfg.Receive})
+}
+
+// SetClipboard changes what this client shares, at once.
+func (c *Client) SetClipboard(cfg ClipboardConfig) {
+	c.mu.Lock()
+	c.cfg.Clipboard = cfg
+	s := c.clip
+	full := c.cfg
+	c.mu.Unlock()
+	if s != nil {
+		s.setConfig(cfg)
+	} else {
+		c.startClipboard(full)
+	}
+	if sess := c.liveSession(); sess != nil {
+		c.sendPeerState(sess)
+	}
+}
+
+// SetMicMuted mutes or unmutes this client's microphone on the host. Each
+// stream starts muted. Unmuting fails when the host has no virtual mic to
+// play it into.
+func (c *Client) SetMicMuted(muted bool) error {
+	c.mu.Lock()
+	cc := c.conn
+	c.mu.Unlock()
+	if cc == nil {
+		return ErrNotConnected
+	}
+	if !muted {
+		if st := cc.micStats(); st.Device == "" {
+			return errors.New(st.Hint)
+		}
+	}
+	return cc.mic.setMuted(muted)
+}
+
+func (cc *conn) micStats() MicStats {
+	sess := cc.session()
+	st := MicStats{Muted: cc.mic.muted.Load(), Packets: cc.mic.pkts.Load()}
+	if sess.PeerFeatures()&wire.FeatureMic == 0 {
+		st.Hint = errNoHostMic.Error()
+		return st
+	}
+	ps := sess.PeerState()
+	st.Device, st.Hint = ps.MicDevice, ps.MicHint
+	if st.Device == "" && st.Hint == "" {
+		st.Hint = "Waiting for the host"
+	}
+	return st
+}
+
+// Close disconnects and stops sharing the clipboard.
+func (c *Client) Close() {
+	c.Disconnect()
+	c.mu.Lock()
+	s := c.clip
+	c.clip = nil
+	c.mu.Unlock()
+	if s != nil {
+		s.close()
+	}
 }
 
 // Disconnect says goodbye to the host and stops playback.

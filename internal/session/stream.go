@@ -55,6 +55,12 @@ type stream struct {
 
 	frames, keyframes, dropped, audioPkts atomic.Uint64
 
+	// mic plays the client's microphone, nil when the host takes none.
+	mic       *micReceiver
+	micDevice string
+	micHint   string
+	bg        sync.WaitGroup
+
 	trace *tracer[hostTraceRow]
 }
 
@@ -74,6 +80,7 @@ func newStream(h *Host, sess *transport.Session) *stream {
 		st.addr = ua.String()
 		st.path = ratectl.ClassifyAddr(ua.AddrPort().Addr())
 	}
+	st.startMic()
 	prof, err := ParseProfile(sess.Profile())
 	if err != nil {
 		h.logf("planck: %v; using the legacy config", err)
@@ -122,6 +129,7 @@ func (st *stream) run(parent context.Context) {
 	defer close(st.done)
 	st.ctx, st.cancel = context.WithCancel(parent)
 	defer st.cancel()
+	st.sendPeerState()
 	var wg sync.WaitGroup
 	wg.Go(st.videoLoop)
 	if st.sess.Config().AudioChannels > 0 && !st.h.cfg.NoAudio {
@@ -136,7 +144,42 @@ func (st *stream) run(parent context.Context) {
 	}
 	st.cancel()
 	wg.Wait()
+	if st.mic != nil {
+		st.mic.cancel()
+	}
+	st.bg.Wait()
 	st.sess.Close()
+}
+
+// startMic finds the virtual mic before any packet comes, so the client
+// can show where its microphone goes, or why it cannot.
+func (st *stream) startMic() {
+	h := st.h
+	dev, hint := h.micStatus()
+	st.micDevice, st.micHint = dev.Input, hint
+	if h.cfg.NoMic || hint != "" {
+		return
+	}
+	open := h.cfg.OpenMicSink
+	if open == nil {
+		open = audio.OpenMicSink
+	}
+	st.mic = &micReceiver{dev: dev, open: open, logf: h.logf, wg: &st.bg}
+	st.mic.ctx, st.mic.cancel = context.WithCancel(context.Background())
+}
+
+// sendPeerState tells a client that reads it what this host does with the
+// microphone and the clipboard.
+func (st *stream) sendPeerState() {
+	if st.sess.PeerFeatures()&wire.FeaturePeerState == 0 {
+		return
+	}
+	ps := &wire.PeerState{MicDevice: st.micDevice, MicHint: st.micHint}
+	if c := st.h.clip; c != nil {
+		cfg := c.config()
+		ps.ClipboardSend, ps.ClipboardRecv = cfg.Send, cfg.Receive
+	}
+	_ = st.sess.SendControl(ps)
 }
 
 // stop ends the session and waits for its goroutines.
@@ -421,6 +464,9 @@ func (st *stream) audioLoop() {
 		st.h.logf("planck: audio unavailable: %v", err)
 		return
 	}
+	if m, ok := capt.(interface{ Mode() string }); ok {
+		st.h.logf("planck: desktop audio captured by %s", m.Mode())
+	}
 	<-st.ctx.Done()
 }
 
@@ -437,6 +483,10 @@ func (st *stream) fill(out *HostStats) {
 	out.Dropped = st.dropped.Load()
 	out.PLIs = st.sess.Stats().PLIsReceived
 	out.AudioPackets = st.audioPkts.Load()
+	out.Mic = MicStats{Device: st.micDevice, Hint: st.micHint}
+	if st.mic != nil {
+		out.Mic.Packets, out.Mic.Concealed = st.mic.stats()
+	}
 	out.FPS, out.SentKbps = st.sent.per(transport.Mono())
 	st.mu.Lock()
 	out.Video = st.info

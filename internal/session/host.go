@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/planckdotgg/planck/pkg/audio"
+	"github.com/planckdotgg/planck/pkg/clipboard"
 	"github.com/planckdotgg/planck/pkg/config"
 	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/discovery"
@@ -99,6 +100,20 @@ type HostConfig struct {
 	// AudioExcludePIDs are processes, such as a voice chat app, whose
 	// audio the stream leaves out besides Planck's own (macOS only).
 	AudioExcludePIDs []int
+	// NoMic refuses the client's microphone.
+	NoMic bool
+	// MicDevice picks the virtual input device the client's microphone
+	// plays into by a substring of its name; empty finds a known one.
+	MicDevice string
+	// FindVirtualMic and OpenMicSink replace audio.FindVirtualMic and
+	// audio.OpenMicSink.
+	FindVirtualMic func(want string) (audio.VirtualMic, error)
+	OpenMicSink    func(audio.VirtualMic) (audio.MicSink, error)
+	// Clipboard is what the host shares: Send is host to client, Receive
+	// client to host.
+	Clipboard ClipboardConfig
+	// OpenClipboard replaces clipboard.Open.
+	OpenClipboard func() (clipboard.Board, error)
 	// Injector replaces the platform injector when InjectInput is set.
 	Injector input.Injector
 	// OnInput sees every valid input event, injected or not.
@@ -147,6 +162,8 @@ type HostStats struct {
 	Dropped      uint64
 	PLIs         uint64
 	AudioPackets uint64
+	Mic          MicStats
+	Clipboard    ClipboardStats
 	InputEvents  uint64
 	InputErrors  uint64
 	// Report is the client's last StatsReport.
@@ -194,6 +211,7 @@ type Host struct {
 
 	caps hostCapsCache
 	vdd  vddManager
+	clip *clipSync
 }
 
 // NewHost loads or creates the host's identity and paired clients.
@@ -349,11 +367,23 @@ func (h *Host) Start(ctx context.Context) error {
 			Control: h.onControl,
 		},
 	}
+	if !h.cfg.NoMic {
+		scfg.Handlers.Mic = h.onMic
+	}
+	if h.cfg.Clipboard.any() {
+		h.clip = openClipSync(h.cfg.OpenClipboard, h.cfg.Clipboard, h.liveSession, h.peerReceivesClipboard, h.logf)
+		if h.clip != nil {
+			scfg.Handlers.Clipboard = h.clip.incoming
+		}
+	}
 	if h.cfg.OpenVideo == nil || h.cfg.Capabilities != nil {
 		scfg.Capabilities, scfg.Resolve = h.capabilitiesJSON, h.resolve
 	}
 	srv, err := transport.Listen(h.cfg.ListenAddr, scfg)
 	if err != nil {
+		if h.clip != nil {
+			h.clip.close()
+		}
 		return err
 	}
 	h.srv = srv
@@ -600,6 +630,63 @@ func (h *Host) onControl(m wire.Message) {
 	}
 }
 
+func (h *Host) current() *stream {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.cur
+}
+
+func (h *Host) onMic(hdr wire.AudioHeader, payload []byte) {
+	if st := h.current(); st != nil && st.mic != nil {
+		st.mic.push(hdr, payload)
+	}
+}
+
+func (h *Host) liveSession() *transport.Session {
+	if st := h.current(); st != nil {
+		return st.sess
+	}
+	return nil
+}
+
+func (h *Host) peerReceivesClipboard() bool {
+	st := h.current()
+	return st != nil && st.sess.PeerState().ClipboardRecv
+}
+
+// micStatus is the virtual input device the client's microphone would
+// play into, or why there is none.
+func (h *Host) micStatus() (audio.VirtualMic, string) {
+	if h.cfg.NoMic {
+		return audio.VirtualMic{}, "The host turned the microphone off"
+	}
+	find := h.cfg.FindVirtualMic
+	if find == nil {
+		find = audio.FindVirtualMic
+	}
+	dev, err := find(h.cfg.MicDevice)
+	switch {
+	case err == nil:
+		return dev, ""
+	case errors.Is(err, audio.ErrNoVirtualMic):
+		return audio.VirtualMic{}, audio.VirtualMicHint
+	case errors.Is(err, audio.ErrVirtualMicSetup):
+		return audio.VirtualMic{}, strings.TrimPrefix(err.Error(), "audio: ")
+	}
+	return audio.VirtualMic{}, "Virtual mic unavailable: " + err.Error()
+}
+
+// SetClipboard changes what the host shares, at once.
+func (h *Host) SetClipboard(c ClipboardConfig) {
+	if h.clip == nil {
+		return
+	}
+	h.clip.setConfig(c)
+	if st := h.current(); st != nil {
+		st.sendPeerState()
+	}
+}
+
 // Stats is a snapshot for a UI or a log line.
 func (h *Host) Stats() HostStats {
 	h.mu.Lock()
@@ -609,6 +696,9 @@ func (h *Host) Stats() HostStats {
 		InputErrors: h.inputErr.Load(), LastError: lastErr}
 	if st != nil {
 		st.fill(&out)
+	}
+	if h.clip != nil {
+		out.Clipboard = h.clip.stats()
 	}
 	return out
 }
@@ -632,6 +722,9 @@ func (h *Host) Stop() {
 			st.stop()
 		}
 		h.wg.Wait()
+		if h.clip != nil {
+			h.clip.close()
+		}
 		if err := h.vdd.close(); err != nil {
 			h.logf("planck: virtual display driver: %v", err)
 		}

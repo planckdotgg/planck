@@ -55,6 +55,21 @@ func TestMicFlowReachesHostOnly(t *testing.T) {
 	}
 }
 
+func TestPeerStateIsKept(t *testing.T) {
+	p := newPair(t, pairOpts{})
+	want := wire.PeerState{ClipboardRecv: true, MicHint: "none"}
+	if err := p.client.SendControl(&want); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for p.host.PeerState() != want {
+		if time.Now().After(deadline) {
+			t.Fatalf("host has %+v", p.host.PeerState())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestSendMicNeedsHostSupport(t *testing.T) {
 	p := newPair(t, pairOpts{})
 	if err := p.client.SendMic(wire.AudioHeader{}, []byte{1}); !errors.Is(err, ErrPeerUnsupported) {

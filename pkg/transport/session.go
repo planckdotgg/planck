@@ -200,6 +200,8 @@ type Session struct {
 	clipMu  sync.Mutex
 	clipOut *quic.SendStream
 
+	peerState atomic.Pointer[wire.PeerState]
+
 	mediaUp     chan struct{}
 	mediaUpOnce sync.Once
 	done        chan struct{}
@@ -350,6 +352,14 @@ func (s *Session) RemoteControlAddr() net.Addr { return s.conn.RemoteAddr() }
 
 // PeerFeatures are the wire.Feature bits of the peer's Hello.
 func (s *Session) PeerFeatures() uint32 { return s.peerFeatures }
+
+// PeerState is the last wire.PeerState the peer sent, or the zero value.
+func (s *Session) PeerState() wire.PeerState {
+	if ps := s.peerState.Load(); ps != nil {
+		return *ps
+	}
+	return wire.PeerState{}
+}
 
 // TargetBitrateKbps is the rate controller's current target (host only).
 func (s *Session) TargetBitrateKbps() int { return int(s.target.Load()) }
@@ -906,6 +916,8 @@ func (s *Session) ctrlReadLoop() {
 			if s.isHost {
 				s.keyframe.Store(true)
 			}
+		case *wire.PeerState:
+			s.peerState.Store(m)
 		case *wire.Goodbye:
 			if s.h.Control != nil {
 				s.h.Control(m)
