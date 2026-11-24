@@ -224,11 +224,11 @@ func TestPolicyBoundToThisExecutable(t *testing.T) {
 // the picture is done, with exactly the bytes and boundaries of the final
 // packet, and logs the locks and the thread's CPU time per frame.
 func TestSliceStreaming(t *testing.T) {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
 	d := encodetest.Device(t, "NVIDIA")
 	for _, slices := range []int{4, 8} {
 		t.Run(fmt.Sprintf("%d_slices", slices), func(t *testing.T) {
+			runtime.LockOSThread()
+			defer runtime.UnlockOSThread()
 			cfg := hevc(encode.NV12, capture.FormatBGRA8)
 			cfg.Slices, cfg.SubFrame = slices, true
 			e := open(t, d, cfg, Options{})
@@ -244,17 +244,18 @@ func TestSliceStreaming(t *testing.T) {
 			}
 			var emitted []got
 			var early, polls int
-			var cpu time.Duration
+			var busy time.Duration
+			cpu0 := threadCPU(t)
 			for i := 0; i < n; i++ {
 				emitted = emitted[:0]
-				c0 := threadCPU(t)
+				t0 := clock.Now()
 				pkt, err := e.EncodeSlices(frames[i%len(frames)], i == 0, dst, func(idx int, s []byte, key bool) error {
 					start := int(uintptr(unsafe.Pointer(unsafe.SliceData(s))) - uintptr(unsafe.Pointer(unsafe.SliceData(dst[:1]))))
 					emitted = append(emitted, got{idx, start, append([]byte(nil), s...), key, clock.Now()})
 					return nil
 				})
 				done := clock.Now()
-				cpu += threadCPU(t) - c0
+				busy += done - t0
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -277,8 +278,9 @@ func TestSliceStreaming(t *testing.T) {
 					early++
 				}
 			}
-			t.Logf("%d slices: first slice emitted >100 us before the picture was done in %d of %d frames; %.1f locks and %.0f us of thread CPU per frame",
-				slices, early, n, float64(polls)/n, float64(cpu.Microseconds())/n)
+			cpu := threadCPU(t) - cpu0
+			t.Logf("%d slices: first slice emitted >100 us before the picture was done in %d of %d frames; %.1f locks per frame; thread CPU %.0f%% of the time in EncodeSlices (%v of %v)",
+				slices, early, n, float64(polls)/n, 100*float64(cpu)/float64(busy), cpu.Round(time.Millisecond), busy.Round(time.Millisecond))
 			if early < n/2 {
 				t.Fatalf("the first slice left early in only %d of %d frames", early, n)
 			}
