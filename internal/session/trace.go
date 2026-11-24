@@ -36,6 +36,10 @@ type hostTraceRow struct {
 	FirstSlice int64
 	SendEnd    int64 // the last datagram of the frame was written
 	Accum      int   // DDA AccumulatedFrames
+	Kbps       int   // encoder bitrate when the frame was encoded
+	// SetRateNs is how long a bitrate change before this frame took, 0
+	// without one.
+	SetRateNs int64
 }
 
 // clientTraceRow is one frame on the client. Host stamps are mapped onto

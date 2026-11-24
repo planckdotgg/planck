@@ -162,10 +162,13 @@ func (st *stream) videoLoop() {
 			forceKey = true
 		}
 		forceKey = st.applyInvalidations(pipe) || forceKey
+		var setRate int64
 		if t := st.sess.TargetBitrateKbps(); t > 0 && abs(t-kbps)*20 > kbps {
+			t0 := transport.Mono()
 			if err := pipe.SetBitrate(t); err == nil {
 				kbps = t
 			}
+			setRate = transport.Mono() - t0
 		}
 		pkt, captureTS, err := pipe.Next(captureWait, forceKey, buf)
 		switch {
@@ -210,7 +213,7 @@ func (st *stream) videoLoop() {
 		}
 		st.frames.Add(1)
 		if st.trace != nil {
-			row := hostTraceRow{Frame: info.FrameID, Key: pkt.Keyframe, Bytes: len(pkt.Data), Present: captureTS, SendEnd: transport.Mono()}
+			row := hostTraceRow{Frame: info.FrameID, Key: pkt.Keyframe, Bytes: len(pkt.Data), Present: captureTS, SendEnd: transport.Mono(), Kbps: kbps, SetRateNs: setRate}
 			if sp, ok := pipe.(interface{ stages() pipeStages }); ok {
 				g := sp.stages()
 				row.WaitStart, row.Acquired, row.EncStart, row.EncEnd, row.FirstSlice, row.Accum = g.WaitStart, g.Acquired, g.EncStart, g.EncEnd, g.FirstSlice, g.Accum
