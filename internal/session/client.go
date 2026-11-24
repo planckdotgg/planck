@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -425,6 +426,12 @@ func (c *Client) dialRoute(ctx context.Context, cc *conn, r resolved) (*route, e
 	c.mu.Lock()
 	cfg := c.cfg
 	c.mu.Unlock()
+	if p := cc.profile.Load(); p != nil {
+		// A stream moving routes keeps the format its decoder was opened
+		// for: the host resolves per route, and takes the stream over
+		// from the old session before this client can refuse the new one.
+		cfg.Overrides = defaults.Merge(cfg.Overrides, decoderFormat(p))
+	}
 	stored, err := config.LoadClientConfig(c.dir)
 	if err != nil {
 		return nil, err
@@ -566,6 +573,19 @@ func (c *Client) resolve(ctx context.Context, t Target) (resolved, error) {
 		}
 	}
 	return r, nil
+}
+
+// decoderFormat is the overrides that make a host resolve p's codec,
+// chroma and bit depth again.
+func decoderFormat(p *defaults.ResolvedProfile) defaults.UserOverrides {
+	o := defaults.UserOverrides{Codec: defaults.CodecPref(p.Codec.String()), Chroma: "420"}
+	if p.Chroma444 {
+		o.Chroma = "444"
+	}
+	if p.BitDepth == 8 || p.BitDepth == 10 {
+		o.BitDepth = defaults.BitDepthPref(strconv.Itoa(p.BitDepth))
+	}
+	return o
 }
 
 // streamConfig is the decoder config and resolved profile of sess's stream.
