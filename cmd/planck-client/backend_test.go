@@ -392,6 +392,44 @@ func TestBackendOverlayAndSoundPersist(t *testing.T) {
 	}
 }
 
+// TestBackendSystemKeysSetting: immersive mode comes back on the next
+// run, and turning it on or off tells the stream at once.
+func TestBackendSystemKeysSetting(t *testing.T) {
+	dir := t.TempDir()
+	b, _ := newTestBackend(t, dir, nil)
+	var heard []bool
+	b.onSystemKeys = func(on bool) { heard = append(heard, on) }
+	s := b.Settings()
+	if s.SystemKeysCapture {
+		t.Fatal("immersive mode on in a first run")
+	}
+	s.SystemKeysCapture = true
+	if err := b.SaveSettings(s); err != nil {
+		t.Fatal(err)
+	}
+	s.AudioMuted = true
+	if err := b.SaveSettings(s); err != nil {
+		t.Fatal(err)
+	}
+	if len(heard) != 1 || !heard[0] {
+		t.Fatalf("the stream heard %v, want [true] once", heard)
+	}
+	again, _ := newTestBackend(t, dir, nil)
+	if !again.Settings().SystemKeysCapture {
+		t.Fatal("immersive mode did not come back on the next run")
+	}
+	s.SystemKeysCapture = false
+	if err := b.SaveSettings(s); err != nil {
+		t.Fatal(err)
+	}
+	if len(heard) != 2 || heard[1] {
+		t.Fatalf("the stream heard %v, want [true false]", heard)
+	}
+	if stored, err := config.LoadClientConfig(dir); err != nil || stored.SystemKeysCapture {
+		t.Fatalf("stored %+v, %v: want immersive mode off", stored.SystemKeysCapture, err)
+	}
+}
+
 // TestBackendCapabilitiesWindowDisplay: the capabilities a stream offers
 // carry the display the window is on, a second 3440x1440 75 Hz one here,
 // and fall back to the probe without a window.

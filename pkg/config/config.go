@@ -76,10 +76,13 @@ type ClientConfig struct {
 	// ClipboardSend shares this device's clipboard with the other end of
 	// a stream, and ClipboardReceive applies the other end's here. Both
 	// start off.
-	ClipboardSend    bool                  `json:"clipboardSend"`
-	ClipboardReceive bool                  `json:"clipboardReceive"`
-	ThemeName        string                `json:"themeName"`
-	PinnedHosts      map[string]PinnedHost `json:"pinnedHosts"`
+	ClipboardSend    bool `json:"clipboardSend"`
+	ClipboardReceive bool `json:"clipboardReceive"`
+	// SystemKeysCapture is immersive mode: the stream takes the shortcuts
+	// the client's own OS acts on, such as Cmd-Tab and the Windows key.
+	SystemKeysCapture bool                  `json:"systemKeysCapture,omitempty"`
+	ThemeName         string                `json:"themeName"`
+	PinnedHosts       map[string]PinnedHost `json:"pinnedHosts"`
 	// HostAliases are names the user gave hosts on this client, by host
 	// ID; they replace the name the host advertises.
 	HostAliases map[string]string `json:"hostAliases,omitempty"`

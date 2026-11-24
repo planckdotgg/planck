@@ -54,6 +54,8 @@ type backend struct {
 	onCursor  func(wire.CursorState)
 	// onCursorShape hears the host's cursor image; nil does not ask for it.
 	onCursorShape func(wire.CursorShape)
+	// onSystemKeys hears immersive mode turned on or off.
+	onSystemKeys func(on bool)
 
 	mu       sync.Mutex
 	onChange func()
@@ -94,6 +96,8 @@ type backendConfig struct {
 	// image.
 	onCursor      func(wire.CursorState)
 	onCursorShape func(wire.CursorShape)
+	// onSystemKeys hears immersive mode turned on or off, at once.
+	onSystemKeys func(on bool)
 }
 
 func newBackend(c backendConfig) (*backend, error) {
@@ -110,7 +114,7 @@ func newBackend(c backendConfig) (*backend, error) {
 		return nil, err
 	}
 	b := &backend{dir: dir, name: c.name, finder: c.finder, ts: c.tailscale, openSink: c.openSink, hostConfig: c.hostConfig,
-		encoders: c.encoders, logf: c.logf, routeConfig: c.route, overrides: c.overrides, viewSize: c.viewSize, display: c.display, onCursor: c.onCursor, onCursorShape: c.onCursorShape, settings: settingsFrom(stored), pinned: stored.PinnedHosts, aliases: stored.HostAliases,
+		encoders: c.encoders, logf: c.logf, routeConfig: c.route, overrides: c.overrides, viewSize: c.viewSize, display: c.display, onCursor: c.onCursor, onCursorShape: c.onCursorShape, onSystemKeys: c.onSystemKeys, settings: settingsFrom(stored), pinned: stored.PinnedHosts, aliases: stored.HostAliases,
 		storedAll: stored.Overrides, storedHosts: stored.HostOverrides, layout: layoutFrom(stored.Overlay)}
 	host, err := config.LoadHostConfig(dir)
 	if err != nil {
@@ -128,7 +132,7 @@ func newBackend(c backendConfig) (*backend, error) {
 // start at their defaults each run.
 func settingsFrom(c config.ClientConfig) ui.Settings {
 	s := ui.Settings{AudioEnabled: c.AudioEnabled, ClipboardSend: c.ClipboardSend, ClipboardReceive: c.ClipboardReceive,
-		AudioVolume: 1, AudioMuted: c.AudioMuted, OpenFullscreen: c.StreamsOpenFullscreen()}
+		SystemKeysCapture: c.SystemKeysCapture, AudioVolume: 1, AudioMuted: c.AudioMuted, OpenFullscreen: c.StreamsOpenFullscreen()}
 	if c.AudioVolume != nil {
 		s.AudioVolume = min(max(*c.AudioVolume, 0), 1)
 	}
@@ -824,6 +828,7 @@ func (b *backend) SaveSettings(s ui.Settings) error {
 	err := config.UpdateClientConfig(b.dir, func(stored *config.ClientConfig) error {
 		stored.AudioEnabled = s.AudioEnabled
 		stored.ClipboardSend, stored.ClipboardReceive = s.ClipboardSend, s.ClipboardReceive
+		stored.SystemKeysCapture = s.SystemKeysCapture
 		stored.AudioMuted = s.AudioMuted
 		stored.AudioVolume = nil
 		if s.AudioVolume != 1 {
@@ -852,6 +857,9 @@ func (b *backend) SaveSettings(s ui.Settings) error {
 		if h != nil {
 			h.SetClipboard(clipboardOf(s))
 		}
+	}
+	if before.SystemKeysCapture != s.SystemKeysCapture && b.onSystemKeys != nil {
+		b.onSystemKeys(s.SystemKeysCapture)
 	}
 	if c != nil && playbackGain(before) != playbackGain(s) {
 		c.SetVolume(playbackGain(s))
