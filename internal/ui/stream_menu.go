@@ -404,8 +404,8 @@ func (a *App) videoGroup(c *mui.Context, m mui.MenuParts, e *overrideEdit, tel T
 		custom = fmt.Sprintf("%d×%d", e.o.CustomWidth, e.o.CustomHeight)
 	}
 	a.knobFlyout(c, m, e, knobResolution, theme.IconResolution, "Resolution", size, map[string][2]string{
-		"auto": {"Auto", "match window"}, "1080p": {"1920 × 1080", ""}, "1440p": {"2560 × 1440", ""},
-		"4k": {"3840 × 2160", "virtual only"}, "custom": {"Custom", custom},
+		"auto": {"Auto", "match window"}, "1080p": {presetLabel(tel.Display, 1080), ""}, "1440p": {presetLabel(tel.Display, 1440), ""},
+		"4k": {presetLabel(tel.Display, 2160), "virtual only"}, "custom": {"Custom", custom},
 	})
 	codec := ""
 	if p != nil {
@@ -422,6 +422,12 @@ func (a *App) videoGroup(c *mui.Context, m mui.MenuParts, e *overrideEdit, tel T
 	vs := e.o.VSyncMode
 	a.flyout(c, m, "VSync", rowParts{icon: theme.IconVSync, value: knobLabel(knobVSync, string(vs))}, "",
 		knobChoices(knobVSync, string(vs), func(v string) { e.o.VSyncMode = defaults.Toggle(v) }), true)
+}
+
+// presetLabel is the size a resolution preset of lines resolves to on a
+// virtual display, at the client display's aspect.
+func presetLabel(d defaults.ClientDisplay, lines int) string {
+	return fmt.Sprintf("%d × %d", defaults.WidthAt(d, lines), lines)
 }
 
 // knobFlyout is a knob's flyout. value is what the stream resolved to,

@@ -4,6 +4,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/encode"
 )
@@ -87,6 +88,25 @@ func TestHardwareLine(t *testing.T) {
 	} {
 		if got := hardwareLine(c.h); got != c.want {
 			t.Errorf("hardwareLine(%+v) = %q, want %q", c.h, got, c.want)
+		}
+	}
+}
+
+// TestPresetLabel: the Resolution presets show the size they resolve to
+// at the client display's aspect, 16:9 when it is unknown.
+func TestPresetLabel(t *testing.T) {
+	for _, c := range []struct {
+		w, h  int
+		lines int
+		want  string
+	}{
+		{1920, 1080, 1080, "1920 × 1080"}, {1920, 1080, 1440, "2560 × 1440"}, {1920, 1080, 2160, "3840 × 2160"},
+		{0, 0, 1440, "2560 × 1440"},
+		{5120, 1440, 1080, "3840 × 1080"}, {5120, 1440, 1440, "5120 × 1440"}, {5120, 1440, 2160, "7680 × 2160"},
+		{3440, 1440, 1080, "2580 × 1080"}, {3440, 1440, 1440, "3440 × 1440"}, {3440, 1440, 2160, "5160 × 2160"},
+	} {
+		if got := presetLabel(defaults.ClientDisplay{WidthPx: c.w, HeightPx: c.h}, c.lines); got != c.want {
+			t.Errorf("%dx%d display, %d lines: %q, want %q", c.w, c.h, c.lines, got, c.want)
 		}
 	}
 }

@@ -314,8 +314,13 @@ func (r *resolver) virtualDisplay() {
 	r.decide("virtualDisplay", value, src, why)
 }
 
-func (r *resolver) widthAt(lines int) int {
-	cw, ch := r.client.Display.WidthPx, r.client.Display.HeightPx
+func (r *resolver) widthAt(lines int) int { return WidthAt(r.client.Display, lines) }
+
+// WidthAt is the even width of a stream lines tall at d's aspect, 16:9
+// when d's size is unknown: the size a resolution preset resolves to on
+// a virtual display.
+func WidthAt(d ClientDisplay, lines int) int {
+	cw, ch := d.WidthPx, d.HeightPx
 	if cw <= 0 || ch <= 0 {
 		cw, ch = 16, 9
 	}

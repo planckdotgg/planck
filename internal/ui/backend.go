@@ -56,7 +56,10 @@ type Telemetry struct {
 	HostID string
 	// Profile is what the host resolved the stream to; nil from a host
 	// that does not resolve streams.
-	Profile   *defaults.ResolvedProfile
+	Profile *defaults.ResolvedProfile
+	// Display is the client display the stream was resolved for, whose
+	// aspect the resolution presets take.
+	Display   defaults.ClientDisplay
 	FPS       float64
 	TargetFPS int
 	// Stage times are p50 over the last second, in milliseconds. TotalMs
