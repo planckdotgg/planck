@@ -15,6 +15,7 @@ import (
 	"github.com/planckdotgg/planck/internal/ui"
 	"github.com/planckdotgg/planck/internal/ui/theme"
 	"github.com/planckdotgg/planck/pkg/decode"
+	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/player"
 	"github.com/planckdotgg/planck/pkg/tailscale"
 )
@@ -35,13 +36,21 @@ func runGUI(o options) error {
 			c.DiscoveryAddr = fmt.Sprintf(":%d", o.discoveryPort)
 			return c
 		},
-		encoders: localEncoders(), logf: logf,
+		encoders: localEncoders(), logf: logf, overrides: o.overrides,
 	})
 	if err != nil {
 		return err
 	}
 	app := ui.NewApp(b)
-	fwd := &inputForwarder{send: b.SendInput}
+	video.stats = func() (session.ClientStats, bool) {
+		c := b.current()
+		if c == nil {
+			return session.ClientStats{}, false
+		}
+		s := c.Stats()
+		return s, s.Connected
+	}
+	fwd := &inputForwarder{send: b.SendInput, onHUD: video.hudEvent}
 	app.SetStreamView(fwd.view)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -54,6 +63,8 @@ func runGUI(o options) error {
 		})
 		video.attach(win)
 		win.OnResize(video.resized)
+		win.OnEnterFullScreen(video.enteredFullScreen)
+		win.OnLeaveFullScreen(video.applyDirect)
 	})
 	err = mygo.App.Run()
 	b.close()
@@ -70,6 +81,9 @@ type videoView struct {
 	// resize tells the presenting thread it changed.
 	size   atomic.Uint64
 	resize atomic.Bool
+	mode   directMode
+	// stats reads the live session for the pill drawn into the video.
+	stats func() (session.ClientStats, bool)
 }
 
 // attach runs on the main thread.
@@ -127,15 +141,19 @@ func (v *videoView) open(cfg decode.Config) (session.Sink, error) {
 	}
 	v.cur.Store(h)
 	v.resize.Store(true)
-	return &surfaceSink{v: v, host: h, p: p}, nil
+	s := &surfaceSink{v: v, host: h, p: p, stop: make(chan struct{})}
+	go v.hudLoop(s, s.stop)
+	return s, nil
 }
 
 // surfaceSink decodes on the session's decode goroutine; the player
 // presents on its own thread.
 type surfaceSink struct {
-	v    *videoView
-	host *surfaceHost
-	p    *player.Player
+	v       *videoView
+	host    *surfaceHost
+	p       *player.Player
+	profile atomic.Pointer[defaults.ResolvedProfile]
+	stop    chan struct{}
 }
 
 func (s *surfaceSink) SetObserver(o player.Observer) { s.p.SetObserver(o) }
@@ -149,9 +167,17 @@ func (s *surfaceSink) Submit(au []byte, pts int64) (player.Timing, error) {
 	return s.p.Submit(au, pts)
 }
 
+// Close leaves direct mode before the surface goes, so the window's own
+// layers composite again.
 func (s *surfaceSink) Close() error {
+	close(s.stop)
 	err := s.p.Close()
 	s.v.cur.CompareAndSwap(s.host, nil)
-	mygo.RunOnMain(s.host.close)
+	mygo.RunOnMain(func() {
+		if s.host.surf.Direct() {
+			_ = s.host.surf.SetDirect(false)
+		}
+		s.host.close()
+	})
 	return err
 }

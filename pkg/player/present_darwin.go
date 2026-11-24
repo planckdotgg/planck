@@ -9,11 +9,17 @@ import (
 
 	"github.com/planckdotgg/planck/pkg/decode"
 	"github.com/planckdotgg/planck/pkg/decode/vt"
+	"github.com/planckdotgg/planck/pkg/encode"
+	_ "github.com/planckdotgg/planck/pkg/pyrowave"
 )
 
-// openDecoder makes a VideoToolbox decoder: its IOSurfaces are shared with
-// the surface's Metal device without a copy.
-func openDecoder(_ *gpusurface.Surface, cfg decode.Config) (decode.Decoder, error) {
+// openDecoder makes a VideoToolbox decoder, whose IOSurfaces are shared
+// with the surface's Metal device without a copy, or for PyroWave a compute
+// decoder on the surface's device and queue.
+func openDecoder(surf *gpusurface.Surface, cfg decode.Config) (decode.Decoder, error) {
+	if cfg.Codec == encode.PyroWave {
+		return decode.Open(decode.Target{Device: surf.Device(), Queue: surf.Queue()}, cfg)
+	}
 	d, err := vt.Open(cfg)
 	if err != nil {
 		return nil, err

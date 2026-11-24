@@ -17,6 +17,7 @@ import (
 
 	"github.com/planckdotgg/planck/pkg/audio"
 	"github.com/planckdotgg/planck/pkg/config"
+	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/encode"
 	"github.com/planckdotgg/planck/pkg/input"
@@ -68,6 +69,13 @@ type HostConfig struct {
 	// Synth streams a generated pattern at Width x Height and FPS on the
 	// Adapter GPU instead of a display, for benchmarks without a monitor.
 	Synth bool
+	// Policy is the host owner's overrides for clients that send their
+	// capabilities; it beats theirs. It is merged over host.json's policy.
+	// Codec through Split above apply to older clients only.
+	Policy defaults.UserOverrides
+	// VDDPrimary makes a session's virtual display the primary one, so
+	// games open on it; off, it extends the desktop.
+	VDDPrimary bool
 
 	// PIN is a fixed pairing PIN; empty generates one that changes after
 	// each pairing.
@@ -81,6 +89,11 @@ type HostConfig struct {
 
 	// OpenVideo replaces DefaultVideoOpener.
 	OpenVideo VideoOpener
+	// Capabilities replaces the probe of this machine's encoders, displays
+	// and virtual display driver. Without it, a host with its own
+	// OpenVideo does not offer wire.FeatureCapabilities: it cannot know
+	// what that pipeline does, so clients get the legacy negotiation.
+	Capabilities func() defaults.HostCapabilities
 	// OpenAudio replaces the platform loopback capturer.
 	OpenAudio func() (audio.Capturer, error)
 	// Injector replaces the platform injector when InjectInput is set.
@@ -134,9 +147,13 @@ type HostStats struct {
 	InputEvents  uint64
 	InputErrors  uint64
 	// Report is the client's last StatsReport.
-	Report    wire.StatsReport
-	Sessions  uint64
-	LastError string
+	Report wire.StatsReport
+	// Profile is what the session resolved to, nil for an older client;
+	// VirtualDisplay is the GDI name of its virtual display, if any.
+	Profile        *defaults.ResolvedProfile
+	VirtualDisplay string
+	Sessions       uint64
+	LastError      string
 }
 
 // Host serves one client at a time; a new client takes over.
@@ -171,6 +188,9 @@ type Host struct {
 	inputErr atomic.Uint64
 
 	inputTrace *tracer[inputTraceRow]
+
+	caps hostCapsCache
+	vdd  vddManager
 }
 
 // NewHost loads or creates the host's identity and paired clients.
@@ -189,6 +209,10 @@ func NewHost(cfg HostConfig) (*Host, error) {
 	}
 	if err := config.SaveHostConfig(dir, stored); err != nil {
 		return nil, err
+	}
+	cfg.Policy = defaults.Merge(stored.Policy, cfg.Policy)
+	if err := cfg.Policy.Validate(); err != nil {
+		return nil, fmt.Errorf("session: host policy: %w", err)
 	}
 	cert, err := config.LoadOrCreateIdentity(stored.CertPath, stored.KeyPath, "planck-host "+stored.HostID)
 	if err != nil {
@@ -301,11 +325,14 @@ func (h *Host) DiscoveryAddr() net.Addr {
 
 // Start listens and serves clients until Stop or ctx ends.
 func (h *Host) Start(ctx context.Context) error {
+	if h.cfg.OpenVideo == nil || h.cfg.Capabilities != nil {
+		h.capabilities()
+	}
 	mediaHost, _, err := net.SplitHostPort(h.cfg.ListenAddr)
 	if err != nil {
 		return err
 	}
-	srv, err := transport.Listen(h.cfg.ListenAddr, transport.ServerConfig{
+	scfg := transport.ServerConfig{
 		Certificate:  h.cert,
 		Name:         h.Name(),
 		Authorize:    h.authorize,
@@ -318,7 +345,11 @@ func (h *Host) Start(ctx context.Context) error {
 			Input:   h.onInput,
 			Control: h.onControl,
 		},
-	})
+	}
+	if h.cfg.OpenVideo == nil || h.cfg.Capabilities != nil {
+		scfg.Capabilities, scfg.Resolve = h.capabilitiesJSON, h.resolve
+	}
+	srv, err := transport.Listen(h.cfg.ListenAddr, scfg)
 	if err != nil {
 		return err
 	}
@@ -598,6 +629,9 @@ func (h *Host) Stop() {
 			st.stop()
 		}
 		h.wg.Wait()
+		if err := h.vdd.close(); err != nil {
+			h.logf("planck: virtual display driver: %v", err)
+		}
 		if h.inject != nil && h.cfg.Injector == nil {
 			h.inject.Close()
 		}

@@ -109,8 +109,8 @@ func TestCompositeUnderContent(t *testing.T) {
 		if len(views) != 2 || views[0] != s.host || views[1] != ui {
 			t.Errorf("content subviews %#x, want [surface view %#x, UI view %#x]", views, s.host, ui)
 		}
-		if got := send(send(send(s.host, "layer"), "sublayers"), "firstObject"); got != s.layer {
-			t.Errorf("the surface view's layer holds %#x, not the surface's layer %#x", got, s.layer)
+		if got := send(s.host, "layer"); got != s.layer {
+			t.Errorf("the surface view hosts layer %#x, not the surface's layer %#x", got, s.layer)
 		}
 		lib.msgSetSize(content, objc.RegisterName("setFrameSize:"), cgSize{640, 480})
 		if f := lib.msgRect(s.host, objc.RegisterName("frame")); f.W != 640 || f.H != 480 {

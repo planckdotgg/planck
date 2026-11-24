@@ -60,3 +60,54 @@ func TestOpenPicksTheFramesGPU(t *testing.T) {
 		t.Fatalf("invalid config: got %v, %v", enc, err)
 	}
 }
+
+func TestOpenPrefersCodecBackend(t *testing.T) {
+	backendsMu.Lock()
+	savedB, savedC := backends, codecs
+	backends, codecs = map[gpu.Vendor]Backend{}, map[Codec]CodecBackend{}
+	backendsMu.Unlock()
+	t.Cleanup(func() { backendsMu.Lock(); backends, codecs = savedB, savedC; backendsMu.Unlock() })
+
+	nv := gpu.Device{Adapter: gpu.Adapter{LUID: 2, Vendor: gpu.VendorNVIDIA, Name: "RTX"}, Handle: 20}
+	Register(Backend{Name: "vendor", Vendor: gpu.VendorNVIDIA, Open: func(dev gpu.Device, cfg Config) (Encoder, error) {
+		return &fake{gpu.Device{}}, nil
+	}})
+	RegisterCodec(CodecBackend{Name: "PyroWave", Codec: PyroWave, Open: func(dev gpu.Device, cfg Config) (Encoder, error) {
+		if err := cfg.Validate(); err != nil {
+			return nil, err
+		}
+		return &fake{dev}, nil
+	}})
+	cfg := Config{Codec: PyroWave, Chroma: NV12, Source: capture.FormatBGRA8, Width: 1920, Height: 1080, FPS: 120, BitrateKbps: 400000, ChunkLen: 1391}
+	enc, err := Open(cfg, nv)
+	if err != nil || enc.(*fake).dev != nv {
+		t.Fatalf("PyroWave: got %v, %v; want the codec backend on the RTX", enc, err)
+	}
+	hevc := cfg
+	hevc.Codec = HEVC
+	if enc, err = Open(hevc, nv); err != nil || enc.(*fake).dev == nv {
+		t.Fatalf("HEVC: got %v, %v; want the vendor backend", enc, err)
+	}
+}
+
+func TestValidatePyroWave(t *testing.T) {
+	ok := Config{Codec: PyroWave, Chroma: YUV444P10, Source: capture.FormatRGB10A2, Width: 2560, Height: 1440, FPS: 120, BitrateKbps: 700000, ChunkLen: 1391}
+	if err := ok.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for name, mod := range map[string]func(*Config){
+		"slices":      func(c *Config) { c.Slices = 4 },
+		"sub-frame":   func(c *Config) { c.Slices, c.SubFrame = 2, true },
+		"chunk":       func(c *Config) { c.ChunkLen = 100 },
+		"nv12 source": func(c *Config) { c.Source = capture.FormatNV12 },
+	} {
+		c := ok
+		mod(&c)
+		if c.Validate() == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	if PyroWave.String() != "PyroWave" {
+		t.Errorf("String() = %q", PyroWave.String())
+	}
+}

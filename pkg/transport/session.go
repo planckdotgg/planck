@@ -10,10 +10,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/quic-go/quic-go"
 	"github.com/planckdotgg/planck/pkg/fec"
 	"github.com/planckdotgg/planck/pkg/ratectl"
 	"github.com/planckdotgg/planck/pkg/wire"
+	"github.com/quic-go/quic-go"
 )
 
 var (
@@ -74,6 +74,8 @@ type SessionStats struct {
 	// InputDuplicates the copies the host dropped.
 	InputResent     uint64
 	InputDuplicates uint64
+	// FramesPartial counts intra frames handed on with chunks missing.
+	FramesPartial uint64
 }
 
 type sentFrame struct {
@@ -101,6 +103,11 @@ type Session struct {
 	// peerFeatures are the wire.Feature bits of the peer's Hello.
 	peerFeatures uint32
 	peerName     string
+	peerCaps     []byte
+	profile      []byte
+	// intra marks a PyroWave stream: every frame decodes alone, so a lost
+	// chunk is delivered as zeros instead of costing a keyframe.
+	intra bool
 
 	udp      *net.UDPConn
 	sealMu   sync.Mutex
@@ -126,6 +133,7 @@ type Session struct {
 	enc       *fec.Encoder
 	emitVideo func([]byte) error
 	policy    *fec.Policy
+	pol       policies
 
 	ringMu sync.Mutex
 	sent   [sentRingSize]sentFrame
@@ -146,6 +154,11 @@ type Session struct {
 	sentPLI   bool
 	pendingFB bool
 
+	pendingInfo   wire.VideoInfo
+	hasPending    bool
+	lastDelivered uint32
+	delivered     bool
+
 	firstSeen [sentRingSize]struct {
 		id uint32
 		at int64
@@ -155,7 +168,7 @@ type Session struct {
 	pingInterval time.Duration
 
 	stats struct {
-		sent, recv, authFail, simDrop, complete, lost, recovered, pliSent, pliRecv, feedback, inputResent, inputDup atomic.Uint64
+		sent, recv, authFail, simDrop, complete, lost, recovered, pliSent, pliRecv, feedback, inputResent, inputDup, partial atomic.Uint64
 	}
 
 	mediaUp     chan struct{}
@@ -183,8 +196,11 @@ type sessionParams struct {
 	rate         ratectl.Config
 	path         ratectl.Path
 	fecPolicy    *fec.Policy
+	parity       ParityProfile
 	peerFeatures uint32
 	peerName     string
+	peerCaps     []byte
+	profile      []byte
 }
 
 func newSession(p sessionParams) (*Session, error) {
@@ -222,6 +238,9 @@ func newSession(p sessionParams) (*Session, error) {
 		h:            p.handlers,
 		peerFeatures: p.peerFeatures,
 		peerName:     p.peerName,
+		peerCaps:     p.peerCaps,
+		profile:      p.profile,
+		intra:        p.ready.Config.Codec == wire.CodecPyroWave,
 		udp:          p.udp,
 		sealer:       sealer,
 		opener:       opener,
@@ -245,6 +264,7 @@ func newSession(p sessionParams) (*Session, error) {
 		if s.policy == nil {
 			s.policy = fec.NewPolicy()
 		}
+		s.pol = newPolicies(s.policy, p.parity)
 		s.rc = ratectl.New(p.rate)
 		s.rc.SetPath(p.path)
 		s.target.Store(int64(s.rc.TargetKbps()))
@@ -336,6 +356,7 @@ func (s *Session) Stats() SessionStats {
 		FeedbackReceived: s.stats.feedback.Load(),
 		InputResent:      s.stats.inputResent.Load(),
 		InputDuplicates:  s.stats.inputDup.Load(),
+		FramesPartial:    s.stats.partial.Load(),
 	}
 }
 
@@ -350,7 +371,7 @@ func (s *Session) SendVideoFrame(info wire.VideoInfo, frame []byte) error {
 	}
 	s.videoMu.Lock()
 	defer s.videoMu.Unlock()
-	_, err := s.enc.EncodeFrame(info, frame, s.policy, s.emitVideo)
+	_, err := s.enc.EncodeFrame(info, frame, s.policyFor(info), s.emitVideo)
 	s.recordSent(info.FrameID, len(frame))
 	return err
 }
@@ -363,7 +384,7 @@ func (s *Session) SendVideoSlice(info wire.VideoInfo, slice int, data []byte) er
 	}
 	s.videoMu.Lock()
 	defer s.videoMu.Unlock()
-	_, err := s.enc.EncodeSlice(info, slice, data, s.policy, s.emitVideo)
+	_, err := s.enc.EncodeSlice(info, slice, data, s.policyFor(info), s.emitVideo)
 	s.recordSent(info.FrameID, len(data))
 	return err
 }
@@ -597,6 +618,14 @@ func (s *Session) handleVideo(plain []byte, now int64) {
 	if fs := &s.firstSeen[res.Info.FrameID%sentRingSize]; fs.id != res.Info.FrameID || fs.at == 0 {
 		fs.id, fs.at = res.Info.FrameID, now
 	}
+	if s.intra {
+		if s.hasPending && newerID(res.Info.FrameID, s.pendingInfo.FrameID) {
+			s.deliverPartial(s.pendingInfo)
+		}
+		if !s.hasPending || newerID(res.Info.FrameID, s.pendingInfo.FrameID) {
+			s.pendingInfo, s.hasPending = res.Info, true
+		}
+	}
 	if res.SliceReady && s.h.VideoSlice != nil {
 		s.h.VideoSlice(VideoSlice{
 			Info:      res.Info,
@@ -612,7 +641,14 @@ func (s *Session) handleVideo(plain []byte, now int64) {
 		return
 	}
 	s.stats.complete.Add(1)
-	if s.h.VideoFrame != nil {
+	late := false
+	if s.intra {
+		late = s.delivered && !newerID(res.Info.FrameID, s.lastDelivered)
+		if !late {
+			s.lastDelivered, s.delivered = res.Info.FrameID, true
+		}
+	}
+	if s.h.VideoFrame != nil && !late {
 		var ok bool
 		s.frameBuf, ok = s.dec.AppendFrame(s.frameBuf[:0], res.Info.FrameID)
 		if ok {
@@ -641,6 +677,9 @@ func (s *Session) onFrameFinal(st fec.FrameStats) {
 	s.finLost = true
 	s.pendingFB = true
 	s.stats.lost.Add(1)
+	if s.intra {
+		return
+	}
 	now := Mono()
 	gap := max(int64(minPLIInterval), 2*int64(s.clock.RTT()))
 	if !s.sentPLI || now-s.lastPLI >= gap {

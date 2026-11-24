@@ -19,7 +19,31 @@ type Backend struct {
 var (
 	backendsMu sync.RWMutex
 	backends   = map[gpu.Vendor]Backend{}
+	codecs     = map[Codec]CodecBackend{}
 )
+
+// CodecBackend opens an encoder for one codec on any vendor's GPU, such as
+// PyroWave's compute shaders.
+type CodecBackend struct {
+	Name  string
+	Codec Codec
+	Open  func(dev gpu.Device, cfg Config) (Encoder, error)
+}
+
+// RegisterCodec makes b the encoder for its codec; Open prefers it to the
+// vendor's backend.
+func RegisterCodec(b CodecBackend) {
+	backendsMu.Lock()
+	defer backendsMu.Unlock()
+	codecs[b.Codec] = b
+}
+
+func codecBackend(c Codec) (CodecBackend, bool) {
+	backendsMu.RLock()
+	defer backendsMu.RUnlock()
+	b, ok := codecs[c]
+	return b, ok
+}
 
 // Register makes b the encoder for its vendor.
 func Register(b Backend) {
@@ -40,7 +64,8 @@ func BackendFor(vendor gpu.Vendor) (Backend, bool) {
 // devices[0] is the capture device (NVIDIA -> NVENC, AMD -> AMF, Intel ->
 // oneVPL, Apple -> VideoToolbox). A non-zero cfg.Adapter picks the device
 // in devices with that LUID instead; the caller then moves each frame to
-// that device before Encode.
+// that device before Encode. A codec with its own backend (RegisterCodec)
+// opens that backend on the chosen device whatever its vendor.
 func Open(cfg Config, devices ...gpu.Device) (Encoder, error) {
 	if len(devices) == 0 {
 		return nil, fmt.Errorf("encode: no device to encode on")
@@ -57,6 +82,13 @@ func Open(cfg Config, devices ...gpu.Device) (Encoder, error) {
 		if !found {
 			return nil, fmt.Errorf("encode: no device given for adapter LUID 0x%x", uint64(cfg.Adapter))
 		}
+	}
+	if cb, ok := codecBackend(cfg.Codec); ok {
+		enc, err := cb.Open(dev, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("encode: %s on %s: %w", cb.Name, dev.Adapter.Name, err)
+		}
+		return enc, nil
 	}
 	b, ok := BackendFor(dev.Adapter.Vendor)
 	if !ok {

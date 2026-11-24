@@ -32,6 +32,11 @@ type VideoParams struct {
 	Split       encode.Split
 	// Synth replaces display capture with generated frames on Adapter's GPU.
 	Synth bool
+	// VirtualDisplay asks for a SudoVDA display of Width x Height at FPS
+	// on Adapter's GPU, captured in place of Display.
+	VirtualDisplay bool
+	// ChunkLen is the shard size PyroWave frames its chunks in.
+	ChunkLen int
 }
 
 // VideoInfo describes an open pipeline.
@@ -174,7 +179,7 @@ func (p *sourcePipe) openEncoder(f capture.Frame) error {
 	cfg := encode.Config{
 		Codec: p.params.Codec, Chroma: p.params.Chroma, Source: f.Format,
 		Width: f.Width &^ 1, Height: f.Height &^ 1, FPS: p.params.FPS, BitrateKbps: p.params.BitrateKbps,
-		Slices: p.params.Slices, SubFrame: p.params.SubFrame, Split: p.params.Split,
+		Slices: p.params.Slices, SubFrame: p.params.SubFrame, Split: p.params.Split, ChunkLen: p.params.ChunkLen,
 	}
 	enc, err := encode.Open(cfg, p.devices...)
 	if errors.Is(err, encode.ErrUnsupported) && (cfg.Slices > 1 || cfg.SubFrame) {
@@ -296,10 +301,14 @@ func codecFromWire(c wire.Codec) encode.Codec {
 		return encode.H264
 	case wire.CodecAV1:
 		return encode.AV1
+	case wire.CodecPyroWave:
+		return encode.PyroWave
 	}
 	return encode.HEVC
 }
 
+// codecToWire maps a legacy request's codec. PyroWave never goes in one:
+// only the capability exchange may choose it.
 func codecToWire(c encode.Codec) wire.Codec {
 	switch c {
 	case encode.H264:
@@ -319,7 +328,7 @@ func chromaToWire(c encode.Chroma) wire.Chroma {
 	return wire.Chroma420
 }
 
-// ParseCodec reads a codec flag value: h264, hevc or av1.
+// ParseCodec reads a codec flag value: h264, hevc, av1 or pyrowave.
 func ParseCodec(s string) (encode.Codec, error) {
 	switch strings.ToLower(s) {
 	case "h264", "avc":
@@ -328,8 +337,10 @@ func ParseCodec(s string) (encode.Codec, error) {
 		return encode.HEVC, nil
 	case "av1":
 		return encode.AV1, nil
+	case "pyrowave":
+		return encode.PyroWave, nil
 	}
-	return 0, fmt.Errorf("session: unknown codec %q (want h264, hevc or av1)", s)
+	return 0, fmt.Errorf("session: unknown codec %q (want h264, hevc, av1 or pyrowave)", s)
 }
 
 // ParseChroma reads a chroma flag value: nv12, p010, yuv444 or yuv444p10.

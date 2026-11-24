@@ -5,10 +5,13 @@ package decode
 
 import (
 	"errors"
+	"fmt"
+	"sync"
 	"time"
 
 	"github.com/planckdotgg/planck/pkg/capture"
 	"github.com/planckdotgg/planck/pkg/encode"
+	"github.com/planckdotgg/planck/pkg/gpu"
 )
 
 // Frame is a decoded picture owned by the decoder until Release.
@@ -45,6 +48,10 @@ type Config struct {
 	Codec         encode.Codec
 	Width, Height int
 	FPS           int
+	// Chroma and ChunkLen describe a PyroWave stream: its sampling and
+	// depth, and the transport shard size its chunks are framed in.
+	Chroma   encode.Chroma
+	ChunkLen int
 }
 
 // Decoder turns access units into GPU pictures.
@@ -55,4 +62,49 @@ type Decoder interface {
 	// Release gives a picture back to the decoder's pool.
 	Release(Frame)
 	Close() error
+}
+
+// Target is the GPU a decoder writes its pictures on: the presenting
+// surface's, so pictures never leave it.
+type Target struct {
+	// Device is an ID3D11Device* on Windows, an id<MTLDevice> on macOS.
+	Device uintptr
+	// Queue is the surface's id<MTLCommandQueue> on macOS, shared so decode
+	// and present run in order without a fence. 0 on Windows.
+	Queue   uintptr
+	Adapter gpu.Adapter
+}
+
+// Backend opens a decoder for one codec on a Target.
+type Backend struct {
+	Name  string
+	Codec encode.Codec
+	Open  func(t Target, cfg Config) (Decoder, error)
+}
+
+var (
+	backendsMu sync.RWMutex
+	backends   = map[encode.Codec]Backend{}
+)
+
+// Register makes b the decoder for its codec.
+func Register(b Backend) {
+	backendsMu.Lock()
+	defer backendsMu.Unlock()
+	backends[b.Codec] = b
+}
+
+// Open opens the decoder registered for cfg.Codec on t.
+func Open(t Target, cfg Config) (Decoder, error) {
+	backendsMu.RLock()
+	b, ok := backends[cfg.Codec]
+	backendsMu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("%w: no decoder registered for %s", ErrUnsupported, cfg.Codec)
+	}
+	d, err := b.Open(t, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("decode: %s: %w", b.Name, err)
+	}
+	return d, nil
 }

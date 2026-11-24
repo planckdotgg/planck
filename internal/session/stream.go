@@ -11,6 +11,7 @@ import (
 
 	"github.com/planckdotgg/planck/pkg/audio"
 	"github.com/planckdotgg/planck/pkg/capture"
+	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/encode"
 	"github.com/planckdotgg/planck/pkg/fec"
 	"github.com/planckdotgg/planck/pkg/ratectl"
@@ -27,11 +28,12 @@ const (
 
 // stream runs one client session: video, audio and their stats.
 type stream struct {
-	h      *Host
-	sess   *transport.Session
-	params VideoParams
-	path   ratectl.Path
-	addr   string
+	h       *Host
+	sess    *transport.Session
+	params  VideoParams
+	profile *defaults.ResolvedProfile
+	path    ratectl.Path
+	addr    string
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -46,6 +48,7 @@ type stream struct {
 
 	mu        sync.Mutex
 	info      VideoInfo
+	vdName    string
 	encodeMs  *window
 	sent      rate
 	parityPct float64
@@ -71,11 +74,48 @@ func newStream(h *Host, sess *transport.Session) *stream {
 		st.addr = ua.String()
 		st.path = ratectl.ClassifyAddr(ua.AddrPort().Addr())
 	}
+	prof, err := ParseProfile(sess.Profile())
+	if err != nil {
+		h.logf("planck: %v; using the legacy config", err)
+	}
+	if prof != nil {
+		st.profile = prof
+		st.params = paramsFromProfile(st.params, prof, sess.ShardSize())
+		h.logf("planck: profile %s %dx%d@%d %d-bit 4:4:4=%v on %s (%s), virtual display %v, %d/%d kbps, slices %d split %v",
+			prof.Codec, prof.Width, prof.Height, prof.FPS, prof.BitDepth, prof.Chroma444, prof.EncodeAdapter.Name, prof.EncoderAPI,
+			prof.VirtualDisplay, prof.BitrateKbps, prof.MaxBitrateKbps, prof.Slices, prof.Split)
+		return st
+	}
 	st.params.Split = h.cfg.Split
 	if st.params.Split == encode.SplitAuto && st.path != ratectl.PathLAN {
 		st.params.Split = encode.SplitOff
 	}
 	return st
+}
+
+// openVirtualDisplay makes the session's virtual display and points the
+// pipeline at it. Without one the stream falls back to the physical
+// display on its own GPU.
+func (st *stream) openVirtualDisplay() (func() error, error) {
+	fp := st.sess.PeerFingerprint()
+	gdi, closeVD, err := st.h.vdd.create(st.params, fp[:], st.h.cfg.VDDPrimary)
+	if err != nil {
+		st.params.VirtualDisplay, st.params.Adapter = false, ""
+		return nil, err
+	}
+	st.params.Display = gdi
+	st.mu.Lock()
+	st.vdName = gdi
+	st.mu.Unlock()
+	st.h.logf("planck: virtual display %s %dx%d@%d on %s", gdi, st.params.Width, st.params.Height, st.params.FPS, st.params.Adapter)
+	return func() error {
+		err := closeVD()
+		st.mu.Lock()
+		st.vdName = ""
+		st.mu.Unlock()
+		st.h.logf("planck: virtual display %s removed (err %v)", gdi, err)
+		return err
+	}, nil
 }
 
 func (st *stream) run(parent context.Context) {
@@ -124,10 +164,17 @@ func (st *stream) videoLoop() {
 		defer revert()
 	}
 	var pipe VideoPipe
+	var closeVD func() error
 	st.trace = newTracer[hostTraceRow](traceHostEnv)
+	// Deferred calls run while a panic unwinds this goroutine, so the
+	// virtual display goes with the session however it ends. A crash
+	// elsewhere stops the driver pings and its watchdog removes it.
 	defer func() {
 		if pipe != nil {
 			pipe.Close()
+		}
+		if closeVD != nil {
+			closeVD()
 		}
 		if err := st.trace.flush(); err != nil {
 			st.h.logf("planck: trace: %v", err)
@@ -147,6 +194,12 @@ func (st *stream) videoLoop() {
 	out := &sliceSender{sess: st.sess, slices: uint8(slices)}
 	emit := out.emit
 	for st.ctx.Err() == nil {
+		if pipe == nil && st.params.VirtualDisplay && closeVD == nil {
+			var err error
+			if closeVD, err = st.openVirtualDisplay(); err != nil {
+				st.h.fail("virtual display: %v; capturing the physical display", err)
+			}
+		}
 		if pipe == nil {
 			p := st.params
 			p.BitrateKbps = kbps
@@ -225,9 +278,12 @@ func (st *stream) videoLoop() {
 		info := wire.VideoInfo{FrameID: frameID, Keyframe: pkt.Keyframe, CaptureTS: captureTS, EncodeTS: transport.Mono()}
 		slot := &st.pts[frameID%ptsRingSize]
 		slot.id, slot.pts = frameID, pkt.PTS
-		if streamed {
+		switch {
+		case streamed:
 			info = out.info
-		} else {
+		case st.params.Codec == encode.PyroWave && len(pkt.SliceEnds) > 0:
+			err = st.sess.SendChunkedFrame(info, pkt.Data, pkt.SliceEnds, pkt.Critical)
+		default:
 			err = st.sess.SendVideoFrame(info, pkt.Data)
 		}
 		frameID++
@@ -384,7 +440,9 @@ func (st *stream) fill(out *HostStats) {
 	out.Video = st.info
 	out.EncodeMs = st.encodeMs.summary()
 	out.FECParityPct = st.parityPct
+	out.VirtualDisplay = st.vdName
 	st.mu.Unlock()
+	out.Profile = st.profile
 }
 
 func abs(v int) int {

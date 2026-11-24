@@ -15,8 +15,8 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/quic-go/quic-go"
 	"github.com/planckdotgg/planck/pkg/wire"
+	"github.com/quic-go/quic-go"
 )
 
 // ControlALPN is the ALPN protocol of the production control connection.

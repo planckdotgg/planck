@@ -14,6 +14,7 @@ import (
 	"github.com/planckdotgg/planck/internal/session"
 	"github.com/planckdotgg/planck/internal/ui"
 	"github.com/planckdotgg/planck/pkg/config"
+	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/encode"
 	"github.com/planckdotgg/planck/pkg/input"
@@ -41,6 +42,8 @@ type backend struct {
 	// routeConfig tunes the route monitor; Settings.PreferLAN sets its
 	// PreferLAN.
 	routeConfig session.RouteConfig
+	// overrides are the command line's, over the stored ones.
+	overrides defaults.UserOverrides
 
 	mu       sync.Mutex
 	onChange func()
@@ -67,6 +70,7 @@ type backendConfig struct {
 	encoders   []ui.EncoderInfo
 	logf       func(string, ...any)
 	route      session.RouteConfig
+	overrides  defaults.UserOverrides
 }
 
 func newBackend(c backendConfig) (*backend, error) {
@@ -83,7 +87,7 @@ func newBackend(c backendConfig) (*backend, error) {
 		return nil, err
 	}
 	b := &backend{dir: dir, name: c.name, finder: c.finder, ts: c.tailscale, openSink: c.openSink, hostConfig: c.hostConfig,
-		encoders: c.encoders, logf: c.logf, routeConfig: c.route, settings: settingsFrom(stored), pinned: stored.PinnedHosts, aliases: stored.HostAliases}
+		encoders: c.encoders, logf: c.logf, routeConfig: c.route, overrides: c.overrides, settings: settingsFrom(stored), pinned: stored.PinnedHosts, aliases: stored.HostAliases}
 	host, err := config.LoadHostConfig(dir)
 	if err != nil {
 		return nil, err
@@ -348,8 +352,12 @@ func (b *backend) dial(ctx context.Context, t session.Target, pin string) error 
 	if old != nil {
 		old.Disconnect()
 	}
+	ov := b.overrides
+	if stored, err := config.LoadClientConfig(b.dir); err == nil {
+		ov = defaults.Merge(stored.OverridesFor(t.HostID), b.overrides)
+	}
 	c, err := session.NewClient(session.ClientConfig{
-		ConfigDir: b.dir, Name: b.name, PIN: pin, NoAudio: !s.AudioEnabled, Quality: quality(s),
+		ConfigDir: b.dir, Name: b.name, PIN: pin, NoAudio: !s.AudioEnabled, Quality: quality(s), Overrides: ov,
 		OpenSink: b.openSink, Tailscale: b.ts, Logf: b.logf, Route: b.route(s),
 	})
 	if err != nil {

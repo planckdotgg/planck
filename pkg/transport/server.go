@@ -12,10 +12,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/quic-go/quic-go"
 	"github.com/planckdotgg/planck/pkg/fec"
 	"github.com/planckdotgg/planck/pkg/ratectl"
 	"github.com/planckdotgg/planck/pkg/wire"
+	"github.com/quic-go/quic-go"
 )
 
 const defaultHandshakeTimeout = 10 * time.Second
@@ -48,6 +48,12 @@ type ServerConfig struct {
 	// Negotiate turns the client's requested config into the accepted one.
 	// Nil accepts the request unchanged.
 	Negotiate func(req wire.SessionConfig) (wire.SessionConfig, error)
+	// Capabilities, when set, offers wire.FeatureCapabilities. With a
+	// client that offers it too, the host sends this JSON after AuthOK,
+	// reads the client's, and settles the session with Resolve instead of
+	// Negotiate.
+	Capabilities func() []byte
+	Resolve      func(ResolveRequest) (ResolveResult, error)
 	// MediaAddr is the local address for media sockets; default ":0".
 	MediaAddr string
 	// MaxDatagram caps sealed media datagrams. Zero takes
@@ -99,7 +105,7 @@ func (sv *Server) Addr() net.Addr { return sv.ln.Addr() }
 
 // SetName changes the host name later handshakes send.
 func (sv *Server) SetName(name string) { sv.name.Store(&name) }
-func (sv *Server) Close() error   { return sv.ln.Close() }
+func (sv *Server) Close() error        { return sv.ln.Close() }
 
 // HandshakeError is a failed handshake of one connection; the server keeps
 // listening.
@@ -151,7 +157,11 @@ func (sv *Server) handshake(parent context.Context, conn *quic.Conn) (*Session, 
 		_ = wire.WriteMessage(ctrl, &wire.Goodbye{Reason: wire.GoodbyeProtocolError, Message: "unsupported version"})
 		return nil, fmt.Errorf("client hello version %d role %d", hello.Version, hello.Role)
 	}
-	if err := wire.WriteMessage(ctrl, &wire.Hello{Version: wire.Version, Role: wire.RoleHost, Name: *sv.name.Load(), Features: wire.FeatureInputDedup}); err != nil {
+	features := wire.FeatureInputDedup
+	if sv.cfg.Capabilities != nil && sv.cfg.Resolve != nil {
+		features |= wire.FeatureCapabilities
+	}
+	if err := wire.WriteMessage(ctrl, &wire.Hello{Version: wire.Version, Role: wire.RoleHost, Name: *sv.name.Load(), Features: features}); err != nil {
 		return nil, err
 	}
 
@@ -160,16 +170,22 @@ func (sv *Server) handshake(parent context.Context, conn *quic.Conn) (*Session, 
 		return nil, err
 	}
 
+	withCaps := features&hello.Features&wire.FeatureCapabilities != 0
+	var peerCaps []byte
+	if withCaps {
+		if err := wire.WriteMessage(ctrl, &wire.Capabilities{Role: wire.RoleHost, JSON: sv.cfg.Capabilities()}); err != nil {
+			return nil, err
+		}
+		var caps *wire.Capabilities
+		if err := readInto(ctrl, &caps); err != nil {
+			return nil, err
+		}
+		peerCaps = caps.JSON
+	}
+
 	var req *wire.SessionConfig
 	if err := readInto(ctrl, &req); err != nil {
 		return nil, err
-	}
-	accepted := *req
-	if sv.cfg.Negotiate != nil {
-		if accepted, err = sv.cfg.Negotiate(*req); err != nil {
-			_ = wire.WriteMessage(ctrl, &wire.Goodbye{Reason: wire.GoodbyeProtocolError, Message: err.Error()})
-			return nil, err
-		}
 	}
 	remote := conn.RemoteAddr().(*net.UDPAddr).AddrPort()
 	path := sv.cfg.Path
@@ -186,6 +202,23 @@ func (sv *Server) handshake(parent context.Context, conn *quic.Conn) (*Session, 
 	shard := maxDgram - AEADOverhead - wire.VideoHeaderLen
 	if shard < 64 {
 		return nil, fmt.Errorf("MaxDatagram %d leaves no room for video shards", maxDgram)
+	}
+	accepted := *req
+	var resolved ResolveResult
+	switch {
+	case withCaps:
+		resolved, err = sv.cfg.Resolve(ResolveRequest{Request: *req, ClientCaps: peerCaps, Path: path,
+			LANDatagram: maxDgram == wire.MaxLANDatagram, Remote: remote})
+		accepted = resolved.Config
+	case sv.cfg.Negotiate != nil:
+		accepted, err = sv.cfg.Negotiate(*req)
+	}
+	if err == nil && accepted.Codec == wire.CodecPyroWave && !withCaps {
+		err = errors.New("PyroWave needs a peer with capabilities")
+	}
+	if err != nil {
+		_ = wire.WriteMessage(ctrl, &wire.Goodbye{Reason: wire.GoodbyeProtocolError, Message: err.Error()})
+		return nil, err
 	}
 	mediaAddr := sv.cfg.MediaAddr
 	if mediaAddr == "" {
@@ -209,6 +242,12 @@ func (sv *Server) handshake(parent context.Context, conn *quic.Conn) (*Session, 
 	}
 
 	rate := sv.cfg.Rate
+	if resolved.MaxKbps > 0 {
+		rate.MaxKbps = resolved.MaxKbps
+	}
+	if resolved.StartKbps > 0 {
+		rate.StartKbps = resolved.StartKbps
+	}
 	if accepted.BitrateKbps > 0 {
 		if rate.MaxKbps <= 0 {
 			rate.MaxKbps = ratectl.DefaultConfig().MaxKbps
@@ -233,8 +272,11 @@ func (sv *Server) handshake(parent context.Context, conn *quic.Conn) (*Session, 
 		rate:         rate,
 		path:         path,
 		fecPolicy:    policy,
+		parity:       resolved.Parity,
 		peerFeatures: hello.Features,
 		peerName:     hello.Name,
+		peerCaps:     peerCaps,
+		profile:      resolved.Profile,
 	})
 	if err != nil {
 		udp.Close()
@@ -243,6 +285,12 @@ func (sv *Server) handshake(parent context.Context, conn *quic.Conn) (*Session, 
 	if err := wire.WriteMessage(ctrl, &ready); err != nil {
 		udp.Close()
 		return nil, err
+	}
+	if withCaps {
+		if err := wire.WriteMessage(ctrl, &wire.Profile{JSON: resolved.Profile}); err != nil {
+			udp.Close()
+			return nil, err
+		}
 	}
 	stop()
 	s.start()
