@@ -124,21 +124,27 @@ const (
 	DockBottom
 )
 
-// OverlayLayout is where the stream overlay was left, in fractions of the
-// stream view, so that another window size keeps it in place.
+// OverlayLayout is where the stream overlay was left, anchored to the
+// stream view's edges or centre, so that another window size keeps it in
+// place.
 type OverlayLayout struct {
 	// Placed is false before the first stream.
 	Placed bool
 	Dock   DockEdge
-	// DockFrac is the docked tab's centre along its edge; ButtonX and
-	// ButtonY are the floating button's centre.
-	DockFrac         float32
-	ButtonX, ButtonY float32
-	Metrics          bool
-	// MetricsX and MetricsY are the metrics window's top-left corner, both
-	// 0 until it was first shown.
+	// DockFrac is the docked tab's centre along its edge, a fraction of
+	// it; ButtonPlace is where the button floats when not docked.
+	DockFrac    float32
+	ButtonPlace Placement
+	Metrics     bool
+	// MetricsPlace is unset until the metrics window was first shown.
+	MetricsPlace   Placement
+	MetricsCompact bool
+	// ButtonX and ButtonY (the button's centre) and MetricsX and MetricsY
+	// (the window's top-left corner) are fractions of the view from layouts
+	// stored before placements; a stream starts from them only when the
+	// placement is unset.
+	ButtonX, ButtonY   float32
 	MetricsX, MetricsY float32
-	MetricsCompact     bool
 }
 
 // WindowHook is the window the client streams in, which the app that

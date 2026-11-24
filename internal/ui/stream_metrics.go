@@ -19,6 +19,9 @@ const (
 	metricsKeepOut = 28
 	metricsSnap    = 20
 	metricsMargin  = 16
+	// metricsSlop is how far a press on the head moves before it drags, so
+	// that a click on its buttons never moves the window.
+	metricsSlop = 4
 	// compactBelow is the view height under which the window opens
 	// compact.
 	compactBelow = 720
@@ -34,8 +37,13 @@ const (
 // sparklines ten times a second.
 type metricsWindow struct {
 	shown, compact, placed bool
-	pos                    mui.Point
-	dragging               bool
+	// at is where the window was left. pos is where it is drawn: at, held
+	// inside the view, or where a drag has it; only a drag's end changes
+	// at. pull is how far a press on the head moved short of metricsSlop.
+	at       Placement
+	pos      mui.Point
+	pull     mui.Point
+	dragging bool
 
 	samples  [5][sparkLen]float32
 	head, n  int
@@ -63,30 +71,34 @@ type metricsText struct {
 func (w *metricsWindow) begin(l OverlayLayout, vw, vh float32) {
 	draws := w.draws
 	*w = metricsWindow{shown: l.Metrics, compact: l.MetricsCompact || vh < compactBelow, draws: draws}
-	if l.MetricsX != 0 || l.MetricsY != 0 {
-		w.placed = true
-		w.pos = mui.Point{X: round32(l.MetricsX * vw), Y: round32(l.MetricsY * vh)}
+	switch {
+	case l.MetricsPlace.set():
+		w.at, w.placed = l.MetricsPlace, true
+	case l.MetricsX != 0 || l.MetricsY != 0:
+		sw, sh := w.size()
+		b := w.bounds(vw, vh, l.Dock)
+		p := clampPoint(mui.Point{X: round32(l.MetricsX * vw), Y: round32(l.MetricsY * vh)}, b)
+		w.at, w.placed = placementAt(p, sw, sh, vw, vh, b, metricsInset), true
 	}
 	if w.shown && !w.placed {
-		w.place(vw)
+		w.place()
 	}
 }
 
-func (w *metricsWindow) store(l *OverlayLayout, vw, vh float32) {
+func (w *metricsWindow) store(l *OverlayLayout) {
 	l.Metrics, l.MetricsCompact = w.shown, w.compact
-	if w.placed && vw > 0 && vh > 0 {
-		l.MetricsX, l.MetricsY = w.pos.X/vw, w.pos.Y/vh
+	if w.placed {
+		l.MetricsPlace = w.at
 	}
 }
 
 // place opens the window top-right, 16 px in.
-func (w *metricsWindow) place(vw float32) {
-	sw, _ := w.size()
-	w.pos = mui.Point{X: vw - metricsMargin - sw, Y: metricsMargin}
+func (w *metricsWindow) place() {
+	w.at = Placement{AnchorX: AnchorEnd, AnchorY: AnchorStart, OffsetX: metricsMargin, OffsetY: metricsMargin}
 	w.placed = true
 }
 
-func (w *metricsWindow) toggle(vw, vh float32) {
+func (w *metricsWindow) toggle(vh float32) {
 	w.shown = !w.shown
 	if !w.shown {
 		return
@@ -95,7 +107,7 @@ func (w *metricsWindow) toggle(vw, vh float32) {
 		w.compact = true
 	}
 	if !w.placed {
-		w.place(vw)
+		w.place()
 	}
 }
 
@@ -252,10 +264,10 @@ func (a *App) metricsView(c *mui.Context, tel Telemetry, now time.Time) {
 		}
 	}
 	b := w.bounds(o.vw, o.vh, o.dock)
-	if !w.dragging {
-		w.pos = clampPoint(w.pos, b)
-	}
 	sw, sh := w.size()
+	if !w.dragging {
+		w.pos = clampPoint(w.at.resolve(o.vw, o.vh, sw, sh), b)
+	}
 	win := mui.Column(c.Key("metrics-window")).Absolute().Left(w.pos.X).Top(w.pos.Y).Size(sw, sh).
 		Radius(theme.RadiusMd).Clip().Background(theme.HUDGlass).Border(1, theme.HUDEdge).
 		Shadow(0, 16, 40, 0, theme.FloatShadow).Label("Metrics")
@@ -271,22 +283,31 @@ func (a *App) metricsView(c *mui.Context, tel Telemetry, now time.Time) {
 	})
 }
 
-// dragMetrics moves the window by its head alone, and pulls it into a
-// corner it is let go near.
+// dragMetrics moves the window by its head alone, pulls it into a corner
+// it is let go near, and anchors it where it rests.
 func (a *App) dragMetrics(head mui.Element, b mui.Rect) {
-	w := &a.ovl.metrics
+	o := &a.ovl
+	w := &o.metrics
 	dx, dy, pressed := head.Dragged()
 	switch {
+	case pressed && w.dragging:
+		w.pos = clampPoint(mui.Point{X: w.pos.X + dx, Y: w.pos.Y + dy}, b)
 	case pressed:
-		if dx != 0 || dy != 0 {
+		w.pull = mui.Point{X: w.pull.X + dx, Y: w.pull.Y + dy}
+		if float32(math.Hypot(float64(w.pull.X), float64(w.pull.Y))) >= metricsSlop {
 			w.dragging = true
-			w.pos = clampPoint(mui.Point{X: w.pos.X + dx, Y: w.pos.Y + dy}, b)
+			w.pos = clampPoint(mui.Point{X: w.pos.X + w.pull.X, Y: w.pos.Y + w.pull.Y}, b)
+			w.pull = mui.Point{}
 		}
 	case w.dragging:
 		w.dragging = false
 		if p := snapCorner(w.pos, b); p != (mui.Point{}) {
 			w.pos = p
 		}
+		sw, sh := w.size()
+		w.at = placementAt(w.pos, sw, sh, o.vw, o.vh, b, metricsInset)
+	default:
+		w.pull = mui.Point{}
 	}
 }
 

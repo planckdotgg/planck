@@ -131,12 +131,40 @@ func settingsFrom(c config.ClientConfig) ui.Settings {
 
 var docks = map[ui.DockEdge]string{ui.DockLeft: "left", ui.DockRight: "right", ui.DockTop: "top", ui.DockBottom: "bottom"}
 
+var anchors = map[ui.Anchor]string{ui.AnchorStart: "start", ui.AnchorCenter: "center", ui.AnchorEnd: "end"}
+
+func anchorFrom(name string) ui.Anchor {
+	for a, n := range anchors {
+		if n == name {
+			return a
+		}
+	}
+	return ui.AnchorNone
+}
+
+func placementFrom(p *config.Placement) ui.Placement {
+	if p == nil {
+		return ui.Placement{}
+	}
+	return ui.Placement{AnchorX: anchorFrom(p.AnchorX), AnchorY: anchorFrom(p.AnchorY),
+		OffsetX: float32(p.OffsetX), OffsetY: float32(p.OffsetY)}
+}
+
+func placementTo(p ui.Placement) *config.Placement {
+	if p.AnchorX == ui.AnchorNone || p.AnchorY == ui.AnchorNone {
+		return nil
+	}
+	return &config.Placement{AnchorX: anchors[p.AnchorX], AnchorY: anchors[p.AnchorY],
+		OffsetX: float64(p.OffsetX), OffsetY: float64(p.OffsetY)}
+}
+
 func layoutFrom(l *config.OverlayLayout) ui.OverlayLayout {
 	if l == nil {
 		return ui.OverlayLayout{}
 	}
-	out := ui.OverlayLayout{Placed: true, DockFrac: float32(l.DockFrac), ButtonX: float32(l.ButtonX), ButtonY: float32(l.ButtonY),
-		Metrics: l.Metrics, MetricsX: float32(l.MetricsX), MetricsY: float32(l.MetricsY), MetricsCompact: l.MetricsCompact}
+	out := ui.OverlayLayout{Placed: true, DockFrac: float32(l.DockFrac), ButtonPlace: placementFrom(l.Button),
+		Metrics: l.Metrics, MetricsPlace: placementFrom(l.MetricsPlace), MetricsCompact: l.MetricsCompact,
+		ButtonX: float32(l.ButtonX), ButtonY: float32(l.ButtonY), MetricsX: float32(l.MetricsX), MetricsY: float32(l.MetricsY)}
 	for e, name := range docks {
 		if name == l.Dock {
 			out.Dock = e
@@ -155,8 +183,9 @@ func (b *backend) OverlayLayout() ui.OverlayLayout {
 func (b *backend) SaveOverlayLayout(l ui.OverlayLayout) error {
 	err := config.UpdateClientConfig(b.dir, func(stored *config.ClientConfig) error {
 		stored.Overlay = &config.OverlayLayout{Dock: docks[l.Dock], DockFrac: float64(l.DockFrac),
-			ButtonX: float64(l.ButtonX), ButtonY: float64(l.ButtonY), Metrics: l.Metrics,
-			MetricsX: float64(l.MetricsX), MetricsY: float64(l.MetricsY), MetricsCompact: l.MetricsCompact}
+			Button: placementTo(l.ButtonPlace), Metrics: l.Metrics, MetricsPlace: placementTo(l.MetricsPlace),
+			MetricsCompact: l.MetricsCompact, ButtonX: float64(l.ButtonX), ButtonY: float64(l.ButtonY),
+			MetricsX: float64(l.MetricsX), MetricsY: float64(l.MetricsY)}
 		return nil
 	})
 	if err != nil {

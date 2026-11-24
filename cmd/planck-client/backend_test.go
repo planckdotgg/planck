@@ -406,3 +406,33 @@ func TestBackendCapabilitiesWindowDisplay(t *testing.T) {
 		t.Fatalf("no window: display %+v, want the probe's %+v", got, want)
 	}
 }
+
+// TestBackendOverlayPlacements: anchored placements come back on the next
+// run, and a client.json from before them hands the UI its fractions with
+// no placement, for the stream to migrate.
+func TestBackendOverlayPlacements(t *testing.T) {
+	dir := t.TempDir()
+	b, _ := newTestBackend(t, dir, nil)
+	l := ui.OverlayLayout{Placed: true, Dock: ui.DockTop, DockFrac: 0.4, Metrics: true,
+		ButtonPlace:  ui.Placement{AnchorX: ui.AnchorEnd, AnchorY: ui.AnchorCenter, OffsetX: 12, OffsetY: -30},
+		MetricsPlace: ui.Placement{AnchorX: ui.AnchorStart, AnchorY: ui.AnchorEnd, OffsetX: 12, OffsetY: 12}}
+	if err := b.SaveOverlayLayout(l); err != nil {
+		t.Fatal(err)
+	}
+	again, _ := newTestBackend(t, dir, nil)
+	if got := again.OverlayLayout(); got != l {
+		t.Fatalf("next run layout %+v, want %+v", got, l)
+	}
+
+	legacy := t.TempDir()
+	cfg := config.DefaultClientConfig()
+	cfg.Overlay = &config.OverlayLayout{ButtonX: 0.9, ButtonY: 0.3, Metrics: true, MetricsX: 0.7, MetricsY: 0.02}
+	if err := config.SaveClientConfig(legacy, cfg); err != nil {
+		t.Fatal(err)
+	}
+	old, _ := newTestBackend(t, legacy, nil)
+	want := ui.OverlayLayout{Placed: true, Metrics: true, ButtonX: 0.9, ButtonY: 0.3, MetricsX: 0.7, MetricsY: 0.02}
+	if got := old.OverlayLayout(); got != want {
+		t.Fatalf("legacy layout %+v, want %+v", got, want)
+	}
+}

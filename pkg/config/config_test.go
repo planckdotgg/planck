@@ -216,3 +216,47 @@ func TestPinnedTLSHandshake(t *testing.T) {
 		t.Fatalf("wrong fingerprint: err = %v, want ErrFingerprintMismatch", err)
 	}
 }
+
+// TestOverlayLayoutPlacementsAndLegacy: a layout stored before placements
+// keeps its fractions for the client to migrate, and one stored with
+// placements writes them alone.
+func TestOverlayLayoutPlacementsAndLegacy(t *testing.T) {
+	dir := t.TempDir()
+	legacy := `{"overlay":{"dock":"left","dockFrac":0.5,"buttonX":0.9,"buttonY":0.3,"metrics":true,"metricsX":0.7,"metricsY":0.02}}`
+	if err := os.WriteFile(filepath.Join(dir, ClientConfigFile), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadClientConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := OverlayLayout{Dock: "left", DockFrac: 0.5, ButtonX: 0.9, ButtonY: 0.3, Metrics: true, MetricsX: 0.7, MetricsY: 0.02}
+	if o := cfg.Overlay; o == nil || *o != want {
+		t.Fatalf("legacy overlay %+v, want %+v", o, want)
+	}
+
+	cfg.Overlay = &OverlayLayout{Dock: "right", DockFrac: 0.25, Metrics: true, MetricsCompact: true,
+		Button:       &Placement{AnchorX: "center", AnchorY: "end", OffsetX: -10.5, OffsetY: 40},
+		MetricsPlace: &Placement{AnchorX: "end", AnchorY: "start", OffsetX: 16, OffsetY: 16}}
+	if err := SaveClientConfig(dir, cfg); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, ClientConfigFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []string{`"buttonX"`, `"buttonY"`, `"metricsX"`, `"metricsY"`} {
+		if strings.Contains(string(raw), s) {
+			t.Errorf("saved %s with placements set: %s", s, raw)
+		}
+	}
+	loaded, err := LoadClientConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := loaded.Overlay
+	if o == nil || o.Button == nil || o.MetricsPlace == nil || *o.Button != *cfg.Overlay.Button || *o.MetricsPlace != *cfg.Overlay.MetricsPlace ||
+		o.Dock != "right" || o.DockFrac != 0.25 || !o.MetricsCompact {
+		t.Fatalf("round trip %+v", o)
+	}
+}

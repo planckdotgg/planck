@@ -96,21 +96,37 @@ type ClientConfig struct {
 	Overlay *OverlayLayout `json:"overlay,omitempty"`
 }
 
-// OverlayLayout places the stream overlay's button and metrics window, in
-// fractions of the stream view so that a new window size keeps them where
-// they were.
+// OverlayLayout places the stream overlay's button and metrics window,
+// anchored to the stream view's edges or centre so that a new window size
+// keeps them where they were.
 type OverlayLayout struct {
 	// Dock is the edge the button is docked to: "left", "right", "top",
-	// "bottom", or "" while it floats at ButtonX, ButtonY, its centre.
-	Dock     string  `json:"dock,omitempty"`
-	DockFrac float64 `json:"dockFrac,omitempty"`
-	ButtonX  float64 `json:"buttonX"`
-	ButtonY  float64 `json:"buttonY"`
-	Metrics  bool    `json:"metrics,omitempty"`
-	// MetricsX and MetricsY are the metrics window's top-left corner.
-	MetricsX       float64 `json:"metricsX"`
-	MetricsY       float64 `json:"metricsY"`
-	MetricsCompact bool    `json:"metricsCompact,omitempty"`
+	// "bottom", or "" while it floats at Button.
+	Dock           string     `json:"dock,omitempty"`
+	DockFrac       float64    `json:"dockFrac,omitempty"`
+	Button         *Placement `json:"button,omitempty"`
+	Metrics        bool       `json:"metrics,omitempty"`
+	MetricsPlace   *Placement `json:"metricsPlace,omitempty"`
+	MetricsCompact bool       `json:"metricsCompact,omitempty"`
+	// ButtonX and ButtonY (the button's centre) and MetricsX and MetricsY
+	// (the window's top-left corner) are fractions of the view, from
+	// layouts stored before Button and MetricsPlace; the client reads them
+	// only when those are missing.
+	ButtonX  float64 `json:"buttonX,omitempty"`
+	ButtonY  float64 `json:"buttonY,omitempty"`
+	MetricsX float64 `json:"metricsX,omitempty"`
+	MetricsY float64 `json:"metricsY,omitempty"`
+}
+
+// Placement is where an overlay widget sits on each axis: AnchorX and
+// AnchorY are "start" (left or top), "center" or "end" (right or bottom),
+// and the offsets are DIPs from that edge to the widget's same edge, or,
+// signed, from the view's centre to the widget's.
+type Placement struct {
+	AnchorX string  `json:"anchorX"`
+	AnchorY string  `json:"anchorY"`
+	OffsetX float64 `json:"offsetX"`
+	OffsetY float64 `json:"offsetY"`
 }
 
 // OverridesFor returns the global overrides with hostID's on top.

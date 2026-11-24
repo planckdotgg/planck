@@ -624,7 +624,7 @@ func (a *App) overlayGroup(c *mui.Context, m mui.MenuParts) {
 		caption = "Compact under a 720 px window"
 	}
 	if switchItem(c, m, "Metrics window", o.metrics.shown, rowParts{icon: theme.IconMetrics, caption: caption}, a.shortcut(false, "M")) {
-		o.metrics.toggle(o.vw, o.vh)
+		o.metrics.toggle(o.vh)
 	}
 	hide := m.Item()
 	menuRow(c, hide, "Hide button", rowParts{icon: theme.IconHide, trailing: func() { badge(c, a.shortcut(false, "P")) }})

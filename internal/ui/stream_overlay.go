@@ -59,8 +59,10 @@ type overlay struct {
 	// btn is the button's top-left corner in the view while it floats or
 	// is popped out of its dock; off is how far a drag moved it from
 	// there, folded into btn once it comes to rest, and fold is set for
-	// the frame that does it.
+	// the frame that does it. btnAt is where it floats when not docked,
+	// which btn follows while it is at rest.
 	btn      mui.Point
+	btnAt    Placement
 	off      mui.Point
 	fold     bool
 	dock     DockEdge
@@ -129,25 +131,39 @@ func (o *overlay) begin(l OverlayLayout, now time.Time, vw, vh float32) {
 	*o = overlay{vw: vw, vh: vh, nearAt: now, saved: l, metrics: o.metrics}
 	o.snapFn = o.snap
 	o.metrics.begin(l, vw, vh)
-	if !l.Placed {
-		o.btn = mui.Point{X: 24, Y: vh/2 - btnSize/2}
+	o.btnAt = Placement{AnchorX: AnchorStart, AnchorY: AnchorCenter, OffsetX: 24}
+	switch {
+	case !l.Placed:
 		o.tipUntil = now.Add(tipFirst)
-		return
+	case l.ButtonPlace.set():
+		o.btnAt = l.ButtonPlace
+	case l.ButtonX != 0 || l.ButtonY != 0:
+		b := btnBounds(vw, vh)
+		p := clampPoint(mui.Point{X: round32(l.ButtonX*vw - btnSize/2), Y: round32(l.ButtonY*vh - btnSize/2)}, b)
+		o.btnAt = placementAt(p, btnSize, btnSize, vw, vh, b, btnInset)
 	}
-	o.dock, o.dockFrac = l.Dock, l.DockFrac
-	o.btn = mui.Point{X: round32(l.ButtonX*vw - btnSize/2), Y: round32(l.ButtonY*vh - btnSize/2)}
+	if l.Placed {
+		o.dock, o.dockFrac = l.Dock, l.DockFrac
+	}
+	o.btn = o.floatAt()
 }
 
-// layout is what the next stream starts from.
+// btnBounds is where the floating button's top-left corner may go.
+func btnBounds(vw, vh float32) mui.Rect {
+	return mui.Rect{X: btnInset, Y: btnInset, W: max(vw-2*btnInset-btnSize, 0), H: max(vh-2*btnInset-btnSize, 0)}
+}
+
+// floatAt is where the button floats at rest: at btnAt, held inside the
+// view.
+func (o *overlay) floatAt() mui.Point {
+	return clampPoint(o.btnAt.resolve(o.vw, o.vh, btnSize, btnSize), btnBounds(o.vw, o.vh))
+}
+
+// layout is what the next stream starts from. It depends on nothing the
+// window's size changes, so a resize stores nothing.
 func (o *overlay) layout() OverlayLayout {
-	l := OverlayLayout{Placed: true, Dock: o.dock, DockFrac: o.dockFrac}
-	if o.vw > 0 && o.vh > 0 {
-		l.ButtonX, l.ButtonY = (o.btn.X+btnSize/2)/o.vw, (o.btn.Y+btnSize/2)/o.vh
-		if o.dock != DockNone {
-			l.ButtonX, l.ButtonY = o.saved.ButtonX, o.saved.ButtonY
-		}
-	}
-	o.metrics.store(&l, o.vw, o.vh)
+	l := OverlayLayout{Placed: true, Dock: o.dock, DockFrac: o.dockFrac, ButtonPlace: o.btnAt}
+	o.metrics.store(&l)
 	return l
 }
 
@@ -423,6 +439,8 @@ func (a *App) bubble(c *mui.Context, now time.Time) mui.Element {
 			_, _, out := o.dockGeom()
 			o.btn = mui.Point{X: out.X, Y: out.Y}
 		}
+	} else if !pressed && o.off == (mui.Point{}) {
+		o.btn = o.floatAt()
 	}
 	// The button sits at btn, where AttachTo sees it, and drags by off.
 	bounds := mui.Rect{X: inset - o.btn.X, Y: inset - o.btn.Y, W: max(o.vw-2*inset-btnSize, 0), H: max(o.vh-2*inset-btnSize, 0)}
@@ -473,6 +491,10 @@ func (a *App) bubble(c *mui.Context, now time.Time) mui.Element {
 	if !pressed && !b.Transitioning() && o.off != (mui.Point{}) {
 		o.btn = mui.Point{X: o.btn.X + o.off.X, Y: o.btn.Y + o.off.Y}
 		o.off, o.fold = mui.Point{}, true
+		if o.dock == DockNone {
+			bb := btnBounds(o.vw, o.vh)
+			o.btnAt = placementAt(clampPoint(o.btn, bb), btnSize, btnSize, o.vw, o.vh, bb, btnInset)
+		}
 		c.Invalidate()
 	}
 	if dragging {
@@ -730,7 +752,7 @@ func (a *App) overlayShortcuts(c *mui.Context) {
 	c.OnWindowShortcut(chord, mui.KeyM, func() {
 		o := &a.ovl
 		o.hidden = false
-		o.metrics.toggle(o.vw, o.vh)
+		o.metrics.toggle(o.vh)
 	})
 	c.OnWindowShortcut(chord, mui.KeyU, func() { go a.ToggleMic() })
 	c.OnWindowShortcut(chord, mui.KeyF, a.toggleFullscreen)
