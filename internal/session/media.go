@@ -9,6 +9,7 @@ import (
 	"github.com/planckdotgg/planck/pkg/capture"
 	"github.com/planckdotgg/planck/pkg/encode"
 	"github.com/planckdotgg/planck/pkg/gpu"
+	"github.com/planckdotgg/planck/pkg/input"
 	"github.com/planckdotgg/planck/pkg/transport"
 	"github.com/planckdotgg/planck/pkg/wire"
 )
@@ -49,6 +50,22 @@ type VideoInfo struct {
 	// GPUPriority is the encoding device's GPU thread priority, -7 to 7.
 	GPUPriority int
 	Source      string
+	// Display is where the captured display sits on the host's desktop,
+	// and Desktop the bounds of every display, for absolute pointer moves;
+	// zero where the source is no display or the platform does not say.
+	Display, Desktop input.Rect
+}
+
+// inputArea is d's place on the desktop and the bounds of all the
+// displays together, as Windows lays out its virtual desktop.
+func inputArea(d capture.Display, all []capture.Display) (display, desktop input.Rect) {
+	display = input.Rect{X: d.X, Y: d.Y, W: d.Width, H: d.Height}
+	x0, y0, x1, y1 := d.X, d.Y, d.X+d.Width, d.Y+d.Height
+	for _, o := range all {
+		x0, y0 = min(x0, o.X), min(y0, o.Y)
+		x1, y1 = max(x1, o.X+o.Width), max(y1, o.Y+o.Height)
+	}
+	return display, input.Rect{X: x0, Y: y0, W: x1 - x0, H: y1 - y0}
 }
 
 // VideoPipe is one open capture-to-bitstream pipeline.

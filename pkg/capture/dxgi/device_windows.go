@@ -154,6 +154,8 @@ func describe(o win.Output, info gpu.Adapter) (capture.Display, bool) {
 		ID:      desc.Name(),
 		Name:    desc.Name(),
 		Adapter: info,
+		X:       int(r.Left),
+		Y:       int(r.Top),
 		Width:   int(r.Right - r.Left),
 		Height:  int(r.Bottom - r.Top),
 		Primary: r.Left == 0 && r.Top == 0,

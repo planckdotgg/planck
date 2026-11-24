@@ -80,6 +80,9 @@ type Display struct {
 	ID      string
 	Name    string
 	Adapter gpu.Adapter
+	// X and Y are the display's top-left corner on the desktop, in pixels
+	// (Windows; 0, 0 for the primary display).
+	X, Y    int
 	Width   int
 	Height  int
 	Refresh float64

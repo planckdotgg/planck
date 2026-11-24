@@ -365,6 +365,7 @@ func (st *stream) videoLoop() {
 			st.mu.Lock()
 			st.info = info
 			st.mu.Unlock()
+			st.h.targetInput(info)
 			st.h.logf("planck: video %s %dx%d@%d on %s (%s), power %s, GPU priority %d", info.Codec, info.Width, info.Height, info.FPS,
 				info.Adapter.Name, info.Source, info.Power, info.GPUPriority)
 			forceKey = true

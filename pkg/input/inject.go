@@ -27,6 +27,30 @@ func scaleAbs(v uint16, origin, size float64) float64 {
 
 func clamp(v, lo, hi float64) float64 { return math.Max(lo, math.Min(hi, v)) }
 
+// Rect is a display's place on the host's desktop, in physical pixels.
+type Rect struct{ X, Y, W, H int }
+
+// Targeter is an injector whose absolute moves can cover one display of a
+// desktop of several: display within desktop, the bounds of every display
+// together. A zero display covers the primary display.
+type Targeter interface {
+	SetTarget(display, desktop Rect)
+}
+
+// virtualDeskAbs maps v, normalized 0..65535 across a display of size
+// pixels at origin, to the normalized coordinate across a desktop of
+// dsize pixels at dorigin that lands on the same pixel. It aims at the
+// pixel's centre, so that Windows lands there whether it truncates or
+// rounds the coordinate back to a pixel.
+func virtualDeskAbs(v uint16, origin, size, dorigin, dsize int) int32 {
+	if size <= 0 || dsize <= 0 {
+		return int32(v)
+	}
+	px := math.Round(scaleAbs(v, float64(origin), float64(size)))
+	n := (px - float64(dorigin) + 0.5) * 65536 / float64(dsize)
+	return int32(clamp(math.Floor(n), 0, 65535))
+}
+
 // wheelAccum turns WheelNotch-unit deltas into whole lines, carrying the
 // remainder so high-resolution scrolling is not lost.
 type wheelAccum struct{ rem int32 }

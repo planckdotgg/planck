@@ -4,6 +4,7 @@ package input
 
 import (
 	"fmt"
+	"sync"
 	"syscall"
 	"unsafe"
 )
@@ -18,18 +19,19 @@ const (
 	keyeventfKeyUp       = 0x0002
 	keyeventfScanCode    = 0x0008
 
-	mouseeventfMove       = 0x0001
-	mouseeventfLeftDown   = 0x0002
-	mouseeventfLeftUp     = 0x0004
-	mouseeventfRightDown  = 0x0008
-	mouseeventfRightUp    = 0x0010
-	mouseeventfMiddleDown = 0x0020
-	mouseeventfMiddleUp   = 0x0040
-	mouseeventfXDown      = 0x0080
-	mouseeventfXUp        = 0x0100
-	mouseeventfWheel      = 0x0800
-	mouseeventfHWheel     = 0x1000
-	mouseeventfAbsolute   = 0x8000
+	mouseeventfMove        = 0x0001
+	mouseeventfLeftDown    = 0x0002
+	mouseeventfLeftUp      = 0x0004
+	mouseeventfRightDown   = 0x0008
+	mouseeventfRightUp     = 0x0010
+	mouseeventfMiddleDown  = 0x0020
+	mouseeventfMiddleUp    = 0x0040
+	mouseeventfXDown       = 0x0080
+	mouseeventfXUp         = 0x0100
+	mouseeventfWheel       = 0x0800
+	mouseeventfHWheel      = 0x1000
+	mouseeventfVirtualDesk = 0x4000
+	mouseeventfAbsolute    = 0x8000
 
 	xbutton1 = 1
 	xbutton2 = 2
@@ -59,11 +61,36 @@ type inputRecord struct {
 }
 
 // SendInputInjector injects keyboard and mouse input with SendInput.
-// Absolute moves cover the primary monitor. Gamepads need a virtual
-// controller driver (ViGEmBus) that is not wired in yet, so they return
-// ErrUnsupported.
+// Absolute moves cover the display SetTarget names, the primary one until
+// then. Gamepads need a virtual controller driver (ViGEmBus) that is not
+// wired in yet, so they return ErrUnsupported.
 type SendInputInjector struct {
 	in inputRecord
+
+	mu               sync.Mutex
+	display, desktop Rect
+}
+
+// SetTarget makes absolute moves cover display, within the desktop of
+// every display: SendInput then normalizes them across the virtual
+// desktop (MOUSEEVENTF_VIRTUALDESK). A zero display goes back to the
+// primary one. Safe from any goroutine.
+func (s *SendInputInjector) SetTarget(display, desktop Rect) {
+	s.mu.Lock()
+	s.display, s.desktop = display, desktop
+	s.mu.Unlock()
+}
+
+// absMove is the MOUSEINPUT of an absolute move to m.
+func (s *SendInputInjector) absMove(m MouseMoveAbs) (dx, dy int32, flags uint32) {
+	s.mu.Lock()
+	d, v := s.display, s.desktop
+	s.mu.Unlock()
+	if d.W <= 0 || d.H <= 0 || v.W <= 0 || v.H <= 0 {
+		return int32(m.X), int32(m.Y), mouseeventfMove | mouseeventfAbsolute
+	}
+	return virtualDeskAbs(m.X, d.X, d.W, v.X, v.W), virtualDeskAbs(m.Y, d.Y, d.H, v.Y, v.H),
+		mouseeventfMove | mouseeventfAbsolute | mouseeventfVirtualDesk
 }
 
 func NewInjector() (*SendInputInjector, error) {
@@ -137,7 +164,8 @@ func (s *SendInputInjector) Inject(ev Event) error {
 	case TypeKey:
 		return s.key(ev.Key)
 	case TypeMouseMoveAbs:
-		return s.mouse(int32(ev.MouseAbs.X), int32(ev.MouseAbs.Y), 0, mouseeventfMove|mouseeventfAbsolute)
+		dx, dy, flags := s.absMove(ev.MouseAbs)
+		return s.mouse(dx, dy, 0, flags)
 	case TypeMouseMoveRel:
 		return s.mouse(int32(ev.MouseRel.DX), int32(ev.MouseRel.DY), 0, mouseeventfMove)
 	case TypeMouseButton:
@@ -161,4 +189,7 @@ func (s *SendInputInjector) Inject(ev Event) error {
 
 func (s *SendInputInjector) Close() error { return nil }
 
-var _ Injector = (*SendInputInjector)(nil)
+var (
+	_ Injector = (*SendInputInjector)(nil)
+	_ Targeter = (*SendInputInjector)(nil)
+)

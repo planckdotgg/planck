@@ -606,6 +606,18 @@ func (h *Host) onInput(in wire.Input) {
 	}
 }
 
+// targetInput points the injector's absolute moves at the display a newly
+// opened pipe captures: a virtual display, one that changed size or
+// place, or the physical one.
+func (h *Host) targetInput(info VideoInfo) {
+	if t, ok := h.inject.(input.Targeter); ok {
+		t.SetTarget(info.Display, info.Desktop)
+		if info.Display.W > 0 {
+			h.logf("planck: input on %+v of desktop %+v", info.Display, info.Desktop)
+		}
+	}
+}
+
 func (h *Host) traceInput(in wire.Input, recv int64) {
 	h.mu.Lock()
 	st := h.cur

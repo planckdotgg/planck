@@ -61,11 +61,10 @@ func openDisplay(p VideoParams) (VideoPipe, error) {
 	}
 	p.FPS = fps
 	prio := win.Device{Object: win.ObjectAt(src.Device.Handle)}.RaiseGPUThreadPriority()
-	return &sourcePipe{
-		src: src, devices: []gpu.Device{src.Device}, params: p, power: power,
-		info: VideoInfo{Width: src.Display.Width, Height: src.Display.Height, FPS: fps, Codec: p.Codec, Chroma: p.Chroma,
-			Adapter: src.Device.Adapter, Power: power.Mode, GPUPriority: prio, Source: "display " + d.ID},
-	}, nil
+	info := VideoInfo{Width: src.Display.Width, Height: src.Display.Height, FPS: fps, Codec: p.Codec, Chroma: p.Chroma,
+		Adapter: src.Device.Adapter, Power: power.Mode, GPUPriority: prio, Source: "display " + d.ID}
+	info.Display, info.Desktop = inputArea(d, all)
+	return &sourcePipe{src: src, devices: []gpu.Device{src.Device}, params: p, power: power, info: info}, nil
 }
 
 func pickAdapter(match string) (gpu.Adapter, error) {
