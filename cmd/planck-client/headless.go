@@ -251,10 +251,10 @@ func kindAllowed(m pathMode) func(discovery.PathKind) bool {
 // headlessTarget is -connect's address, or the paths -discover found.
 func headlessTarget(ctx context.Context, o options, ts tailnet, logf func(string, ...any)) (session.Target, error) {
 	if o.connect != "" {
-		t, _ := identify(ctx, o.connect)
+		t, _ := identify(ctx, o.connect, o.discoveryPort)
 		return t, nil
 	}
-	f := newFinder(fmt.Sprintf(":%d", discovery.DefaultPort), ts, nil, logf)
+	f := newFinder(fmt.Sprintf(":%d", o.discoveryPort), ts, nil, logf)
 	if len(o.discoveryAddrs) > 0 {
 		f = newFinder("", nil, o.discoveryAddrs, logf)
 	}

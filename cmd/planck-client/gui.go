@@ -15,7 +15,6 @@ import (
 	"github.com/planckdotgg/planck/internal/ui"
 	"github.com/planckdotgg/planck/internal/ui/theme"
 	"github.com/planckdotgg/planck/pkg/decode"
-	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/player"
 	"github.com/planckdotgg/planck/pkg/tailscale"
 )
@@ -26,13 +25,14 @@ func runGUI(o options) error {
 	}
 	logf := log.Printf
 	ts := tailscale.New()
-	f := newFinder(fmt.Sprintf(":%d", discovery.DefaultPort), ts, nil, logf)
+	f := newFinder(fmt.Sprintf(":%d", o.discoveryPort), ts, nil, logf)
 	video := &videoView{logf: logf}
 	b, err := newBackend(backendConfig{
 		dir: o.configDir, name: o.name, finder: f, tailscale: ts, openSink: video.open,
 		hostConfig: func(s ui.Settings) session.HostConfig {
 			c := session.DefaultHostConfig()
-			c.ConfigDir, c.Name, c.Adapter, c.InjectInput, c.Logf = o.configDir, o.name, s.Encoder, true, logf
+			c.ConfigDir, c.Adapter, c.InjectInput, c.Logf = o.configDir, s.Encoder, true, logf
+			c.DiscoveryAddr = fmt.Sprintf(":%d", o.discoveryPort)
 			return c
 		},
 		encoders: localEncoders(), logf: logf,

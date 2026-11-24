@@ -1,12 +1,14 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"net"
 	"net/netip"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,9 +34,13 @@ const (
 // finder keeps the hosts heard on the LAN, found on the tailnet, or
 // probed at fixed discovery addresses, with every path to each.
 type finder struct {
-	// lanAddr is where LAN beacons are heard; empty listens nowhere.
+	// lanAddr is where LAN beacons are heard and from where the LAN is
+	// probed; empty does neither.
 	lanAddr string
-	ts      tailnet
+	// port is the hosts' discovery port, probed on the LAN and the
+	// tailnet.
+	port uint16
+	ts   tailnet
 	// probe are discovery addresses probed on each refresh.
 	probe []netip.AddrPort
 	logf  func(string, ...any)
@@ -50,12 +56,27 @@ type finder struct {
 // found is one host: its last beacon and the paths it answered on.
 type found struct {
 	beacon discovery.Beacon
-	paths  map[netip.AddrPort]discovery.Announcement
+	paths  map[netip.AddrPort]foundPath
 	seen   time.Time
 }
 
+type foundPath struct {
+	discovery.Announcement
+	seen time.Time
+}
+
+// newFinder listens on lanAddr; the discovery port is lanAddr's, or
+// discovery.DefaultPort.
 func newFinder(lanAddr string, ts tailnet, probe []netip.AddrPort, logf func(string, ...any)) *finder {
-	return &finder{lanAddr: lanAddr, ts: ts, probe: probe, logf: logf, refresh: make(chan struct{}, 1), hosts: map[string]*found{}}
+	port := uint16(discovery.DefaultPort)
+	if ap, err := netip.ParseAddrPort(lanAddr); err == nil {
+		port = ap.Port()
+	} else if _, p, err := net.SplitHostPort(lanAddr); err == nil {
+		if n, err := strconv.ParseUint(p, 10, 16); err == nil && n > 0 {
+			port = uint16(n)
+		}
+	}
+	return &finder{lanAddr: lanAddr, port: port, ts: ts, probe: probe, logf: logf, refresh: make(chan struct{}, 1), hosts: map[string]*found{}}
 }
 
 // subscribe sets what runs whenever the hosts or the tailnet change.
@@ -121,6 +142,11 @@ func (f *finder) probeAll(ctx context.Context) {
 			}
 		})
 	}
+	if f.lanAddr != "" {
+		dst := discovery.BroadcastAddrs(f.port)
+		slices.SortFunc(dst, netip.AddrPort.Compare)
+		wg.Go(func() { _ = discovery.ProbeAll(ctx, slices.Compact(dst), f.add) })
+	}
 	if f.ts != nil {
 		wg.Go(func() {
 			st, err := f.ts.Status(ctx)
@@ -134,7 +160,7 @@ func (f *finder) probeAll(ctx context.Context) {
 				f.changed()
 				return
 			}
-			found, _ := discovery.ProbeTailscale(ctx, fixedStatus{st}, discovery.DefaultPort)
+			found, _ := discovery.ProbeTailscale(ctx, fixedStatus{st}, f.port)
 			for _, a := range found {
 				f.add(a)
 			}
@@ -166,18 +192,25 @@ func (f *finder) add(a discovery.Announcement) {
 	if a.Beacon.HostID == "" {
 		return
 	}
+	now := time.Now()
 	f.mu.Lock()
 	h := f.hosts[a.Beacon.HostID]
 	if h == nil {
-		h = &found{paths: map[netip.AddrPort]discovery.Announcement{}}
+		h = &found{paths: map[netip.AddrPort]foundPath{}}
 		f.hosts[a.Beacon.HostID] = h
 	}
-	_, known := h.paths[a.Addr]
-	h.beacon, h.seen = a.Beacon, time.Now()
-	h.paths[a.Addr] = a
+	old, known := h.paths[a.Addr]
+	changed := !known || now.Sub(old.seen) >= onlineFor || !slices.Equal(h.beacon.GPUs, a.Beacon.GPUs) ||
+		h.beacon.Name != a.Beacon.Name || h.beacon.OS != a.Beacon.OS || h.beacon.ControlPort != a.Beacon.ControlPort
+	if a.RTT == 0 && known {
+		// A beacon has no round trip; keep the last probe's.
+		a.RTT = old.RTT
+	}
+	h.beacon, h.seen = a.Beacon, now
+	h.paths[a.Addr] = foundPath{a, now}
 	fn := f.onChange
 	f.mu.Unlock()
-	if !known && fn != nil {
+	if changed && fn != nil {
 		fn()
 	}
 }
@@ -187,9 +220,13 @@ type hostView struct {
 	Beacon discovery.Beacon
 	Online bool
 	// Best is the path a race would try first: the best kind, then the
-	// lowest round trip.
+	// lowest round trip, among the paths heard lately if any.
 	Best       discovery.Announcement
 	Candidates []discovery.Candidate
+	// LAN and Tailscale are the best path of each kind, zero if none;
+	// LANOnline and TailscaleOnline say the host answered on it lately.
+	LAN, Tailscale             discovery.Announcement
+	LANOnline, TailscaleOnline bool
 	// SameUser tells that the host is a device of this machine's own
 	// Tailscale user.
 	SameUser bool
@@ -211,18 +248,53 @@ func (f *finder) list() []hostView {
 
 func (f *finder) view(h *found) hostView {
 	v := hostView{Beacon: h.beacon, Online: time.Since(h.seen) < onlineFor}
-	first := true
-	for _, a := range h.paths {
-		v.Candidates = append(v.Candidates, a.Candidate())
-		if first || a.Kind < v.Best.Kind || a.Kind == v.Best.Kind && a.RTT < v.Best.RTT {
-			v.Best, first = a, false
+	paths := make([]foundPath, 0, len(h.paths))
+	for _, p := range h.paths {
+		paths = append(paths, p)
+	}
+	// Online paths first, then by kind, round trip and address, so the
+	// choices below do not depend on map order.
+	slices.SortFunc(paths, func(a, b foundPath) int {
+		ao, bo := time.Since(a.seen) < onlineFor, time.Since(b.seen) < onlineFor
+		switch {
+		case ao != bo && ao:
+			return -1
+		case ao != bo:
+			return 1
+		case a.Kind != b.Kind:
+			return int(a.Kind) - int(b.Kind)
+		case a.RTT != b.RTT:
+			return cmp.Compare(a.RTT, b.RTT)
 		}
-		if f.sameUser(a.Addr.Addr()) {
+		return a.Addr.Compare(b.Addr)
+	})
+	for i, p := range paths {
+		online := time.Since(p.seen) < onlineFor
+		if i == 0 {
+			v.Best = p.Announcement
+		}
+		v.Candidates = append(v.Candidates, p.Candidate())
+		if p.Kind == discovery.PathLANDirect {
+			if !v.LAN.Addr.IsValid() {
+				v.LAN, v.LANOnline = p.Announcement, online
+			}
+		} else if !v.Tailscale.Addr.IsValid() {
+			v.Tailscale, v.TailscaleOnline = p.Announcement, online
+		}
+		if f.sameUser(p.Addr.Addr()) {
 			v.SameUser = true
 		}
 	}
 	slices.SortFunc(v.Candidates, func(a, b discovery.Candidate) int { return a.Addr.Compare(b.Addr) })
 	return v
+}
+
+// controlAddr is the host's control address on a's path, or "" for none.
+func controlAddr(a discovery.Announcement) string {
+	if !a.Addr.IsValid() {
+		return ""
+	}
+	return netip.AddrPortFrom(a.Addr.Addr(), a.Beacon.ControlPort).String()
 }
 
 func (f *finder) sameUser(ip netip.Addr) bool {
@@ -300,10 +372,10 @@ func (f *finder) match(query string, keep func(discovery.PathKind) bool) (hostVi
 }
 
 // identify makes a target of an address typed in. A host that answers
-// discovery on its IP says who it is, so the pin keys its ID and the
-// pairing screen shows its fingerprint; the name is the host's, or the
+// discovery on its IP and port says who it is, so the pin keys its ID and
+// the pairing screen shows its fingerprint; the name is the host's, or the
 // address.
-func identify(ctx context.Context, addr string) (session.Target, string) {
+func identify(ctx context.Context, addr string, port uint16) (session.Target, string) {
 	addr = withDefaultPort(strings.TrimSpace(addr))
 	t := session.Target{Addr: addr}
 	host, _, err := net.SplitHostPort(addr)
@@ -316,7 +388,7 @@ func identify(ctx context.Context, addr string) (session.Target, string) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancel()
-	b, _, err := discovery.Probe(ctx, netip.AddrPortFrom(ip, discovery.DefaultPort))
+	b, _, err := discovery.Probe(ctx, netip.AddrPortFrom(ip, port))
 	if err != nil {
 		return t, addr
 	}

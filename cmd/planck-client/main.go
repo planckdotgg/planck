@@ -18,6 +18,7 @@ import (
 
 	"github.com/planckdotgg/planck/internal/session"
 	"github.com/planckdotgg/planck/pkg/config"
+	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/encode"
 )
 
@@ -57,6 +58,9 @@ type options struct {
 	json           bool
 	pathMode       pathMode
 	timeout        time.Duration
+	// discoveryPort is where hosts answer discovery, on the LAN and the
+	// tailnet.
+	discoveryPort uint16
 }
 
 func main() {
@@ -89,6 +93,7 @@ func parseOptions(args []string, out io.Writer) (options, error) {
 	fs.BoolVar(&o.headless, "headless", false, "connect without a window, decode for -duration and print a summary")
 	fs.StringVar(&o.connect, "connect", "", "headless: host address, host[:port]")
 	fs.StringVar(&o.discover, "discover", "", "headless: find the host by name or host ID on the LAN and tailnet, and race its paths")
+	discoveryPort := fs.Uint("discovery-port", discovery.DefaultPort, "the hosts' discovery port, listened on for LAN beacons and probed on the LAN and the tailnet")
 	fs.StringVar(&probe, "discovery-addrs", "", "headless: comma-separated discovery addresses (host:port) to probe instead of listening on the LAN and tailnet")
 	fs.StringVar(&o.pin, "pin", "", "the host's 6-digit pairing PIN, needed the first time unless both devices are one Tailscale user's")
 	fs.DurationVar(&o.duration, "duration", 10*time.Second, "headless: how long to stream")
@@ -138,8 +143,12 @@ func parseOptions(args []string, out io.Writer) (options, error) {
 		o.discoveryAddrs = append(o.discoveryAddrs, ap)
 	}
 	if o.name == "" {
-		o.name, _ = os.Hostname()
+		o.name = config.Hostname()
 	}
+	if *discoveryPort == 0 || *discoveryPort > 65535 {
+		return o, fmt.Errorf("-discovery-port %d out of range", *discoveryPort)
+	}
+	o.discoveryPort = uint16(*discoveryPort)
 	switch {
 	case o.pin != "" && (len(o.pin) != 6 || strings.Trim(o.pin, "0123456789") != ""):
 		return o, fmt.Errorf("-pin %q: want 6 digits", o.pin)

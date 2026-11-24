@@ -37,6 +37,7 @@ type fakeBackend struct {
 	disconnects   int
 	keyframes     int
 	refreshes     int
+	renames       [][2]string
 }
 
 func newFake() *fakeBackend {
@@ -81,6 +82,12 @@ func (f *fakeBackend) Connect(ctx context.Context, target string) error {
 		f.mu.Unlock()
 		return ctx.Err()
 	}
+}
+
+func (f *fakeBackend) RenameHost(id, alias string) error {
+	defer f.lock()()
+	f.renames = append(f.renames, [2]string{id, alias})
+	return nil
 }
 
 func (f *fakeBackend) SetHosting(ctx context.Context, on bool) error {

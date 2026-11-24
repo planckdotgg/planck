@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -37,6 +38,9 @@ type backend struct {
 	hostConfig func(s ui.Settings) session.HostConfig
 	encoders   []ui.EncoderInfo
 	logf       func(string, ...any)
+	// routeConfig tunes the route monitor; Settings.PreferLAN sets its
+	// PreferLAN.
+	routeConfig session.RouteConfig
 
 	mu       sync.Mutex
 	onChange func()
@@ -49,6 +53,9 @@ type backend struct {
 	pairTo   session.Target
 	host     *session.Host
 	hosting  ui.HostingState
+	aliases  map[string]string
+	// connected is the pin key of the host streaming now.
+	connected string
 }
 
 type backendConfig struct {
@@ -59,6 +66,7 @@ type backendConfig struct {
 	hostConfig func(ui.Settings) session.HostConfig
 	encoders   []ui.EncoderInfo
 	logf       func(string, ...any)
+	route      session.RouteConfig
 }
 
 func newBackend(c backendConfig) (*backend, error) {
@@ -75,8 +83,16 @@ func newBackend(c backendConfig) (*backend, error) {
 		return nil, err
 	}
 	b := &backend{dir: dir, name: c.name, finder: c.finder, ts: c.tailscale, openSink: c.openSink, hostConfig: c.hostConfig,
-		encoders: c.encoders, logf: c.logf, settings: settingsFrom(stored), pinned: stored.PinnedHosts}
-	b.finder.subscribe(b.changed)
+		encoders: c.encoders, logf: c.logf, routeConfig: c.route, settings: settingsFrom(stored), pinned: stored.PinnedHosts, aliases: stored.HostAliases}
+	host, err := config.LoadHostConfig(dir)
+	if err != nil {
+		return nil, err
+	}
+	b.settings.HostName = host.Name
+	b.finder.subscribe(func() {
+		b.syncPins()
+		b.changed()
+	})
 	return b, nil
 }
 
@@ -104,59 +120,198 @@ func (b *backend) changed() {
 	}
 }
 
-// Hosts lists the hosts found and the paired hosts not found, which show
-// offline.
+// Hosts lists every host once: the hosts found, with their paired
+// record's routes, and the paired hosts not found, offline. A pin made
+// by address joins the host found with its certificate.
 func (b *backend) Hosts() []ui.HostInfo {
 	b.mu.Lock()
-	pinned := b.pinned
+	pinned, aliases, connected := b.pinned, b.aliases, b.connected
 	b.mu.Unlock()
+	cardOf := map[string]string{}
 	var out []ui.HostInfo
-	seen := map[string]bool{}
 	for _, v := range b.finder.list() {
-		_, paired := pinned[v.Beacon.HostID]
+		id := v.Beacon.HostID
+		p, paired := pinned[id]
+		cardOf[id] = id
+		for key, q := range pinned {
+			if strings.HasPrefix(key, "addr:") && strings.EqualFold(q.CertFingerprint, v.Beacon.CertFingerprint) {
+				cardOf[key], paired = id, true
+			}
+		}
 		h := ui.HostInfo{
-			ID: v.Beacon.HostID, Name: v.Beacon.Name, OS: v.Beacon.OS, PathKind: v.Best.Kind,
+			ID: id, AdvertisedName: v.Beacon.Name, OS: v.Beacon.OS, PathKind: v.Best.Kind,
 			RTTMs: float64(v.Best.RTT) / 1e6, Online: v.Online, Paired: paired, TailscaleSameUser: v.SameUser,
-			Address: netip.AddrPortFrom(v.Best.Addr.Addr(), v.Beacon.ControlPort).String(),
+			Address:    controlAddr(v.Best),
+			LANAddress: controlAddr(v.LAN), TailscaleAddress: controlAddr(v.Tailscale),
+			LANReachable: v.LANOnline, TailscaleReachable: v.TailscaleOnline,
+		}
+		if h.LANAddress == "" {
+			h.LANAddress = p.LastLANAddr
+		}
+		if h.TailscaleAddress == "" {
+			h.TailscaleAddress = p.LastTailscaleAddr
 		}
 		if len(v.Beacon.GPUs) > 0 {
 			h.GPU = v.Beacon.GPUs[0]
 		}
-		seen[h.ID] = true
 		out = append(out, h)
 	}
+	byFingerprint := map[string]string{}
 	for key, p := range pinned {
-		if seen[key] {
+		fp := strings.ToLower(p.CertFingerprint)
+		if old, ok := byFingerprint[fp]; !strings.HasPrefix(key, "addr:") && (!ok || key < old) {
+			byFingerprint[fp] = key
+		}
+	}
+	for key, p := range pinned {
+		if _, ok := cardOf[key]; ok {
 			continue
 		}
+		if id, ok := byFingerprint[strings.ToLower(p.CertFingerprint)]; ok && strings.HasPrefix(key, "addr:") {
+			cardOf[key] = id
+			continue
+		}
+		cardOf[key] = key
 		name := p.Name
 		if name == "" {
 			name = strings.TrimPrefix(key, "addr:")
 		}
-		out = append(out, ui.HostInfo{ID: key, Name: name, Paired: true, Address: p.LastAddr})
+		out = append(out, ui.HostInfo{ID: key, AdvertisedName: name, Paired: true, Address: p.LastAddr,
+			LANAddress: p.LastLANAddr, TailscaleAddress: p.LastTailscaleAddr})
 	}
+	for i := range out {
+		h := &out[i]
+		h.Alias = aliases[h.ID]
+		h.Name = cmp.Or(h.Alias, h.AdvertisedName)
+		h.Connected = connected != "" && cardOf[connected] == h.ID
+	}
+	slices.SortFunc(out, func(a, b ui.HostInfo) int {
+		switch {
+		case a.Connected != b.Connected:
+			return boolFirst(a.Connected)
+		case a.Online != b.Online:
+			return boolFirst(a.Online)
+		}
+		return cmp.Or(cmp.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name)), cmp.Compare(a.ID, b.ID))
+	})
 	return out
+}
+
+// boolFirst orders a true before a false, for a sort on a field that
+// differs.
+func boolFirst(a bool) int {
+	if a {
+		return -1
+	}
+	return 1
 }
 
 func (b *backend) RefreshHosts() { b.finder.Refresh() }
 
-// resolveTarget resolves what Connect was given: a host found by discovery, a
-// paired host by its last address, or an address typed in.
-func (b *backend) resolveTarget(ctx context.Context, id string) (session.Target, string) {
-	if v, ok := b.finder.lookup(id); ok {
-		return session.Target{Candidates: v.Candidates, HostID: v.Beacon.HostID, Fingerprint: v.Beacon.CertFingerprint}, v.Beacon.Name
+// RenameHost keeps alias for the host in client.json; empty forgets it.
+func (b *backend) RenameHost(id, alias string) error {
+	alias = strings.TrimSpace(alias)
+	if len(alias) > session.MaxHostNameLen {
+		return fmt.Errorf("a host name is at most %d bytes", session.MaxHostNameLen)
+	}
+	var aliases map[string]string
+	err := config.UpdateClientConfig(b.dir, func(c *config.ClientConfig) error {
+		if alias == "" {
+			delete(c.HostAliases, id)
+		} else {
+			if c.HostAliases == nil {
+				c.HostAliases = map[string]string{}
+			}
+			c.HostAliases[id] = alias
+		}
+		aliases = c.HostAliases
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 	b.mu.Lock()
-	p, ok := b.pinned[id]
+	b.aliases = aliases
 	b.mu.Unlock()
-	if ok && p.LastAddr != "" {
-		t := session.Target{Addr: p.LastAddr, Fingerprint: p.CertFingerprint}
-		if !strings.HasPrefix(id, "addr:") {
-			t.HostID = id
-		}
-		return t, p.Name
+	b.changed()
+	return nil
+}
+
+// syncPins keeps each paired host's advertised name and routes up to
+// date in client.json as discovery finds them.
+func (b *backend) syncPins() {
+	b.mu.Lock()
+	pinned := b.pinned
+	b.mu.Unlock()
+	type update struct {
+		name, lan, tailnet string
 	}
-	return identify(ctx, id)
+	updates := map[string]update{}
+	for _, v := range b.finder.list() {
+		p, ok := pinned[v.Beacon.HostID]
+		if !ok {
+			continue
+		}
+		u := update{name: v.Beacon.Name, lan: controlAddr(v.LAN), tailnet: controlAddr(v.Tailscale)}
+		if u.name != p.Name || u.lan != "" && u.lan != p.LastLANAddr || u.tailnet != "" && u.tailnet != p.LastTailscaleAddr {
+			updates[v.Beacon.HostID] = u
+		}
+	}
+	if len(updates) == 0 {
+		return
+	}
+	err := config.UpdateClientConfig(b.dir, func(c *config.ClientConfig) error {
+		for id, u := range updates {
+			p, ok := c.PinnedHosts[id]
+			if !ok {
+				continue
+			}
+			p.Name = u.name
+			p.LastLANAddr = cmp.Or(u.lan, p.LastLANAddr)
+			p.LastTailscaleAddr = cmp.Or(u.tailnet, p.LastTailscaleAddr)
+			c.PinnedHosts[id] = p
+		}
+		return nil
+	})
+	if err != nil {
+		b.logf("planck: remember host routes: %v", err)
+		return
+	}
+	b.reloadPins()
+}
+
+// resolveTarget resolves what Connect was given: a host found by discovery,
+// a paired host, or an address typed in. A known host gets every route it
+// was found or reached on, and its last address as the fallback.
+func (b *backend) resolveTarget(ctx context.Context, id string) (session.Target, string) {
+	b.mu.Lock()
+	p, paired := b.pinned[id]
+	alias := b.aliases[id]
+	b.mu.Unlock()
+	v, found := b.finder.lookup(id)
+	if !found && !paired {
+		t, name := identify(ctx, id, b.finder.port)
+		return t, cmp.Or(alias, name)
+	}
+	t := session.Target{Addr: p.LastAddr, Fingerprint: p.CertFingerprint}
+	if !strings.HasPrefix(id, "addr:") {
+		t.HostID = id
+	}
+	name := p.Name
+	if found {
+		t.Candidates, t.HostID, t.Fingerprint, name = v.Candidates, v.Beacon.HostID, v.Beacon.CertFingerprint, v.Beacon.Name
+	}
+	for _, last := range []string{p.LastLANAddr, p.LastTailscaleAddr} {
+		ap, err := netip.ParseAddrPort(last)
+		if err != nil {
+			continue
+		}
+		c := discovery.Candidate{HostID: t.HostID, Kind: kindOf(ap.Addr()), Addr: netip.AddrPortFrom(ap.Addr(), b.finder.port)}
+		if !slices.ContainsFunc(t.Candidates, func(o discovery.Candidate) bool { return o.Addr == c.Addr }) {
+			t.Candidates = append(t.Candidates, c)
+		}
+	}
+	return t, cmp.Or(alias, name)
 }
 
 func (b *backend) Connect(ctx context.Context, id string) error {
@@ -195,7 +350,7 @@ func (b *backend) dial(ctx context.Context, t session.Target, pin string) error 
 	}
 	c, err := session.NewClient(session.ClientConfig{
 		ConfigDir: b.dir, Name: b.name, PIN: pin, NoAudio: !s.AudioEnabled, Quality: quality(s),
-		OpenSink: b.openSink, Tailscale: b.ts, Logf: b.logf,
+		OpenSink: b.openSink, Tailscale: b.ts, Logf: b.logf, Route: b.route(s),
 	})
 	if err != nil {
 		return err
@@ -207,9 +362,11 @@ func (b *backend) dial(ctx context.Context, t session.Target, pin string) error 
 	if err != nil {
 		return err
 	}
+	st := c.Stats()
 	b.mu.Lock()
 	b.client, b.target = c, t
-	b.tel = telemetry(c.Stats())
+	b.connected = cmp.Or(st.HostID, "addr:"+st.Addr)
+	b.tel = telemetry(st)
 	b.mu.Unlock()
 	b.changed()
 	go b.follow(c)
@@ -223,7 +380,7 @@ func (b *backend) reloadPins() {
 		return
 	}
 	b.mu.Lock()
-	b.pinned = stored.PinnedHosts
+	b.pinned, b.aliases = stored.PinnedHosts, stored.HostAliases
 	b.mu.Unlock()
 }
 
@@ -268,7 +425,7 @@ func (b *backend) follow(c *session.Client) {
 	}
 	b.mu.Lock()
 	if b.client == c {
-		b.client, b.tel = nil, ui.Telemetry{}
+		b.client, b.tel, b.connected = nil, ui.Telemetry{}, ""
 	}
 	b.mu.Unlock()
 	b.changed()
@@ -279,6 +436,7 @@ func telemetry(s session.ClientStats) ui.Telemetry {
 		Connected: s.Connected, HostName: s.HostName, FPS: s.FPS, Width: s.Width, Height: s.Height,
 		EncodeMs: s.Encode.P50, NetMs: s.Network.P50, DecodeMs: s.Decode.P50, PresentMs: s.Present.P50, TotalMs: s.E2E.P50,
 		BitrateMbps: s.Kbps / 1000, FECPct: s.FECParityPct, LossPct: s.LossPct, AudioBufMs: s.AudioBufferMs,
+		DatagramBytes: s.DatagramBytes,
 	}
 	if s.E2EGlass.Samples > 0 {
 		t.PresentMs, t.TotalMs = s.Glass.P50, s.E2EGlass.P50
@@ -303,7 +461,7 @@ func telemetry(s session.ClientStats) ui.Telemetry {
 func (b *backend) Disconnect() {
 	b.mu.Lock()
 	c := b.client
-	b.client, b.tel = nil, ui.Telemetry{}
+	b.client, b.tel, b.connected = nil, ui.Telemetry{}, ""
 	b.mu.Unlock()
 	if c != nil {
 		go c.Disconnect()
@@ -398,27 +556,39 @@ func (b *backend) Settings() ui.Settings {
 }
 
 // SaveSettings stores s; a live stream reconnects with a new quality in
-// the background, as protocol v1 fixes it at the handshake.
+// the background, as protocol v1 fixes it at the handshake. A new host
+// name goes to host.json, and to the host at once while hosting.
 func (b *backend) SaveSettings(s ui.Settings) error {
-	stored, err := config.LoadClientConfig(b.dir)
+	s.HostName = strings.TrimSpace(s.HostName)
+	b.mu.Lock()
+	before, h := b.settings, b.host
+	b.mu.Unlock()
+	if s.HostName != before.HostName {
+		if err := b.renameLocalHost(h, s.HostName); err != nil {
+			return err
+		}
+	}
+	err := config.UpdateClientConfig(b.dir, func(stored *config.ClientConfig) error {
+		if s.Codec != 0 {
+			stored.PreferredCodec = configName(s.Codec)
+		}
+		if s.Chroma != 0 {
+			stored.PreferredChroma = configName(s.Chroma)
+		}
+		stored.TargetFPS, stored.MaxBitrateKbps, stored.AudioEnabled = s.TargetFPS, s.MaxBitrateMbps*1000, s.AudioEnabled
+		return nil
+	})
 	if err != nil {
 		return err
 	}
-	if s.Codec != 0 {
-		stored.PreferredCodec = configName(s.Codec)
-	}
-	if s.Chroma != 0 {
-		stored.PreferredChroma = configName(s.Chroma)
-	}
-	stored.TargetFPS, stored.MaxBitrateKbps, stored.AudioEnabled = s.TargetFPS, s.MaxBitrateMbps*1000, s.AudioEnabled
-	if err := config.SaveClientConfig(b.dir, stored); err != nil {
-		return err
-	}
 	b.mu.Lock()
-	before := b.settings
+	before = b.settings
 	b.settings = s
 	live, t := b.client != nil, b.target
 	b.mu.Unlock()
+	if c := b.current(); c != nil && before.PreferLAN != s.PreferLAN {
+		c.SetPreferLAN(s.PreferLAN)
+	}
 	if live && (quality(before) != quality(s) || before.AudioEnabled != s.AudioEnabled) {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -429,6 +599,28 @@ func (b *backend) SaveSettings(s ui.Settings) error {
 		}()
 	}
 	return nil
+}
+
+// renameLocalHost names this machine as a host: through h while
+// hosting, which also tells clients at once, else in host.json.
+func (b *backend) renameLocalHost(h *session.Host, name string) error {
+	if h != nil {
+		return h.SetName(name)
+	}
+	if len(name) > session.MaxHostNameLen {
+		return fmt.Errorf("a host name is at most %d bytes", session.MaxHostNameLen)
+	}
+	return config.UpdateHostConfig(b.dir, func(c *config.HostConfig) error {
+		c.Name = name
+		return nil
+	})
+}
+
+// route is how the stream follows the host between routes.
+func (b *backend) route(s ui.Settings) session.RouteConfig {
+	r := b.routeConfig
+	r.PreferLAN = s.PreferLAN
+	return r
 }
 
 // configName is the lower-case name pkg/config stores a codec or chroma

@@ -13,10 +13,15 @@ import (
 // before returning it, and the app opens the Pairing screen.
 var ErrPairingRequired = errors.New("pairing required")
 
-// HostInfo is one host found on the LAN or the tailnet, or remembered.
+// HostInfo is one host found on the LAN or the tailnet, or remembered:
+// one per machine, with every route it was found on.
 type HostInfo struct {
-	ID       string
-	Name     string
+	ID string
+	// Name is Alias when set, else AdvertisedName.
+	Name           string
+	AdvertisedName string
+	// Alias is the name this client gave the host with RenameHost.
+	Alias    string
 	OS       string
 	GPU      string
 	PathKind discovery.PathKind
@@ -24,8 +29,17 @@ type HostInfo struct {
 	RTTMs             float64
 	Online            bool
 	Paired            bool
+	Connected         bool
 	TailscaleSameUser bool
-	Address           string
+	// Address is the control address of the best route.
+	Address string
+	// LANAddress and TailscaleAddress are the host's control addresses on
+	// each kind of route, found or remembered; Reachable says the host
+	// answered on it lately.
+	LANAddress         string
+	TailscaleAddress   string
+	LANReachable       bool
+	TailscaleReachable bool
 	// Width, Height and RefreshHz describe the host's display; 0 means
 	// the host did not report it.
 	Width, Height int
@@ -48,6 +62,8 @@ type Telemetry struct {
 	Chroma                                        encode.Chroma
 	Width, Height                                 int
 	AudioBufMs                                    float64
+	// DatagramBytes is the largest media datagram on the route.
+	DatagramBytes int
 }
 
 // Settings are the client's stream preferences. SaveSettings applies them
@@ -69,6 +85,9 @@ type Settings struct {
 	// Encoder is the GPU this machine encodes on while hosting, by
 	// EncoderInfo.GPU; empty lets the host choose.
 	Encoder string
+	// HostName is what this machine is called while hosting; empty is
+	// its own name.
+	HostName string
 }
 
 // EncoderInfo is a hardware encoder on this machine.
@@ -126,8 +145,12 @@ type Backend interface {
 	// goroutine, whenever a value a getter returns changes.
 	Subscribe(onChange func())
 
+	// Hosts lists the hosts: connected first, then online, then by Name.
 	Hosts() []HostInfo
 	RefreshHosts()
+	// RenameHost names a host on this client only; an empty alias goes
+	// back to the name the host advertises.
+	RenameHost(id, alias string) error
 	// Connect streams from target, a HostInfo.ID or an address typed in
 	// Quick Connect, returning once the stream runs or fails.
 	Connect(ctx context.Context, target string) error
