@@ -14,6 +14,8 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os/exec"
+	"runtime"
 	"sort"
 	"strconv"
 )
@@ -50,13 +52,36 @@ type endpoint struct {
 type Client struct {
 	resolve func() (endpoint, error)
 	dial    func(ctx context.Context, ep endpoint) (net.Conn, error)
+	// cli, when set, reads the status from the tailscale command when the
+	// LocalAPI cannot be reached.
+	cli func(ctx context.Context) ([]byte, error)
 }
 
 // New returns a client for the platform's standard daemon location. The
 // location is resolved on every call, so a daemon restart on a new port is
 // picked up.
 func New() *Client {
-	return &Client{resolve: platformEndpoint, dial: dialEndpoint}
+	return &Client{resolve: platformEndpoint, dial: dialEndpoint, cli: statusFromCLI}
+}
+
+// statusFromCLI runs "tailscale status --json", whose output is the
+// LocalAPI's status.
+func statusFromCLI(ctx context.Context) ([]byte, error) {
+	bins := []string{"tailscale"}
+	switch runtime.GOOS {
+	case "darwin":
+		bins = append(bins, "/Applications/Tailscale.app/Contents/MacOS/Tailscale")
+	case "windows":
+		bins = append(bins, `C:\Program Files\Tailscale\tailscale.exe`)
+	}
+	var err error
+	for _, bin := range bins {
+		var out []byte
+		if out, err = exec.CommandContext(ctx, bin, "status", "--json").Output(); err == nil {
+			return out, nil
+		}
+	}
+	return nil, err
 }
 
 // NewUnix returns a client for a tailscaled started with a custom --socket.
@@ -149,7 +174,14 @@ type rawWhoIs struct {
 
 func (c *Client) Status(ctx context.Context) (*Status, error) {
 	var raw rawStatus
-	if err := c.getJSON(ctx, "/localapi/v0/status", &raw); err != nil {
+	err := c.getJSON(ctx, "/localapi/v0/status", &raw)
+	if errors.Is(err, ErrNotRunning) && c.cli != nil && ctx.Err() == nil {
+		if out, cerr := c.cli(ctx); cerr == nil {
+			raw = rawStatus{}
+			err = json.Unmarshal(out, &raw)
+		}
+	}
+	if err != nil {
 		return nil, err
 	}
 	if raw.BackendState != "Running" || raw.Self == nil {
