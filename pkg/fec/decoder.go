@@ -231,6 +231,50 @@ func (d *Decoder) AppendFrame(dst []byte, frameID uint32) ([]byte, bool) {
 	return dst, true
 }
 
+// AppendPartial appends what is known of frame frameID to dst: ready slices
+// whole, and in other slices each seen block's data shards, with zeros for
+// the shards that neither arrived nor were recovered. Blocks and slices with
+// no shard seen are left out, so offsets shift: only a stream of
+// self-describing shard-sized chunks (PyroWave) can use it. missing counts
+// the zeroed shards. ok is false once the frame has left the window.
+func (d *Decoder) AppendPartial(dst []byte, frameID uint32) (au []byte, missing int, ok bool) {
+	f := &d.ring[frameID%ringSize]
+	if !f.active || f.info.FrameID != frameID {
+		return dst, 0, false
+	}
+	ss := d.shardSize
+	for i := 0; i < int(f.info.SliceCount); i++ {
+		s := &f.slices[i]
+		if !s.seen {
+			continue
+		}
+		if s.ready {
+			dst = append(dst, s.out...)
+			continue
+		}
+		for j := range s.blocks {
+			b := &s.blocks[j]
+			if !b.seen {
+				continue
+			}
+			if b.ready {
+				dst = append(dst, b.backing[:b.blockLen]...)
+				continue
+			}
+			for k := 0; k < b.data; k++ {
+				lo, hi := k*ss, min((k+1)*ss, b.blockLen)
+				n := len(dst)
+				dst = append(dst, b.backing[lo:hi]...)
+				if b.present[k/64]&(1<<(k%64)) == 0 {
+					clear(dst[n:])
+					missing++
+				}
+			}
+		}
+	}
+	return dst, missing, true
+}
+
 // Flush finalizes every open frame.
 func (d *Decoder) Flush() {
 	for i := range d.ring {

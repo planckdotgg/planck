@@ -34,6 +34,10 @@ type ClientConfig struct {
 	// LANPath says the host was reached LAN direct. The client then offers
 	// wire.MaxLANDatagram when its route to the host has a 1500-byte MTU.
 	LANPath bool
+	// Capabilities, when set, offers wire.FeatureCapabilities: this JSON
+	// goes to a host that offers it too, and the host's Capabilities and
+	// Profile come back (Session.PeerCapabilities, Session.Profile).
+	Capabilities []byte
 }
 
 // Dial connects to a host, authenticates, negotiates the session and brings
@@ -79,6 +83,9 @@ func clientHandshake(ctx context.Context, conn *quic.Conn, cfg ClientConfig) (*S
 	if cfg.LANPath && lanDatagramOK(conn.RemoteAddr().(*net.UDPAddr).AddrPort().Addr()) {
 		features |= wire.FeatureLANDatagram
 	}
+	if cfg.Capabilities != nil {
+		features |= wire.FeatureCapabilities
+	}
 	if err := wire.WriteMessage(ctrl, &wire.Hello{Version: wire.Version, Role: wire.RoleClient, Name: cfg.Name, Features: features}); err != nil {
 		return nil, err
 	}
@@ -118,12 +125,31 @@ func clientHandshake(ctx context.Context, conn *quic.Conn, cfg ClientConfig) (*S
 		}
 	}
 
+	withCaps := features&hello.Features&wire.FeatureCapabilities != 0
+	var hostCaps, profile []byte
+	if withCaps {
+		if err := wire.WriteMessage(ctrl, &wire.Capabilities{Role: wire.RoleClient, JSON: cfg.Capabilities}); err != nil {
+			return nil, err
+		}
+		var caps *wire.Capabilities
+		if err := readInto(ctrl, &caps); err != nil {
+			return nil, err
+		}
+		hostCaps = caps.JSON
+	}
 	if err := wire.WriteMessage(ctrl, &cfg.Session); err != nil {
 		return nil, err
 	}
 	var ready *wire.SessionReady
 	if err := readInto(ctrl, &ready); err != nil {
 		return nil, err
+	}
+	if withCaps {
+		var p *wire.Profile
+		if err := readInto(ctrl, &p); err != nil {
+			return nil, err
+		}
+		profile = p.JSON
 	}
 	if ready.ShardSize < 64 || int(ready.ShardSize)+wire.VideoHeaderLen+AEADOverhead > 65507 {
 		return nil, fmt.Errorf("transport: host sent shard size %d", ready.ShardSize)
@@ -153,6 +179,8 @@ func clientHandshake(ctx context.Context, conn *quic.Conn, cfg ClientConfig) (*S
 		pingInterval: cfg.PingInterval,
 		simLoss:      cfg.SimulateLoss,
 		peerFeatures: hello.Features,
+		peerCaps:     hostCaps,
+		profile:      profile,
 	})
 	if err != nil {
 		udp.Close()
