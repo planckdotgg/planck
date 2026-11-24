@@ -14,8 +14,7 @@ Abstract:
 #ifndef _VIRTUALAUDIODRIVER_MINWAVERTSTREAM_H_
 #define _VIRTUALAUDIODRIVER_MINWAVERTSTREAM_H_
 
-#include "savedata.h"
-#include "ToneGenerator.h"
+#include "loopback.h"
 
 //
 // Structure to store notifications events in a protected list
@@ -111,23 +110,12 @@ protected:
     PLONG                       m_plPeakMeter;
     PWAVEFORMATEXTENSIBLE       m_pWfExt;
     ULONG                       m_ulContentId;
-    CSaveData                   m_SaveData;
-    ToneGenerator               m_ToneGenerator;
     GUID                        m_SignalProcessingMode;
     BOOLEAN                     m_bEoSReceived;
     BOOLEAN                     m_bLastBufferRendered;
     KSPIN_LOCK                  m_PositionSpinLock;
-    // Member variable as config params for tone generator
-    ULONG                       m_ulHostCaptureToneFrequency;
-    // If abs(m_dwHostCaptureToneAmplitude) + abs(m_dwHostCaptureToneDCValue) > 100
-    // m_dwHostCaptureToneDCValue will be compensated to make the sum equal to 100
-    DWORD                       m_dwHostCaptureToneAmplitude;   // must be between -100 to 100
-    DWORD                       m_dwLoopbackCaptureToneAmplitude; // must be between -100 to 100
-    DWORD                       m_dwHostCaptureToneDCOffset;   // must be between -100 to 100
-    DWORD                       m_dwLoopbackCaptureToneDCOffset; // must be between -100 to 100
-    DWORD                       m_dwHostCaptureToneInitialPhase;   // must be between -31416 to 31416
-    DWORD                       m_dwLoopbackCaptureToneInitialPhase; // must be between -31416 to 31416
-    // Member variable as config params for tone generator
+    ULONGLONG                   m_ullLoopbackCursor;
+    BOOLEAN                     m_bCopyProtected;
 
 public:
 
@@ -188,7 +176,7 @@ private:
         _Out_opt_  LARGE_INTEGER *  _pliQPCTime
     );
 
-    NTSTATUS ReadRegistrySettings();
+    PLANCK_DMA_VIEW DmaView();
     
 };
 typedef CMiniportWaveRTStream *PCMiniportWaveRTStream;

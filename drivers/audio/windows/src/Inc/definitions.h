@@ -28,17 +28,17 @@ Abstract:
 //=============================================================================
 
 // Product Id
-// {836BA6D1-3FF7-4411-8BCD-469553452DCE}
+// {A852F276-C443-42F2-BD26-E2790063FBF9}
 #define STATIC_PID_VIRTUALAUDIODRIVER\
-    0x836ba6d1, 0x3ff7, 0x4411, 0x8b, 0xcd, 0x46, 0x95, 0x53, 0x45, 0x2d, 0xce
-DEFINE_GUIDSTRUCT("836BA6D1-3FF7-4411-8BCD-469553452DCE", PID_VIRTUALAUDIODRIVER);
+    0xa852f276, 0xc443, 0x42f2, 0xbd, 0x26, 0xe2, 0x79, 0x00, 0x63, 0xfb, 0xf9
+DEFINE_GUIDSTRUCT("A852F276-C443-42F2-BD26-E2790063FBF9", PID_VIRTUALAUDIODRIVER);
 #define PID_VIRTUALAUDIODRIVER DEFINE_GUIDNAMED(PID_VIRTUALAUDIODRIVER)
 
 // Pool tag used for VIRTUALAUDIODRIVER allocations
-#define VIRTUALAUDIODRIVER_POOLTAG               'SASM'  
+#define VIRTUALAUDIODRIVER_POOLTAG               'dVlP'
 
 // Debug module name
-#define STR_MODULENAME              "VIRTUALAUDIODRIVER: "
+#define STR_MODULENAME              "PlanckVAD: "
 
 // Debug utility macros
 #define D_FUNC                      4
@@ -161,13 +161,6 @@ typedef struct _PortClassDeviceContext              // 32       64      Byte off
     
 #define MinorTarget_to_Obj(ptr) \
     static_cast<CMiniportWaveRTStream*>(reinterpret_cast<PMINIPORTWAVERTSTREAM>(ptr))
-
-//
-// Global settings.
-//
-extern DWORD g_DoNotCreateDataFiles;
-extern DWORD g_DisableBthScoBypass;
-extern UNICODE_STRING g_RegistryPath;
 
 //=============================================================================
 // Function prototypes

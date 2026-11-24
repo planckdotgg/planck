@@ -16,15 +16,8 @@ Abstract:
 #include <initguid.h>
 #include "definitions.h"
 #include "hw.h"
-#include "savedata.h"
 #include "endpoints.h"
 
-//-----------------------------------------------------------------------------
-// CSaveData statics
-//-----------------------------------------------------------------------------
-
-PSAVEWORKER_PARAM       CSaveData::m_pWorkItems = NULL;
-PDEVICE_OBJECT          CSaveData::m_pDeviceObject = NULL;
 //=============================================================================
 // Classes
 //=============================================================================
@@ -376,8 +369,8 @@ Return Value:
     NTSTATUS ntStatus;
 
     //
-    // This sample supports only one instance of this object.
-    // (b/c of CSaveData's static members and Bluetooth HFP logic). 
+    // Only one instance of this object is supported: the loopback ring
+    // (loopback.cpp) is global.
     //
     if (InterlockedCompareExchange(&CAdapterCommon::m_AdapterInstances, 1, 0) != 0)
     {
@@ -437,7 +430,6 @@ Return Value:
         m_pHW = NULL;
     }
     
-    CSaveData::DestroyWorkItems();
     SAFE_RELEASE(m_pPortClsEtwHelper);
     SAFE_RELEASE(m_pServiceGroupWave);
  
@@ -609,12 +601,6 @@ Return Value:
     
     m_pHW->MixerReset();
 
-    //
-    // Initialize SaveData class.
-    //
-    CSaveData::SetDeviceObject(DeviceObject);   //device object is needed by CSaveData
-    ntStatus = CSaveData::InitializeWorkItems(DeviceObject);
-    IF_FAILED_JUMP(ntStatus, Done);
 Done:
 
     return ntStatus;
@@ -2635,14 +2621,14 @@ Return Value:
 
         // Open the currently enumerated source key
         ntStatus = ZwOpenKey(&hCurrentSourceKey, KEY_READ, &hCurrentSourceKeyAttributes);
-        IF_FAILED_ACTION_JUMP(ntStatus, ZwClose(hCurrentSourceKey), loop_exit);
+        IF_FAILED_ACTION_JUMP(ntStatus, hCurrentSourceKey = NULL, loop_exit);
 
         // Initialize attributes to create the new destination key
         InitializeObjectAttributes(&hNewDestinationKeyAttributes, &strKeyName, OBJ_KERNEL_HANDLE, _hDestinationKey, NULL);
 
         // Create the key at the destination
         ntStatus = ZwCreateKey(&hNewDestinationKey, KEY_WRITE, &hNewDestinationKeyAttributes, 0, NULL, REG_OPTION_NON_VOLATILE, &ulDisposition);
-        IF_FAILED_ACTION_JUMP(ntStatus, ZwClose(hCurrentSourceKey), loop_exit);
+        IF_FAILED_ACTION_JUMP(ntStatus, hNewDestinationKey = NULL, loop_exit);
 
         // Now copy the contents of the currently enumerated key to the destination
         ntStatus = CopyRegistryKey(hCurrentSourceKey, hNewDestinationKey, TRUE);
@@ -2660,12 +2646,14 @@ Return Value:
         if (hCurrentSourceKey)
         {
             ZwClose(hCurrentSourceKey);
+            hCurrentSourceKey = NULL;
         }
 
         // Close the new destination key
         if (hNewDestinationKey)
         {
             ZwClose(hNewDestinationKey);
+            hNewDestinationKey = NULL;
         }
 
         // Bail if anything failed

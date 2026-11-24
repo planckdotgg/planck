@@ -18,7 +18,6 @@ Abstract:
 #include "endpoints.h"
 #include "minwavert.h"
 #include "minwavertstream.h"
-#include "micarraywavtable.h"
 
 #define EFFECTS_LIST_COUNT 2
 
@@ -179,8 +178,10 @@ Routine Description:
   The DataRangeIntersection function determines the highest quality 
   intersection of two data ranges.
 
-  This sample just sets the ResultantFormat to be the only supported
-  format for the MicArray endpoint.
+  Every streaming pin offers 48 kHz 16-bit PCM in mono and stereo only.
+  The result is the pin's format with the client's channel count (stereo
+  when the client allows two or more), or STATUS_NO_MATCH when the
+  client's range excludes 48 kHz or 16 bits.
 
 Arguments:
 
@@ -190,9 +191,7 @@ Arguments:
                     range submitted by client in the data range intersection 
                     property request. 
 
-  MyDataRange -         Pin's data range to be compared with client's data 
-                        range. In this case we actually ignore our own data 
-                        range, because we know that we only support one range.
+  MyDataRange -     Pin's data range; every pin has one, so it is not used.
 
   OutputBufferLength -  Size of the buffer pointed to by the resultant format 
                         parameter. 
@@ -210,9 +209,7 @@ Arguments:
 
 --*/
 {
-    UNREFERENCED_PARAMETER(PinId);
-
-    ULONG                   requiredSize;
+    UNREFERENCED_PARAMETER(MyDataRange);
 
     PAGED_CODE();
 
@@ -220,68 +217,63 @@ Arguments:
     {
         return STATUS_NOT_IMPLEMENTED;
     }
-
-    //If called for the mic array pin, set ResultantFormat to be the endpoint's only supported format.
-    //Otherwise, allow the class handler to set ResultantFormat.  
-    if ((this->m_DeviceType) == eMicArrayDevice1)
+    if (PinId >= m_pMiniportPair->WaveDescriptor->PinCount)
     {
-        requiredSize = sizeof(KSDATAFORMAT_WAVEFORMATEXTENSIBLE);
-
-        //
-        // Validate return buffer size, if the request is only for the
-        // size of the resultant structure, return it now before
-        // returning other types of errors.
-        //
-        if (!OutputBufferLength)
-        {
-            *ResultantFormatLength = requiredSize;
-            return STATUS_BUFFER_OVERFLOW;
-        }
-        else if (OutputBufferLength < requiredSize)
-        {
-            return STATUS_BUFFER_TOO_SMALL;
-        }
-
-        //Set ResultantFormat to be the only supported format for the MicArray endpoint. 
-        PKSDATAFORMAT_WAVEFORMATEXTENSIBLE resultantFormat;
-        resultantFormat = (PKSDATAFORMAT_WAVEFORMATEXTENSIBLE)ResultantFormat;
-        *resultantFormat = *MicArrayPinSupportedDeviceFormats;
-        *ResultantFormatLength = requiredSize;
-
-        return STATUS_SUCCESS;
+        return STATUS_INVALID_PARAMETER;
     }
-    else
+
+    ULONG channels = 2;
+    if (ClientDataRange->FormatSize >= sizeof(KSDATARANGE_AUDIO))
     {
-        requiredSize = sizeof(KSDATAFORMAT_WAVEFORMATEX);
-
-        //
-        // Validate return buffer size, if the request is only for the
-        // size of the resultant structure, return it now before
-        // returning other types of errors.
-        //
-        if (!OutputBufferLength)
-        {
-            *ResultantFormatLength = requiredSize;
-            return STATUS_BUFFER_OVERFLOW;
-        }
-        else if (OutputBufferLength < requiredSize)
-        {
-            return STATUS_BUFFER_TOO_SMALL;
-        }
-
-        // Verify channel count is supported. This routine assumes a separate data
-        // range for each supported channel count.
-        if (((PKSDATARANGE_AUDIO)MyDataRange)->MaximumChannels != ((PKSDATARANGE_AUDIO)ClientDataRange)->MaximumChannels)
+        PKSDATARANGE_AUDIO clientRange = (PKSDATARANGE_AUDIO)ClientDataRange;
+        if (clientRange->MinimumSampleFrequency > PLANCK_LOOPBACK_SAMPLE_RATE ||
+            clientRange->MaximumSampleFrequency < PLANCK_LOOPBACK_SAMPLE_RATE ||
+            clientRange->MinimumBitsPerSample > PLANCK_LOOPBACK_BITS ||
+            clientRange->MaximumBitsPerSample < PLANCK_LOOPBACK_BITS ||
+            clientRange->MaximumChannels == 0)
         {
             return STATUS_NO_MATCH;
         }
-
-        //
-        // Ok, let the class handler do the rest.
-        //
-        return STATUS_NOT_IMPLEMENTED;
+        channels = min(clientRange->MaximumChannels, (ULONG)2);
     }
 
+    PKSDATAFORMAT_WAVEFORMATEXTENSIBLE pinFormats = NULL;
+    ULONG pinFormatCount = GetPinSupportedDeviceFormats(PinId, &pinFormats);
+    PKSDATAFORMAT_WAVEFORMATEXTENSIBLE match = NULL;
+    for (ULONG i = 0; i < pinFormatCount; i++)
+    {
+        if (pinFormats[i].WaveFormatExt.Format.nChannels == channels)
+        {
+            match = &pinFormats[i];
+            break;
+        }
+    }
+    if (match == NULL)
+    {
+        return STATUS_NO_MATCH;
+    }
+
+    ULONG requiredSize = sizeof(KSDATAFORMAT_WAVEFORMATEXTENSIBLE);
+
+    //
+    // Validate return buffer size, if the request is only for the
+    // size of the resultant structure, return it now before
+    // returning other types of errors.
+    //
+    if (!OutputBufferLength)
+    {
+        *ResultantFormatLength = requiredSize;
+        return STATUS_BUFFER_OVERFLOW;
+    }
+    else if (OutputBufferLength < requiredSize)
+    {
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+
+    *(PKSDATAFORMAT_WAVEFORMATEXTENSIBLE)ResultantFormat = *match;
+    *ResultantFormatLength = requiredSize;
+
+    return STATUS_SUCCESS;
 } // DataRangeIntersection
 
 //=============================================================================
@@ -489,8 +481,8 @@ Return Value:
         ntStatus = IsFormatSupported(Pin, Capture, DataFormat);
     }
 
-    // Instantiate a stream. Stream must be in
-    // NonPagedPool(Nx) because of file saving.
+    // Instantiate a stream. Stream must be in NonPagedPool(Nx): its timer
+    // DPC reads it at DISPATCH_LEVEL.
     //
     if (NT_SUCCESS(ntStatus))
     {
@@ -1099,6 +1091,19 @@ CMiniportWaveRT::IsFormatSupported
         return STATUS_INVALID_PARAMETER;
     }
 
+    // The format comes from the client: check its size before reading the
+    // WAVEFORMATEX after the header, and the extensible part only when it
+    // is there.
+    if (_pDataFormat->FormatSize < sizeof(KSDATAFORMAT) + sizeof(WAVEFORMATEX))
+    {
+        return STATUS_NO_MATCH;
+    }
+    PWAVEFORMATEX pClientWaveFormat = reinterpret_cast<PWAVEFORMATEX>(_pDataFormat + 1);
+    if (_pDataFormat->FormatSize < sizeof(KSDATAFORMAT) + sizeof(WAVEFORMATEX) + pClientWaveFormat->cbSize)
+    {
+        return STATUS_NO_MATCH;
+    }
+
     cPinFormats = GetPinSupportedDeviceFormats(_ulPin, &pPinFormats);
 
     for (UINT iFormat = 0; iFormat < cPinFormats; iFormat++)
@@ -1111,7 +1116,7 @@ CMiniportWaveRT::IsFormatSupported
         if (pFormat->DataFormat.FormatSize < sizeof(KSDATAFORMAT_WAVEFORMATEX)) { continue; }
 
         // WAVEFORMATEX VALIDATION
-        PWAVEFORMATEX pWaveFormat = reinterpret_cast<PWAVEFORMATEX>(_pDataFormat + 1);
+        PWAVEFORMATEX pWaveFormat = pClientWaveFormat;
         
         if (pWaveFormat->wFormatTag != WAVE_FORMAT_EXTENSIBLE)
         {

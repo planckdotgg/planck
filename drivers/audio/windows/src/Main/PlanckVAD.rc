@@ -1,0 +1,41 @@
+// Version resource of PlanckVAD.sys. build.ps1 passes PLANCK_VERSION_* from
+// its -Version parameter, which also stamps the INF's DriverVer.
+
+#include <windows.h>
+
+#ifndef PLANCK_VERSION_MAJOR
+#define PLANCK_VERSION_MAJOR 1
+#define PLANCK_VERSION_MINOR 0
+#define PLANCK_VERSION_PATCH 0
+#define PLANCK_VERSION_BUILD 0
+#define PLANCK_VERSION_STR   "1.0.0.0"
+#endif
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     PLANCK_VERSION_MAJOR,PLANCK_VERSION_MINOR,PLANCK_VERSION_PATCH,PLANCK_VERSION_BUILD
+PRODUCTVERSION  PLANCK_VERSION_MAJOR,PLANCK_VERSION_MINOR,PLANCK_VERSION_PATCH,PLANCK_VERSION_BUILD
+FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+FILEFLAGS       0
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_DRV
+FILESUBTYPE     VFT2_DRV_SOUND
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "Planck"
+            VALUE "FileDescription",  "Planck Virtual Audio Driver"
+            VALUE "FileVersion",      PLANCK_VERSION_STR
+            VALUE "InternalName",     "PlanckVAD.sys"
+            VALUE "LegalCopyright",   "Copyright (C) 2026 Planck contributors. Portions Copyright (C) Microsoft Corporation and MikeTheTech."
+            VALUE "OriginalFilename", "PlanckVAD.sys"
+            VALUE "ProductName",      "Planck"
+            VALUE "ProductVersion",   PLANCK_VERSION_STR
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

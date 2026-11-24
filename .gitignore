@@ -6,3 +6,19 @@
 *.out
 *.test
 .DS_Store
+
+# Windows driver build (drivers/audio/windows/build.ps1): kits, build output,
+# and signing material are never committed.
+/drivers/**/packages/
+/drivers/**/.tools/
+/drivers/**/build/
+/drivers/**/x64/
+/drivers/**/obj/
+/drivers/**/bin/
+/drivers/**/*.sys
+/drivers/**/*.cat
+/drivers/**/*.cer
+/drivers/**/*.pfx
+/drivers/**/*.pdb
+/drivers/**/*.obj
+/drivers/**/*.inf
