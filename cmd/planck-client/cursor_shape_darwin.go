@@ -45,26 +45,30 @@ func newHostCursor(func() *mygo.Window) hostCursorSys {
 }
 
 func (c *macCursor) set(shape *wire.CursorShape) bool {
-	var want objc.ID
-	if shape == nil {
-		if c.blank == 0 {
-			c.blank = newNSCursor(image.NewNRGBA(image.Rect(0, 0, 1, 1)), 1, 1, 0, 0)
-		}
-		want = c.blank
-	} else {
-		want, _ = c.cache.get(shape.ID, func() (objc.ID, bool) {
-			img := &image.NRGBA{Pix: shape.RGBA, Stride: int(shape.Width) * 4, Rect: image.Rect(0, 0, int(shape.Width), int(shape.Height))}
-			k := 1 / cursorScale(shape, 96)
-			cur := newNSCursor(img, float64(shape.Width)*k, float64(shape.Height)*k, float64(shape.HotX)*k, float64(shape.HotY)*k)
-			return cur, cur != 0
-		})
-	}
+	want := c.cursorOf(shape)
 	nsCursor := objc.ID(objc.GetClass("NSCursor"))
 	if want == 0 || nsCursor.Send(objc.RegisterName("currentCursor")) == want {
 		return false
 	}
 	want.Send(objc.RegisterName("set"))
 	return true
+}
+
+// cursorOf is the NSCursor of shape, or a clear one for nil; 0 if AppKit
+// makes none.
+func (c *macCursor) cursorOf(shape *wire.CursorShape) objc.ID {
+	if shape == nil {
+		if c.blank == 0 {
+			c.blank = newNSCursor(image.NewNRGBA(image.Rect(0, 0, 1, 1)), 1, 1, 0, 0)
+		}
+		return c.blank
+	}
+	cur, _ := c.cache.get(shape.ID, func() (objc.ID, bool) {
+		k := cursorScale(shape, 96)
+		cur := newNSCursor(rgbaImage(shape), float64(shape.Width)*k, float64(shape.Height)*k, float64(shape.HotX)*k, float64(shape.HotY)*k)
+		return cur, cur != 0
+	})
+	return cur
 }
 
 func (c *macCursor) unset() {}
@@ -77,11 +81,15 @@ func (c *macCursor) close() {
 	}
 }
 
+func rgbaImage(s *wire.CursorShape) *image.NRGBA {
+	return &image.NRGBA{Pix: s.RGBA, Stride: int(s.Width) * 4, Rect: image.Rect(0, 0, int(s.Width), int(s.Height))}
+}
+
 // newNSCursor makes a retained NSCursor of img, w x h points, its hotspot
 // x, y points from its top-left corner; 0 if AppKit takes none of it.
 func newNSCursor(img *image.NRGBA, w, h, x, y float64) objc.ID {
 	var b bytes.Buffer
-	if png.Encode(&b, img) != nil {
+	if img == nil || png.Encode(&b, img) != nil {
 		return 0
 	}
 	sel := objc.RegisterName

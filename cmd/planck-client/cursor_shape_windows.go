@@ -90,7 +90,7 @@ func (c *winCursor) set(shape *wire.CursorShape) bool {
 	if w == nil {
 		return false
 	}
-	c.hook(w)
+	c.hook(w.NativeHandle())
 	var want uintptr
 	if shape != nil {
 		dpi, _, _ := procGetDpiForWindow.Call(w.NativeHandle())
@@ -128,11 +128,11 @@ func (c *winCursor) close() {
 	c.cache.close()
 }
 
-// hook routes the messages of the child window MyGo draws w in through
-// cursorProc, once per window.
-func (c *winCursor) hook(w *mygo.Window) {
+// hook routes the messages of the child window MyGo draws in, in the
+// window top, through cursorProc, once per window.
+func (c *winCursor) hook(top uintptr) {
 	class, _ := syscall.UTF16PtrFromString("MyGoSurface")
-	child, _, _ := procFindWindowExW.Call(w.NativeHandle(), 0, uintptr(unsafe.Pointer(class)), 0)
+	child, _, _ := procFindWindowExW.Call(top, 0, uintptr(unsafe.Pointer(class)), 0)
 	if child == 0 || child == c.hooked {
 		return
 	}
