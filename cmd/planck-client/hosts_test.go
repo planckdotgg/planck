@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
 	"slices"
@@ -15,6 +16,7 @@ import (
 	"github.com/planckdotgg/planck/pkg/config"
 	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/tailscale"
+	"github.com/planckdotgg/planck/pkg/wire"
 )
 
 var bigboi = discovery.Beacon{HostID: "h-bigboi", Name: "bigboi", ControlPort: 47701, CertFingerprint: strings.Repeat("ab", 32), OS: "windows"}
@@ -248,4 +250,43 @@ func TestBackendHostNameSetting(t *testing.T) {
 	if hc, _ := config.LoadHostConfig(dir); hc.Name != "Attic PC" {
 		t.Fatalf("host.json name %q", hc.Name)
 	}
+}
+
+// TestBackendTelemetryFollowsRoute: the HUD's telemetry shows the route
+// and its datagram size, and flips when the stream moves to the LAN.
+func TestBackendTelemetryFollowsRoute(t *testing.T) {
+	h := startFakeHost(t, "127.0.0.1:0")
+	lanConn, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lanConn.Close()
+	b, _ := newTestBackend(t, t.TempDir(), nil)
+	b.routeConfig = session.RouteConfig{ProbeInterval: 100 * time.Millisecond}
+	beacon := discovery.Beacon{HostID: h.HostID(), Name: h.Name(), ControlPort: uint16(h.Addr().(*net.UDPAddr).Port), CertFingerprint: h.Fingerprint()}
+	b.finder.add(discovery.Announcement{Beacon: beacon, Addr: lanConn.LocalAddr().(*net.UDPAddr).AddrPort(), Kind: discovery.PathLANDirect})
+	b.finder.add(discovery.Announcement{Beacon: beacon, Addr: h.DiscoveryAddr().(*net.UDPAddr).AddrPort(), Kind: discovery.PathTailscaleDirect})
+
+	ctx := context.Background()
+	if err := b.Connect(ctx, h.HostID()); err != nil && !errors.Is(err, ui.ErrPairingRequired) {
+		t.Fatal(err)
+	}
+	if err := b.SubmitPIN(ctx, "246810"); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "the stream on the tailnet", func() bool {
+		tel := b.Telemetry()
+		return tel.Connected && tel.PathKind == discovery.PathTailscaleDirect && tel.DatagramBytes == wire.MaxDatagram
+	})
+	if hs := b.Hosts(); len(hs) != 1 || !hs[0].Connected {
+		t.Fatalf("hosts while streaming: %+v", hs)
+	}
+
+	sctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go discovery.ServeFunc(sctx, lanConn, func() discovery.Beacon { return beacon })
+	waitUntil(t, "the stream on the LAN", func() bool {
+		tel := b.Telemetry()
+		return tel.Connected && tel.PathKind == discovery.PathLANDirect && tel.DatagramBytes == wire.MaxLANDatagram
+	})
 }
