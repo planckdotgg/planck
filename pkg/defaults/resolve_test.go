@@ -123,7 +123,7 @@ func TestResolveWorkedCases(t *testing.T) {
 	}
 	pyro1080 := golden{
 		Adapter: rtx4080.Name, API: APIPyroWave, VirtualDisplay: true, Codec: CodecPyroWave, BitDepth: 10, Chroma444: true,
-		W: 1662, H: 1080, FPS: 120, Bitrate: 406666, Max: 406666, Datagram: 1452, Direct: true, FEC: fecLAN,
+		W: 1920, H: 1080, FPS: 120, Bitrate: 469794, Max: 469794, Datagram: 1452, Direct: true, FEC: fecLAN,
 	}
 	h10, c10 := withLinks(bigboi(), m5Pro(), 10000, 10000)
 	h1, c1 := withLinks(bigboi(), m5Pro(), 1000, 2500)
@@ -421,7 +421,7 @@ func TestResolveVirtualDisplayTakesWindowSize(t *testing.T) {
 		{"odd window", windowed(2561, 1415), UserOverrides{}, 2560, 1414, true, "client window"},
 		{"tiny window", windowed(300, 200), UserOverrides{}, MinCustomWidth, MinCustomHeight, true, "client window"},
 		{"headless", m5Pro(), UserOverrides{}, 3024, 1964, true, "client native"},
-		{"1440p override", windowed(2560, 1600), UserOverrides{Resolution: "1440p"}, 2216, 1440, true, "override at the client aspect"},
+		{"1440p override", windowed(2560, 1600), UserOverrides{Resolution: "1440p"}, 2560, 1440, true, "override"},
 		{"custom override", windowed(2560, 1600), UserOverrides{Resolution: "custom", CustomWidth: 1920, CustomHeight: 1200}, 1920, 1200, true, "override"},
 		{"physical display", windowed(2560, 1600), UserOverrides{VirtualDisplay: ToggleOff}, 1920, 1080, false, "capture display size"},
 	} {
@@ -441,5 +441,32 @@ func TestResolveWindowStepsDownAtItsShape(t *testing.T) {
 	p := Resolve(bigboi(), windowed(5120, 1440), wanRelay, UserOverrides{})
 	if !p.VirtualDisplay || p.Height >= 1440 || p.Width != (p.Height*5120/1440)&^1 {
 		t.Fatalf("32:9 window over a relay: %dx%d, want fewer lines at 32:9", p.Width, p.Height)
+	}
+}
+
+// TestResolvePresetsAreLiteralOnUltrawide: on a 32:9 client, auto takes
+// the display's size and each preset its literal 16:9 size.
+func TestResolvePresetsAreLiteralOnUltrawide(t *testing.T) {
+	c := m5Pro()
+	c.Display.WidthPx, c.Display.HeightPx = 5120, 1440
+	for _, tc := range []struct {
+		pref ResolutionPref
+		w, h int
+	}{{"auto", 5120, 1440}, {"1080p", 1920, 1080}, {"1440p", 2560, 1440}, {"4k", 3840, 2160}} {
+		p := Resolve(bigboi(), c, lan, UserOverrides{Resolution: tc.pref, FPS: "30"})
+		if !p.VirtualDisplay || p.Width != tc.w || p.Height != tc.h {
+			t.Errorf("%s: virtual display %v %dx%d, want %dx%d", tc.pref, p.VirtualDisplay, p.Width, p.Height, tc.w, tc.h)
+		}
+	}
+}
+
+// TestResolvePresetStepsDownAt16x9: a preset too large for the encoder
+// steps down at 16:9, not at the client display's 32:9.
+func TestResolvePresetStepsDownAt16x9(t *testing.T) {
+	c := m5Pro()
+	c.Display.WidthPx, c.Display.HeightPx = 5120, 1440
+	p := Resolve(bigboi(), c, lan, UserOverrides{Resolution: "4k", VirtualDisplayGPU: "Radeon"})
+	if p.EncoderAPI != APIAMF || p.Width != 2560 || p.Height != 1440 {
+		t.Fatalf("4k on AMF: %s %dx%d, want AMF 2560x1440", p.EncoderAPI, p.Width, p.Height)
 	}
 }

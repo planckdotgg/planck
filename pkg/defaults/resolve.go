@@ -353,16 +353,17 @@ func (r *resolver) stepDown() bool {
 	return false
 }
 
-// askedSize reports whether the resolution override asks for w x h: a
-// preset by its lines, a custom size exactly.
+// presetSizes are the resolution presets' sizes, whatever the client
+// display's shape.
+var presetSizes = map[ResolutionPref][2]int{"1080p": {1920, 1080}, "1440p": {2560, 1440}, "4k": {3840, 2160}}
+
+// askedSize reports whether the resolution override asks for exactly
+// w x h.
 func (r *resolver) askedSize(w, h int) bool {
-	switch r.o.Resolution {
-	case "1080p", "1440p", "4k":
-		return map[ResolutionPref]int{"1080p": 1080, "1440p": 1440, "4k": 2160}[r.o.Resolution] == h
-	case "custom":
-		return r.o.CustomWidth == w && r.o.CustomHeight == h
+	if s, ok := presetSizes[r.o.Resolution]; ok {
+		return s == [2]int{w, h}
 	}
-	return false
+	return r.o.Resolution == "custom" && r.o.CustomWidth == w && r.o.CustomHeight == h
 }
 
 func sizeString(w, h int) string { return fmt.Sprintf("%dx%d", w, h) }
@@ -395,12 +396,14 @@ func (r *resolver) sizeAndFPS() {
 		fpsCeil = min(maxHz, maxAutoFPS)
 		switch r.o.Resolution {
 		case "1080p", "1440p", "4k":
-			lines := map[ResolutionPref]int{"1080p": 1080, "1440p": 1440, "4k": 2160}[r.o.Resolution]
-			r.p.Width, r.p.Height = r.widthAt(lines), lines
-			resWhy = "override at the client aspect"
+			s := presetSizes[r.o.Resolution]
+			r.p.Width, r.p.Height = s[0], s[1]
+			r.stepW, r.stepH = s[0], s[1]
+			resWhy = "override"
 		case "custom":
 			if w, h := r.o.CustomWidth, r.o.CustomHeight; validCustomSize(w, h) {
 				r.p.Width, r.p.Height = w, h
+				r.stepW, r.stepH = w, h
 				resWhy = "override"
 			} else {
 				resFallback = "invalid custom size " + sizeString(w, h)
