@@ -106,7 +106,7 @@ var (
 	capturers      sync.Map // output ID -> *SCKCapturer
 )
 
-func NewCapturer() (*SCKCapturer, error) { return &SCKCapturer{}, nil }
+func newSCKCapturer() *SCKCapturer { return &SCKCapturer{} }
 
 func sel(s string) objc.SEL { return objc.RegisterName(s) }
 

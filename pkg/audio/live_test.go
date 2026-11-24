@@ -47,7 +47,7 @@ func TestLivePlayerSilence(t *testing.T) {
 
 func TestLiveCapture(t *testing.T) {
 	requireLive(t)
-	c, err := NewCapturer()
+	c, err := NewCapturer(CaptureOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

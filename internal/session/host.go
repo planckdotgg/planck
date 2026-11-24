@@ -96,6 +96,9 @@ type HostConfig struct {
 	Capabilities func() defaults.HostCapabilities
 	// OpenAudio replaces the platform loopback capturer.
 	OpenAudio func() (audio.Capturer, error)
+	// AudioExcludePIDs are processes, such as a voice chat app, whose
+	// audio the stream leaves out besides Planck's own (macOS only).
+	AudioExcludePIDs []int
 	// Injector replaces the platform injector when InjectInput is set.
 	Injector input.Injector
 	// OnInput sees every valid input event, injected or not.

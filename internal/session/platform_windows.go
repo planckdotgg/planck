@@ -127,7 +127,9 @@ func openSynth(p VideoParams) (VideoPipe, error) {
 	}, nil
 }
 
-func newAudioCapturer() (audio.Capturer, error) { return audio.NewCapturer() }
+func newAudioCapturer(opts audio.CaptureOptions) (audio.Capturer, error) {
+	return audio.NewCapturer(opts)
+}
 
 func newInjector() (input.Injector, error) { return input.NewInjector() }
 

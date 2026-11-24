@@ -379,7 +379,9 @@ func (st *stream) sleep(d time.Duration) bool {
 func (st *stream) audioLoop() {
 	open := st.h.cfg.OpenAudio
 	if open == nil {
-		open = newAudioCapturer
+		open = func() (audio.Capturer, error) {
+			return newAudioCapturer(audio.CaptureOptions{ExcludePIDs: st.h.cfg.AudioExcludePIDs})
+		}
 	}
 	capt, err := open()
 	if err != nil {

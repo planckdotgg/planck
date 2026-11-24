@@ -162,7 +162,9 @@ func appendParameterSets(out []byte, sbuf uintptr) ([]byte, error) {
 // cPtr views memory owned by CoreMedia; Go's GC never moves it.
 func cPtr(p uintptr) unsafe.Pointer { return *(*unsafe.Pointer)(unsafe.Pointer(&p)) }
 
-func newAudioCapturer() (audio.Capturer, error) { return audio.NewCapturer() }
+func newAudioCapturer(opts audio.CaptureOptions) (audio.Capturer, error) {
+	return audio.NewCapturer(opts)
+}
 
 func newInjector() (input.Injector, error) { return input.NewInjector() }
 

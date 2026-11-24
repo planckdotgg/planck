@@ -27,6 +27,24 @@ type Capturer interface {
 	Close() error
 }
 
+// CaptureOptions tunes desktop audio capture. Every backend leaves out
+// Planck's own process, so the host never hears what it plays itself.
+type CaptureOptions struct {
+	// ExcludePIDs are more processes to leave out, such as a voice chat
+	// app. The macOS process tap honours them; Windows process loopback
+	// takes a single process tree, so there they are not supported.
+	ExcludePIDs []int
+}
+
+// Capture paths a capturer's Mode reports.
+const (
+	ModeProcessLoopback  = "process-loopback"  // Windows, without Planck's process tree
+	ModeEndpointLoopback = "endpoint-loopback" // Windows default render endpoint, Planck included
+	ModeProcessTap       = "process-tap"       // macOS Core Audio tap, without Planck
+	ModeScreenCaptureKit = "screencapturekit"  // macOS, without Planck
+	ModeMicrophone       = "microphone"
+)
+
 // Player plays decoded audio on the client.
 type Player interface {
 	Write(pcm []int16) error
