@@ -289,12 +289,12 @@ func (f *finder) view(h *found) hostView {
 	return v
 }
 
-// controlAddr is the host's control address on a's path, or "" for none.
-func controlAddr(a discovery.Announcement) string {
-	if !a.Addr.IsValid() {
+// controlAddr is the host's control address on path, or "" for none.
+func (v hostView) controlAddr(path discovery.Announcement) string {
+	if !path.Addr.IsValid() {
 		return ""
 	}
-	return netip.AddrPortFrom(a.Addr.Addr(), a.Beacon.ControlPort).String()
+	return netip.AddrPortFrom(path.Addr.Addr(), v.Beacon.ControlPort).String()
 }
 
 func (f *finder) sameUser(ip netip.Addr) bool {

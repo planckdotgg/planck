@@ -141,8 +141,8 @@ func (b *backend) Hosts() []ui.HostInfo {
 		h := ui.HostInfo{
 			ID: id, AdvertisedName: v.Beacon.Name, OS: v.Beacon.OS, PathKind: v.Best.Kind,
 			RTTMs: float64(v.Best.RTT) / 1e6, Online: v.Online, Paired: paired, TailscaleSameUser: v.SameUser,
-			Address:    controlAddr(v.Best),
-			LANAddress: controlAddr(v.LAN), TailscaleAddress: controlAddr(v.Tailscale),
+			Address:    v.controlAddr(v.Best),
+			LANAddress: v.controlAddr(v.LAN), TailscaleAddress: v.controlAddr(v.Tailscale),
 			LANReachable: v.LANOnline, TailscaleReachable: v.TailscaleOnline,
 		}
 		if h.LANAddress == "" {
@@ -252,7 +252,7 @@ func (b *backend) syncPins() {
 		if !ok {
 			continue
 		}
-		u := update{name: v.Beacon.Name, lan: controlAddr(v.LAN), tailnet: controlAddr(v.Tailscale)}
+		u := update{name: v.Beacon.Name, lan: v.controlAddr(v.LAN), tailnet: v.controlAddr(v.Tailscale)}
 		if u.name != p.Name || u.lan != "" && u.lan != p.LastLANAddr || u.tailnet != "" && u.tailnet != p.LastTailscaleAddr {
 			updates[v.Beacon.HostID] = u
 		}
