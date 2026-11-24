@@ -332,7 +332,7 @@ func (c *WASAPICapturer) openClient() (client *comObject, mode string, channels 
 	if err == nil && client != nil {
 		return client, ModeProcessLoopback, Channels, true, nil
 	}
-	client, err = endpointClient(eRender, "")
+	client, err = endpointClient(eRender, c.deviceID)
 	return client, ModeEndpointLoopback, Channels, true, err
 }
 

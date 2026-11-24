@@ -70,6 +70,18 @@ func TestLiveVirtualMicRoundTrip(t *testing.T) {
 	if err := mic.Start(ctx, rec.on); err != nil {
 		t.Fatal(err)
 	}
+	// What the sink renders, heard on its own endpoint: tells a sink that
+	// writes nothing from a driver that passes nothing on.
+	lb := newLoopbackOn(vm.ID)
+	var rendered recorder
+	if err := lb.Start(ctx, rendered.on); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		lb.Close()
+		out := rendered.take()
+		t.Logf("sink endpoint loopback: 440 Hz level %.1f", toneLevel(out[min(len(out), SampleRate/2*Channels):], Channels, 440))
+	}()
 	frame := make([]int16, FrameSamples(DefaultFrameDuration)*MicChannels)
 	tick := time.NewTicker(DefaultFrameDuration)
 	for n := 0; ctx.Err() == nil; n += len(frame) {

@@ -4,6 +4,10 @@ import "testing"
 
 func newEndpointLoopbackCapturer() *WASAPICapturer { return &WASAPICapturer{endpointOnly: true} }
 
+func newLoopbackOn(id string) *WASAPICapturer {
+	return &WASAPICapturer{endpointOnly: true, deviceID: id}
+}
+
 func newMicCapturerOn(id string) *WASAPICapturer { return &WASAPICapturer{mic: true, deviceID: id} }
 
 func inputDevices() ([]VirtualMic, error) { return endpoints(eCapture) }
