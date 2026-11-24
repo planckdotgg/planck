@@ -777,6 +777,14 @@ func (s *Session) shutdown(err error) {
 	})
 }
 
+// ClosedByPeer reports whether err, a session's Err, is the peer closing
+// the session on purpose. A goodbye can be lost with the close that
+// follows it, which still tells an orderly end from a lost connection.
+func ClosedByPeer(err error) bool {
+	var ae *quic.ApplicationError
+	return errors.As(err, &ae) && ae.Remote && ae.ErrorCode == 0
+}
+
 // Err is why the session ended, or nil while it runs.
 func (s *Session) Err() error {
 	s.errMu.Lock()

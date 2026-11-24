@@ -69,11 +69,43 @@ type ClientConfig struct {
 	OnRumble         func(input.RumbleEvent)
 	HandshakeTimeout time.Duration
 	SimulateLoss     float64
-	Logf             func(format string, args ...any)
+	// Route says how a live stream moves between the host's routes.
+	Route RouteConfig
+	Logf  func(format string, args ...any)
 }
 
+// RouteConfig tunes the route monitor that runs beside each stream. A
+// stream whose route stalls or drops moves to another candidate that
+// answers, and a stream on a tailnet route moves to the LAN when
+// PreferLAN is set and a LAN candidate answers lanUpgradeAfter probes in a
+// row. Each move dials the host again on the new route, so the media path
+// takes that route's datagram size and bitrate ceiling, while the video
+// sink, the decoder and audio play-out carry on.
+type RouteConfig struct {
+	PreferLAN bool
+	// ProbeInterval is how often the LAN is probed from a tailnet route;
+	// zero is DefaultProbeInterval.
+	ProbeInterval time.Duration
+	// StallTimeout is how long a route may deliver nothing before the
+	// stream leaves it; zero is DefaultStallTimeout. The host pings four
+	// times a second, so a live route is never quiet this long.
+	StallTimeout time.Duration
+	// Probe replaces discovery.Probe.
+	Probe func(ctx context.Context, addr netip.AddrPort) (discovery.Beacon, time.Duration, error)
+}
+
+const (
+	DefaultProbeInterval = 4 * time.Second
+	DefaultStallTimeout  = 2500 * time.Millisecond
+	lanUpgradeAfter      = 2
+	// rerouteFor is how long a stream that lost its route tries the
+	// others before it ends.
+	rerouteFor = 10 * time.Second
+)
+
 // Target says where to connect: discovery candidates, raced LAN direct
-// first, then Tailscale direct, then DERP; or an explicit host:port.
+// first, then Tailscale direct, then DERP; or an explicit host:port, which
+// is also the fallback when no candidate answers.
 type Target struct {
 	Candidates []discovery.Candidate
 	Addr       string
@@ -104,6 +136,12 @@ type ClientStats struct {
 	Height    int
 	FPS       float64
 	Kbps      float64
+	// DatagramBytes is the largest media datagram of the route, and
+	// MaxBitrateKbps the bitrate the host accepted on it.
+	DatagramBytes  int
+	MaxBitrateKbps int
+	// RouteSwitches counts the moves to another route.
+	RouteSwitches uint64
 
 	EncodeMs  float64
 	NetworkMs float64
@@ -142,6 +180,8 @@ type Client struct {
 	cfg  ClientConfig
 	dir  string
 	logf func(string, ...any)
+	// activity counts what a route delivered, for stall detection.
+	activity func(*transport.Session) uint64
 
 	mu     sync.Mutex
 	conn   *conn
@@ -158,7 +198,8 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		}
 		dir = d
 	}
-	c := &Client{cfg: cfg, dir: dir, logf: cfg.Logf}
+	c := &Client{cfg: cfg, dir: dir, logf: cfg.Logf,
+		activity: func(s *transport.Session) uint64 { return s.Stats().PacketsReceived }}
 	if c.logf == nil {
 		c.logf = log.Printf
 	}
@@ -168,19 +209,24 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	return c, nil
 }
 
-// conn is one live session and its goroutines.
+// conn is one stream and its goroutines. Its route changes under it.
 type conn struct {
-	sess   *transport.Session
-	live   atomic.Pointer[transport.Session]
+	live   atomic.Pointer[route]
 	hostID string
 	name   string
-	path   string
-	addr   string
 	codec  encode.Codec
+	// video is the accepted config the sink was opened for; a new route
+	// must accept the same.
+	video    wire.SessionConfig
+	switches atomic.Uint64
 
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+	// done closes when the stream ends for good, with err saying why.
+	done    chan struct{}
+	endOnce sync.Once
+	err     error
 
 	frames chan *frameBuf
 	free   chan *frameBuf
@@ -217,6 +263,26 @@ type conn struct {
 // capturedAt maps a frame, by the PTS its picture carries, to the host's
 // capture time on the client's clock, for pictures that reach the screen
 // after the decode loop moved on.
+// route is one transport session of a stream and the path it runs on.
+type route struct {
+	sess *transport.Session
+	kind discovery.PathKind
+	addr string
+	// bye is set when the host said goodbye: it ended the stream, or gave
+	// it to another client, and the stream must not come back.
+	bye atomic.Bool
+}
+
+func (cc *conn) session() *transport.Session { return cc.live.Load().sess }
+
+// end stops the stream for good; the first reason sticks.
+func (cc *conn) end(err error) {
+	cc.endOnce.Do(func() {
+		cc.err = err
+		close(cc.done)
+	})
+}
+
 type capturedAt struct {
 	frame uint32
 	at    int64
@@ -253,6 +319,7 @@ func (c *Client) Connect(ctx context.Context, t Target) error {
 	c.mu.Lock()
 	c.conn, c.target = cc, t
 	c.mu.Unlock()
+	cc.wg.Go(func() { c.watchRoutes(cc, t) })
 	return nil
 }
 
@@ -264,65 +331,10 @@ func (c *Client) connect(ctx context.Context, t Target) (*conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	addr, hostID, path := r.addr, r.hostID, r.kind
-	t.Fingerprint = r.fingerprint
-	stored, err := config.LoadClientConfig(c.dir)
-	if err != nil {
-		return nil, err
-	}
-	cert, err := config.LoadOrCreateIdentity(filepath.Join(c.dir, "client-cert.pem"), filepath.Join(c.dir, "client-key.pem"), "planck-client "+cfg.Name)
-	if err != nil {
-		return nil, err
-	}
-	pinKey := hostID
-	if pinKey == "" {
-		pinKey = "addr:" + addr
-	}
-	pinned, isPinned := stored.PinnedHosts[pinKey]
-	var seen [32]byte
-	verify := func(fp [32]byte) error {
-		seen = fp
-		want := t.Fingerprint
-		if isPinned {
-			want = pinned.CertFingerprint
-		}
-		if want == "" {
-			return nil
-		}
-		w, err := hex.DecodeString(want)
-		if err != nil || subtle.ConstantTimeCompare(w, fp[:]) != 1 {
-			return config.ErrFingerprintMismatch
-		}
-		return nil
-	}
-	method := wire.AuthTailscale
-	switch {
-	case cfg.PIN != "":
-		method = wire.AuthPIN
-	case isPinned:
-		method = wire.AuthPaired
-	}
-
-	q := cfg.Quality
-	req := wire.SessionConfig{Codec: codecToWire(q.Codec), Chroma: chromaToWire(q.Chroma), Width: uint16(q.Width), Height: uint16(q.Height),
-		FPS: uint16(q.FPS), BitrateKbps: uint32(q.BitrateKbps), Slices: uint8(q.Slices)}
-	if q.Codec == 0 {
-		req.Codec = 0
-	}
-	if q.Chroma == 0 {
-		req.Chroma = 0
-	}
-	if ceiling := path.RecommendedMaxBitrateKbps(); req.BitrateKbps == 0 || int(req.BitrateKbps) > ceiling {
-		req.BitrateKbps = uint32(ceiling)
-	}
-	if !cfg.NoAudio {
-		req.AudioSampleRate, req.AudioChannels = audio.SampleRate, audio.Channels
-	}
-
-	cc := &conn{hostID: hostID, name: r.name, path: path.String(), addr: addr, frames: make(chan *frameBuf, warmupQueue),
+	cc := &conn{hostID: r.hostID, name: r.name, frames: make(chan *frameBuf, warmupQueue),
 		free: make(chan *frameBuf, warmupQueue+2), e2e: newWindow(latencyWindow), network: newWindow(latencyWindow),
 		encodeW: newWindow(latencyWindow), decodeW: newWindow(latencyWindow), presentW: newWindow(latencyWindow),
-		glassW: newWindow(latencyWindow), e2eGlassW: newWindow(latencyWindow)}
+		glassW: newWindow(latencyWindow), e2eGlassW: newWindow(latencyWindow), done: make(chan struct{})}
 	for range warmupQueue + 2 {
 		cc.free <- &frameBuf{}
 	}
@@ -331,37 +343,17 @@ func (c *Client) connect(ctx context.Context, t Target) (*conn, error) {
 	if !cfg.NoAudio {
 		cc.jb = audio.NewJitterBuffer(audio.JitterConfig{})
 	}
-	sess, err := transport.Dial(ctx, addr, transport.ClientConfig{
-		Certificate: cert, Name: cfg.Name, VerifyHost: verify, Auth: method, PIN: cfg.PIN, Session: req,
-		HandshakeTimeout: cfg.HandshakeTimeout, SimulateLoss: cfg.SimulateLoss, LANPath: path == discovery.PathLANDirect,
-		Handlers: transport.Handlers{
-			VideoFrame: cc.onFrame,
-			Audio:      cc.onAudio,
-			Rumble: func(r wire.Rumble) {
-				if cfg.OnRumble != nil {
-					cfg.OnRumble(input.RumbleEvent{Index: r.Pad, LowFreq: r.Low, HighFreq: r.High, DurationMs: r.DurationMs})
-				}
-			},
-		},
-	})
+	rt, err := c.dialRoute(ctx, cc, r)
 	if err != nil {
 		return nil, err
 	}
-	cc.sess = sess
-	cc.live.Store(sess)
-	if cfg.PIN != "" {
-		// A PIN pairs once; the host rotates it, and reconnects use the pin.
-		c.mu.Lock()
-		c.cfg.PIN = ""
-		c.mu.Unlock()
-	}
-	if !isPinned || !strings.EqualFold(pinned.CertFingerprint, hex.EncodeToString(seen[:])) {
-		if err := c.pin(stored, pinKey, addr, seen); err != nil {
-			sess.Close()
-			return nil, err
-		}
+	sess := rt.sess
+	cc.live.Store(rt)
+	if cc.name == "" {
+		cc.name = sess.PeerName()
 	}
 	acc := sess.Config()
+	cc.video = acc
 	cc.codec = codecFromWire(acc.Codec)
 	open := cfg.OpenSink
 	if open == nil {
@@ -393,6 +385,106 @@ func (c *Client) connect(ctx context.Context, t Target) (*conn, error) {
 	return cc, nil
 }
 
+// dialRoute opens a session to the host on r for cc, checking the host's
+// certificate against its pin, and pins the host on first approval. It
+// records the route's address on the pin.
+func (c *Client) dialRoute(ctx context.Context, cc *conn, r resolved) (*route, error) {
+	c.mu.Lock()
+	cfg := c.cfg
+	c.mu.Unlock()
+	stored, err := config.LoadClientConfig(c.dir)
+	if err != nil {
+		return nil, err
+	}
+	cert, err := config.LoadOrCreateIdentity(filepath.Join(c.dir, "client-cert.pem"), filepath.Join(c.dir, "client-key.pem"), "planck-client "+cfg.Name)
+	if err != nil {
+		return nil, err
+	}
+	pinKey := r.hostID
+	if pinKey == "" {
+		pinKey = "addr:" + r.addr
+	}
+	pinned, isPinned := stored.PinnedHosts[pinKey]
+	var seen [32]byte
+	verify := func(fp [32]byte) error {
+		seen = fp
+		want := r.fingerprint
+		if isPinned {
+			want = pinned.CertFingerprint
+		}
+		if want == "" {
+			return nil
+		}
+		w, err := hex.DecodeString(want)
+		if err != nil || subtle.ConstantTimeCompare(w, fp[:]) != 1 {
+			return config.ErrFingerprintMismatch
+		}
+		return nil
+	}
+	method := wire.AuthTailscale
+	switch {
+	case cfg.PIN != "":
+		method = wire.AuthPIN
+	case isPinned:
+		method = wire.AuthPaired
+	}
+
+	q := cfg.Quality
+	req := wire.SessionConfig{Codec: codecToWire(q.Codec), Chroma: chromaToWire(q.Chroma), Width: uint16(q.Width), Height: uint16(q.Height),
+		FPS: uint16(q.FPS), BitrateKbps: uint32(q.BitrateKbps), Slices: uint8(q.Slices)}
+	if q.Codec == 0 {
+		req.Codec = 0
+	}
+	if q.Chroma == 0 {
+		req.Chroma = 0
+	}
+	if ceiling := r.kind.RecommendedMaxBitrateKbps(); req.BitrateKbps == 0 || int(req.BitrateKbps) > ceiling {
+		req.BitrateKbps = uint32(ceiling)
+	}
+	if !cfg.NoAudio {
+		req.AudioSampleRate, req.AudioChannels = audio.SampleRate, audio.Channels
+	}
+
+	rt := &route{kind: r.kind, addr: r.addr}
+	sess, err := transport.Dial(ctx, r.addr, transport.ClientConfig{
+		Certificate: cert, Name: cfg.Name, VerifyHost: verify, Auth: method, PIN: cfg.PIN, Session: req,
+		HandshakeTimeout: cfg.HandshakeTimeout, SimulateLoss: cfg.SimulateLoss, LANPath: r.kind == discovery.PathLANDirect,
+		Handlers: transport.Handlers{
+			VideoFrame: cc.onFrame,
+			Audio:      cc.onAudio,
+			Control: func(m wire.Message) {
+				if _, ok := m.(*wire.Goodbye); ok {
+					rt.bye.Store(true)
+				}
+			},
+			Rumble: func(r wire.Rumble) {
+				if cfg.OnRumble != nil {
+					cfg.OnRumble(input.RumbleEvent{Index: r.Pad, LowFreq: r.Low, HighFreq: r.High, DurationMs: r.DurationMs})
+				}
+			},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	rt.sess = sess
+	if cfg.PIN != "" {
+		// A PIN pairs once; the host rotates it, and reconnects use the pin.
+		c.mu.Lock()
+		c.cfg.PIN = ""
+		c.mu.Unlock()
+	}
+	name := r.name
+	if name == "" {
+		name = sess.PeerName()
+	}
+	if err := c.pin(pinKey, r, name, seen); err != nil {
+		sess.Close()
+		return nil, err
+	}
+	return rt, nil
+}
+
 type resolved struct {
 	addr, hostID, name, fingerprint string
 	kind                            discovery.PathKind
@@ -403,15 +495,13 @@ type resolved struct {
 func (c *Client) resolve(ctx context.Context, t Target) (resolved, error) {
 	r := resolved{addr: t.Addr, hostID: t.HostID, fingerprint: t.Fingerprint, kind: discovery.PathLANDirect}
 	if len(t.Candidates) > 0 {
-		res, err := discovery.Racer{}.Race(ctx, t.Candidates)
-		if err != nil {
+		res, err := discovery.Racer{Probe: c.cfg.Route.Probe}.Race(ctx, t.Candidates)
+		if err == nil {
+			return r.from(res), nil
+		}
+		if t.Addr == "" || ctx.Err() != nil {
 			return r, err
 		}
-		if r.fingerprint == "" {
-			r.fingerprint = res.Beacon.CertFingerprint
-		}
-		r.addr, r.hostID, r.name, r.kind = res.ControlAddr.String(), res.Beacon.HostID, res.Beacon.Name, res.Kind
-		return r, nil
 	}
 	if t.Addr == "" {
 		return r, errors.New("session: no host address or candidates")
@@ -432,11 +522,190 @@ func (c *Client) resolve(ctx context.Context, t Target) (resolved, error) {
 	return r, nil
 }
 
-func (c *Client) pin(stored config.ClientConfig, key, addr string, fp [32]byte) error {
-	if err := stored.Pin(config.PinnedHost{HostID: key, CertFingerprint: hex.EncodeToString(fp[:]), PairedAt: time.Now(), LastAddr: addr}); err != nil {
+// from is r on the path a race won.
+func (r resolved) from(res discovery.Result) resolved {
+	if r.fingerprint == "" {
+		r.fingerprint = res.Beacon.CertFingerprint
+	}
+	r.addr, r.hostID, r.name, r.kind = res.ControlAddr.String(), res.Beacon.HostID, res.Beacon.Name, res.Kind
+	return r
+}
+
+// pin records the host's certificate on first approval, and the name and
+// route the host was just reached by.
+func (c *Client) pin(key string, r resolved, name string, fp [32]byte) error {
+	return config.UpdateClientConfig(c.dir, func(stored *config.ClientConfig) error {
+		p, ok := stored.PinnedHosts[key]
+		if !ok || !strings.EqualFold(p.CertFingerprint, hex.EncodeToString(fp[:])) {
+			p.HostID, p.CertFingerprint, p.PairedAt = key, hex.EncodeToString(fp[:]), time.Now()
+		}
+		p.LastAddr = r.addr
+		if name != "" {
+			p.Name = name
+		}
+		if r.kind == discovery.PathLANDirect {
+			p.LastLANAddr = r.addr
+		} else {
+			p.LastTailscaleAddr = r.addr
+		}
+		return stored.Pin(p)
+	})
+}
+
+// watchRoutes follows cc's route until the stream ends: it moves the
+// stream off a route that stalls or drops, and onto the LAN when that is
+// preferred and answers.
+func (c *Client) watchRoutes(cc *conn, t Target) {
+	rc := c.cfg.Route
+	if rc.ProbeInterval <= 0 {
+		rc.ProbeInterval = DefaultProbeInterval
+	}
+	if rc.StallTimeout <= 0 {
+		rc.StallTimeout = DefaultStallTimeout
+	}
+	probe := rc.Probe
+	if probe == nil {
+		probe = discovery.Probe
+	}
+	var lan []discovery.Candidate
+	for _, cand := range t.Candidates {
+		if cand.Kind == discovery.PathLANDirect {
+			lan = append(lan, cand)
+		}
+	}
+	tick := time.NewTicker(min(rc.ProbeInterval, rc.StallTimeout) / 4)
+	defer tick.Stop()
+
+	var (
+		rt        = cc.live.Load()
+		heard     uint64
+		heardAt   = time.Now()
+		probedAt  = time.Now()
+		lanAnswer int
+	)
+	moved := func() {
+		rt, heard, heardAt, probedAt, lanAnswer = cc.live.Load(), 0, time.Now(), time.Now(), 0
+	}
+	for {
+		select {
+		case <-cc.ctx.Done():
+			return
+		case <-rt.sess.Done():
+			if rt.bye.Load() || transport.ClosedByPeer(rt.sess.Err()) {
+				cc.end(rt.sess.Err())
+				return
+			}
+			c.logf("planck: %s route to %s dropped: %v", rt.kind, rt.addr, rt.sess.Err())
+			if err := c.reroute(cc, t, rt); err != nil {
+				cc.end(err)
+				return
+			}
+			moved()
+			continue
+		case <-tick.C:
+		}
+		now := time.Now()
+		if n := c.activity(rt.sess); n != heard {
+			heard, heardAt = n, now
+		} else if now.Sub(heardAt) >= rc.StallTimeout {
+			c.logf("planck: %s route to %s stalled for %v", rt.kind, rt.addr, now.Sub(heardAt).Round(time.Millisecond))
+			if err := c.reroute(cc, t, rt); err != nil {
+				cc.end(err)
+				return
+			}
+			moved()
+			continue
+		}
+		if !rc.PreferLAN || rt.kind == discovery.PathLANDirect || len(lan) == 0 || now.Sub(probedAt) < rc.ProbeInterval {
+			continue
+		}
+		probedAt = now
+		res, err := c.probeLAN(cc.ctx, lan, probe, rc.ProbeInterval)
+		if err != nil {
+			lanAnswer = 0
+			continue
+		}
+		if lanAnswer++; lanAnswer < lanUpgradeAfter {
+			continue
+		}
+		r := resolved{hostID: cc.hostID, fingerprint: t.Fingerprint}.from(res)
+		if err := c.switchRoute(cc, r); err != nil {
+			c.logf("planck: move to the LAN at %s: %v", r.addr, err)
+			lanAnswer = 0
+			continue
+		}
+		moved()
+	}
+}
+
+// probeLAN races the LAN candidates once, within a second or the probe
+// interval if shorter.
+func (c *Client) probeLAN(ctx context.Context, lan []discovery.Candidate, probe func(context.Context, netip.AddrPort) (discovery.Beacon, time.Duration, error), every time.Duration) (discovery.Result, error) {
+	ctx, cancel := context.WithTimeout(ctx, min(time.Second, every))
+	defer cancel()
+	return discovery.Racer{Probe: probe}.Race(ctx, lan)
+}
+
+// reroute moves cc off dead, trying routes of another kind first, until
+// one takes the stream or rerouteFor passes.
+func (c *Client) reroute(cc *conn, t Target, dead *route) error {
+	deadline := time.Now().Add(rerouteFor)
+	var others []discovery.Candidate
+	for _, cand := range t.Candidates {
+		if cand.Kind != dead.kind {
+			others = append(others, cand)
+		}
+	}
+	var err error
+	for attempt := 0; time.Now().Before(deadline); attempt++ {
+		cands := t.Candidates
+		if attempt == 0 && len(others) > 0 {
+			cands = others
+		}
+		ctx, cancel := context.WithDeadline(cc.ctx, deadline)
+		var r resolved
+		r, err = c.resolve(ctx, Target{Candidates: cands, Addr: t.Addr, HostID: cc.hostID, Fingerprint: t.Fingerprint})
+		if err == nil {
+			err = c.switchRoute(cc, r)
+		}
+		cancel()
+		if err == nil || cc.ctx.Err() != nil {
+			return err
+		}
+		c.logf("planck: reroute: %v", err)
+		select {
+		case <-cc.ctx.Done():
+			return cc.ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+	return fmt.Errorf("session: no route to the host: %w", err)
+}
+
+// switchRoute dials the host on r and moves cc's stream onto it. The host
+// takes the new session over from the old one. The decoder waits for the
+// new stream's first keyframe.
+func (c *Client) switchRoute(cc *conn, r resolved) error {
+	ctx, cancel := context.WithTimeout(cc.ctx, 5*time.Second)
+	defer cancel()
+	cc.needKey.Store(true)
+	rt, err := c.dialRoute(ctx, cc, r)
+	if err != nil {
 		return err
 	}
-	return config.SaveClientConfig(c.dir, stored)
+	acc := rt.sess.Config()
+	if acc.Codec != cc.video.Codec || acc.Width != cc.video.Width || acc.Height != cc.video.Height {
+		rt.sess.Close()
+		return fmt.Errorf("session: the host changed the stream to %dx%d codec %d on %s", acc.Width, acc.Height, acc.Codec, r.kind)
+	}
+	if cc.jb != nil {
+		cc.jb.Restart()
+	}
+	old := cc.live.Swap(rt)
+	cc.switches.Add(1)
+	c.logf("planck: stream moved from %s %s to %s %s (%d-byte datagrams)", old.kind, old.addr, rt.kind, rt.addr, rt.sess.MaxDatagram())
+	old.sess.Close()
+	return nil
 }
 
 // onFrame runs on the receive goroutine: it copies the frame out and never
@@ -445,10 +714,11 @@ func (c *Client) pin(stored config.ClientConfig, key, addr string, fp [32]byte) 
 // decoder fed them fails on each.
 func (cc *conn) onFrame(info wire.VideoInfo, frame []byte) {
 	now := transport.Mono()
-	sess := cc.live.Load()
-	if sess == nil {
+	rt := cc.live.Load()
+	if rt == nil {
 		return
 	}
+	sess := rt.sess
 	if cc.needKey.Load() {
 		if !info.Keyframe {
 			cc.drop()
@@ -502,13 +772,13 @@ func (cc *conn) drop() {
 
 // requestKey sends at most one PLI per minPLIGap.
 func (cc *conn) requestKey() {
-	sess := cc.live.Load()
+	rt := cc.live.Load()
 	now := transport.Mono()
 	last := cc.lastPLI.Load()
-	if sess == nil || now-last < int64(minPLIGap) || !cc.lastPLI.CompareAndSwap(last, now) {
+	if rt == nil || now-last < int64(minPLIGap) || !cc.lastPLI.CompareAndSwap(last, now) {
 		return
 	}
-	_ = sess.SendControl(&wire.PLI{})
+	_ = rt.sess.SendControl(&wire.PLI{})
 }
 
 // decodeLoop runs on a thread of its own at a raised class, which ends
@@ -518,7 +788,6 @@ func (cc *conn) decodeLoop(sink Sink, logf func(string, ...any)) {
 	if err := rtprio.Boost(); err != nil {
 		logf("planck: decode thread priority: %v", err)
 	}
-	clock := cc.sess.Clock()
 	for {
 		var fb *frameBuf
 		select {
@@ -526,6 +795,7 @@ func (cc *conn) decodeLoop(sink Sink, logf func(string, ...any)) {
 			return
 		case fb = <-cc.frames:
 		}
+		clock := cc.session().Clock()
 		dequeued := transport.Mono()
 		t, err := sink.Submit(fb.data, int64(fb.info.FrameID))
 		shown := transport.Mono()
@@ -649,7 +919,7 @@ func (cc *conn) reportLoop() {
 		case <-t.C:
 		}
 		s := cc.stats()
-		_ = cc.sess.SendControl(&wire.StatsReport{
+		_ = cc.session().SendControl(&wire.StatsReport{
 			RTTMicros:       uint32(s.RTTMs * 1000),
 			LossPermille:    uint16(s.LossPct * 10),
 			FramesReceived:  uint32(s.FramesReceived),
@@ -662,12 +932,15 @@ func (cc *conn) reportLoop() {
 }
 
 func (cc *conn) stats() ClientStats {
-	ss := cc.sess.Stats()
-	acc := cc.sess.Config()
+	rt := cc.live.Load()
+	sess := rt.sess
+	ss := sess.Stats()
+	acc := sess.Config()
 	s := ClientStats{
-		Connected: true, HostName: cc.name, HostID: cc.hostID, Identity: cc.sess.Identity(), Addr: cc.addr, Path: cc.path,
+		Connected: true, HostName: cc.name, HostID: cc.hostID, Identity: sess.Identity(), Addr: rt.addr, Path: rt.kind.String(),
+		DatagramBytes: sess.MaxDatagram(), MaxBitrateKbps: int(acc.BitrateKbps), RouteSwitches: cc.switches.Load(),
 		Codec: cc.codec.String(), Width: int(acc.Width), Height: int(acc.Height),
-		RTTMs:          ms(int64(cc.sess.RTT())),
+		RTTMs:          ms(int64(sess.RTT())),
 		FramesReceived: ss.FramesComplete, FramesLost: ss.FramesLost, SlicesRecovered: ss.SlicesRecovered,
 		FramesDropped: cc.dropped.Load(), SinkErrors: cc.sinkErr.Load(), AudioPackets: cc.audioPkts.Load(), InputSent: cc.inputs.Load(),
 	}
@@ -685,7 +958,7 @@ func (cc *conn) stats() ClientStats {
 	}
 	// Video datagrams are what remains after audio and the clock probes:
 	// each side pings four times a second once media is up.
-	video := float64(ss.PacketsReceived) - float64(s.AudioPackets) - 2*float64(cc.sess.Clock().Samples())
+	video := float64(ss.PacketsReceived) - float64(s.AudioPackets) - 2*float64(sess.Clock().Samples())
 	cc.mu.Lock()
 	if cc.dataShard > 0 && video > float64(cc.dataShard) {
 		s.FECParityPct = 100 * (video - float64(cc.dataShard)) / float64(cc.dataShard)
@@ -700,9 +973,10 @@ func (cc *conn) stats() ClientStats {
 }
 
 func (cc *conn) close() {
-	cc.sess.Close()
 	cc.cancel()
+	cc.session().Close()
 	cc.wg.Wait()
+	cc.end(transport.ErrClosed)
 	if err := cc.trace.flush(); err != nil {
 		log.Printf("planck: trace: %v", err)
 	}
@@ -718,31 +992,38 @@ func (c *Client) Stats() ClientStats {
 		return ClientStats{}
 	}
 	select {
-	case <-cc.sess.Done():
+	case <-cc.done:
 		return ClientStats{}
 	default:
 	}
 	return cc.stats()
 }
 
-// Done is closed when the current session ends; nil without one.
+// Done is closed when the current stream ends, which a route change does
+// not; nil without one.
 func (c *Client) Done() <-chan struct{} {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.conn == nil {
 		return nil
 	}
-	return c.conn.sess.Done()
+	return c.conn.done
 }
 
-// Err is why the current session ended.
+// Err is why the current stream ended.
 func (c *Client) Err() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.conn == nil {
+	cc := c.conn
+	c.mu.Unlock()
+	if cc == nil {
 		return nil
 	}
-	return c.conn.sess.Err()
+	select {
+	case <-cc.done:
+		return cc.err
+	default:
+		return nil
+	}
 }
 
 var ErrNotConnected = errors.New("session: not connected")
@@ -761,7 +1042,7 @@ func (c *Client) SendInput(ev input.Event) error {
 	}
 	in.Seq = cc.inputSeq.Add(1)
 	in.Timestamp = transport.Mono()
-	if err := cc.sess.SendInput(in); err != nil {
+	if err := cc.session().SendInput(in); err != nil {
 		return err
 	}
 	cc.inputs.Add(1)
@@ -776,7 +1057,7 @@ func (c *Client) RequestKeyframe() error {
 	if cc == nil {
 		return ErrNotConnected
 	}
-	return cc.sess.SendControl(&wire.PLI{})
+	return cc.session().SendControl(&wire.PLI{})
 }
 
 // SetQuality changes the requested stream. Protocol v1 fixes the config at
