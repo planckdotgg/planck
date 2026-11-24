@@ -34,7 +34,7 @@ func snapshot(t *testing.T, tt *mui.Tester, name string) {
 func TestHostsEmptyState(t *testing.T) {
 	f := newFake()
 	_, tt := newTester(t, f)
-	if !tt.HasText("No hosts found yet") || !tt.HasText("Searching your network and tailnet") {
+	if !tt.HasText("Looking for hosts") || !tt.HasText("Searching your network and tailnet") {
 		t.Fatalf("empty state missing: %q", tt.Texts())
 	}
 	if !tt.HasText("Tailscale is not running. LAN hosts still show here.") {
@@ -52,8 +52,8 @@ func TestHostsListAndConnect(t *testing.T) {
 	f.hosts = sampleHosts()
 	f.tailnet = TailnetStatus{Running: true, User: "watzon@"}
 	a, tt := newTester(t, f)
-	for _, s := range []string{"bigboi", "studio-mac", "cabin-pc", "LAN direct", "0.2 ms", "DERP relay",
-		"RTX 4080 NVENC", "1920 x 1080", "60 Hz", "not paired", "Tailscale connected as watzon@",
+	for _, s := range []string{"bigboi", "studio-mac", "cabin-pc", "LAN", "0.2 ms", "Relay",
+		"RTX 4080 NVENC · 1080p 60", "Not paired", "Tailscale connected", "watzon@",
 		"3 online on your network and tailnet"} {
 		if !tt.HasText(s) {
 			t.Errorf("missing %q", s)
@@ -164,7 +164,7 @@ func TestPairingRequiredOpensPairing(t *testing.T) {
 		t.Fatalf("pins = %q, want [481207]", pins)
 	}
 	click(t, tt, "Back to hosts")
-	if !tt.HasText("Also available") {
+	if !tt.HasText("Pair & Connect") {
 		t.Fatalf("not back on hosts: %q", tt.Texts())
 	}
 }
@@ -226,7 +226,7 @@ func TestRailNavigation(t *testing.T) {
 		t.Fatalf("settings not shown: %q", tt.Texts())
 	}
 	click(t, tt, "Hosts")
-	if !tt.HasText("No hosts found yet") {
+	if !tt.HasText("Looking for hosts") {
 		t.Fatalf("hosts not shown: %q", tt.Texts())
 	}
 }
@@ -312,7 +312,7 @@ func TestHUDDrawerActions(t *testing.T) {
 	if a.hudMode() != HUDPill {
 		t.Fatalf("HUD mode after disconnect = %v", a.hudMode())
 	}
-	if !tt.HasText("No hosts found yet") {
+	if !tt.HasText("Looking for hosts") {
 		t.Fatalf("not back on hosts: %q", tt.Texts())
 	}
 }
@@ -353,7 +353,13 @@ func TestHostingToggle(t *testing.T) {
 
 func TestBackendNotifyAfterFirstFrame(t *testing.T) {
 	f := newFake()
+	// Start from a still grid: the empty state animates, so it always has
+	// a frame pending.
+	f.hosts = sampleHosts()[1:2]
 	a, tt := newTester(t, f)
+	if tt.FramePending() {
+		t.Fatal("a still host grid asks for frames")
+	}
 	f.mu.Lock()
 	notify := f.onChange
 	f.mu.Unlock()
@@ -414,7 +420,7 @@ func TestPairedHostNotFoundConnects(t *testing.T) {
 	f.hosts = []HostInfo{{ID: "addr:192.168.188.126:41001", Name: "192.168.188.126:41001", Paired: true,
 		Address: "192.168.188.126:41001"}}
 	_, tt := newTester(t, f)
-	if tt.HasText("No hosts found yet") {
+	if tt.HasText("Looking for hosts") {
 		t.Fatalf("paired host not listed: %q", tt.Texts())
 	}
 	if err := tt.Click("Connect to 192.168.188.126:41001"); err != nil {
