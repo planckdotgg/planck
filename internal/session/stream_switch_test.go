@@ -265,7 +265,7 @@ func TestVirtualDisplayTakesClientScale(t *testing.T) {
 			t.Fatal(err)
 		}
 		cancel()
-		waitFor(t, "the virtual display", func() bool { live, _, _ := vdd.state(); return live == 1 })
+		waitFor(t, "the virtual display", func() bool { return got.Load() != 0 })
 		if int(got.Load()) != c.want {
 			t.Errorf("client scale %v: virtual display at %d%%, want %d%%", c.scale, got.Load(), c.want)
 		}
