@@ -90,7 +90,9 @@ type ClientConfig struct {
 	// Tailscale replaces the local daemon client for path detection.
 	Tailscale PathInfoer
 	// OnRumble receives gamepad rumble from the host.
-	OnRumble         func(input.RumbleEvent)
+	OnRumble func(input.RumbleEvent)
+	// OnCursor receives the host's cursor state, from a host that sends it.
+	OnCursor         func(wire.CursorState)
 	HandshakeTimeout time.Duration
 	SimulateLoss     float64
 	// Route says how a live stream moves between the host's routes.
@@ -544,6 +546,10 @@ func (c *Client) dialRoute(ctx context.Context, cc *conn, r resolved) (*route, e
 					cc.mu.Lock()
 					cc.host = *m
 					cc.mu.Unlock()
+				case *wire.CursorState:
+					if cfg.OnCursor != nil {
+						cfg.OnCursor(*m)
+					}
 				}
 			},
 			Clipboard: c.onClipboard,

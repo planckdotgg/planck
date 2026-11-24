@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/planckdotgg/planck/pkg/audio"
+	"github.com/planckdotgg/planck/pkg/capture/cursor"
 	"github.com/planckdotgg/planck/pkg/clipboard"
 	"github.com/planckdotgg/planck/pkg/config"
 	"github.com/planckdotgg/planck/pkg/defaults"
@@ -121,6 +122,9 @@ type HostConfig struct {
 	Injector input.Injector
 	// OnInput sees every valid input event, injected or not.
 	OnInput func(input.Event)
+	// ReadCursor replaces cursor.Read, the host's system cursor that
+	// clients reading wire.CursorState hear of.
+	ReadCursor func() (cursor.State, error)
 	// WhoIs replaces the local Tailscale daemon client.
 	WhoIs WhoIser
 	// FECMinLoss keeps parity for at least this loss rate.

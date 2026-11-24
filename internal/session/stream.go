@@ -236,6 +236,9 @@ func (st *stream) run(parent context.Context) {
 	if st.sess.Config().AudioChannels > 0 && !st.h.cfg.NoAudio {
 		wg.Go(st.audioLoop)
 	}
+	if st.sess.PeerFeatures()&wire.FeatureCursorState != 0 && !st.h.cfg.Synth {
+		wg.Go(st.cursorLoop)
+	}
 	select {
 	case <-st.sess.Done():
 		if err := st.sess.Err(); err != nil && !errors.Is(err, transport.ErrClosed) {
