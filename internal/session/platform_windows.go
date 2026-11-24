@@ -15,6 +15,7 @@ import (
 	"github.com/planckdotgg/planck/pkg/capture/dxgi"
 	"github.com/planckdotgg/planck/pkg/decode"
 	"github.com/planckdotgg/planck/pkg/decode/d3d11"
+	"github.com/planckdotgg/planck/pkg/encode"
 	_ "github.com/planckdotgg/planck/pkg/encode/all"
 	"github.com/planckdotgg/planck/pkg/gpu"
 	"github.com/planckdotgg/planck/pkg/input"
@@ -146,7 +147,12 @@ func OpenDecodeSink(cfg decode.Config) (Sink, error) {
 	if err != nil {
 		return nil, err
 	}
-	d, err := d3d11.Open(gpu.Device{Adapter: dev.Info, Handle: uintptr(unsafe.Pointer(dev.D3D.Object))}, cfg)
+	var d decode.Decoder
+	if cfg.Codec == encode.PyroWave {
+		d, err = decode.Open(decode.Target{Device: uintptr(unsafe.Pointer(dev.D3D.Object)), Adapter: dev.Info}, cfg)
+	} else {
+		d, err = d3d11.Open(gpu.Device{Adapter: dev.Info, Handle: uintptr(unsafe.Pointer(dev.D3D.Object))}, cfg)
+	}
 	if err != nil {
 		dev.Close()
 		return nil, err

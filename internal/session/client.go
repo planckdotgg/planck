@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/netip"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,9 +21,11 @@ import (
 	"github.com/planckdotgg/planck/pkg/audio"
 	"github.com/planckdotgg/planck/pkg/config"
 	"github.com/planckdotgg/planck/pkg/decode"
+	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/encode"
 	"github.com/planckdotgg/planck/pkg/input"
+	"github.com/planckdotgg/planck/pkg/linkinfo"
 	"github.com/planckdotgg/planck/pkg/player"
 	"github.com/planckdotgg/planck/pkg/ratectl"
 	"github.com/planckdotgg/planck/pkg/tailscale"
@@ -54,6 +58,12 @@ type ClientConfig struct {
 	// Name is the device name the host shows and pairs under.
 	Name    string
 	Quality Quality
+	// Overrides go to a host that resolves the stream from both ends'
+	// capabilities; an older host gets Quality only.
+	Overrides defaults.UserOverrides
+	// Capabilities replaces the probe of this device's display and
+	// decoders.
+	Capabilities func() defaults.ClientCapabilities
 	// PIN is the host's pairing PIN, needed the first time unless both
 	// devices belong to the same Tailscale user.
 	PIN     string
@@ -100,10 +110,13 @@ type ClientStats struct {
 	Path      string
 	Codec     string
 	Chroma    string
-	Width     int
-	Height    int
-	FPS       float64
-	Kbps      float64
+	// Profile is what the host resolved the stream to, nil from an older
+	// host.
+	Profile *defaults.ResolvedProfile
+	Width   int
+	Height  int
+	FPS     float64
+	Kbps    float64
 
 	EncodeMs  float64
 	NetworkMs float64
@@ -125,11 +138,13 @@ type ClientStats struct {
 
 	// FECParityPct is the parity share of the video datagrams received,
 	// estimated from datagram counts.
-	FECParityPct    float64
-	LossPct         float64
-	FramesReceived  uint64
-	FramesLost      uint64
-	FramesDropped   uint64
+	FECParityPct   float64
+	LossPct        float64
+	FramesReceived uint64
+	FramesLost     uint64
+	FramesDropped  uint64
+	// FramesPartial counts PyroWave frames shown with chunks missing.
+	FramesPartial   uint64
 	SlicesRecovered uint64
 	SinkErrors      uint64
 	AudioBufferMs   float64
@@ -177,6 +192,10 @@ type conn struct {
 	path   string
 	addr   string
 	codec  encode.Codec
+	// intra marks a PyroWave stream: frames decode alone, so loss never
+	// waits for a keyframe.
+	intra   atomic.Bool
+	profile *defaults.ResolvedProfile
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -318,6 +337,10 @@ func (c *Client) connect(ctx context.Context, t Target) (*conn, error) {
 	if !cfg.NoAudio {
 		req.AudioSampleRate, req.AudioChannels = audio.SampleRate, audio.Channels
 	}
+	capsJSON, err := c.capabilities(cfg, addr, path)
+	if err != nil {
+		return nil, err
+	}
 
 	cc := &conn{hostID: hostID, name: r.name, path: path.String(), addr: addr, frames: make(chan *frameBuf, warmupQueue),
 		free: make(chan *frameBuf, warmupQueue+2), e2e: newWindow(latencyWindow), network: newWindow(latencyWindow),
@@ -334,6 +357,7 @@ func (c *Client) connect(ctx context.Context, t Target) (*conn, error) {
 	sess, err := transport.Dial(ctx, addr, transport.ClientConfig{
 		Certificate: cert, Name: cfg.Name, VerifyHost: verify, Auth: method, PIN: cfg.PIN, Session: req,
 		HandshakeTimeout: cfg.HandshakeTimeout, SimulateLoss: cfg.SimulateLoss, LANPath: path == discovery.PathLANDirect,
+		Capabilities: capsJSON,
 		Handlers: transport.Handlers{
 			VideoFrame: cc.onFrame,
 			Audio:      cc.onAudio,
@@ -363,14 +387,33 @@ func (c *Client) connect(ctx context.Context, t Target) (*conn, error) {
 	}
 	acc := sess.Config()
 	cc.codec = codecFromWire(acc.Codec)
+	cc.intra.Store(cc.codec == encode.PyroWave)
+	if cc.profile, err = ParseProfile(sess.Profile()); err != nil {
+		c.logf("planck: %v", err)
+	}
+	dcfg := decode.Config{Codec: cc.codec, Width: int(acc.Width), Height: int(acc.Height), FPS: int(acc.FPS)}
+	if cc.profile != nil {
+		dcfg.Chroma = streamChroma(cc.profile)
+		for _, w := range cc.profile.Warnings {
+			c.logf("planck: profile: %s", w)
+		}
+	}
+	if cc.intra.Load() {
+		dcfg.ChunkLen = sess.ShardSize()
+	}
 	open := cfg.OpenSink
 	if open == nil {
 		open = OpenDecodeSink
 	}
-	sink, err := open(decode.Config{Codec: cc.codec, Width: int(acc.Width), Height: int(acc.Height), FPS: int(acc.FPS)})
+	sink, err := open(dcfg)
 	if err != nil {
 		sess.Close()
 		return nil, fmt.Errorf("session: video sink: %w", err)
+	}
+	if ps, ok := sink.(interface {
+		SetProfile(*defaults.ResolvedProfile)
+	}); ok && cc.profile != nil {
+		ps.SetProfile(cc.profile)
 	}
 	if o, ok := sink.(interface{ SetObserver(player.Observer) }); ok {
 		o.SetObserver(viewObserver{cc})
@@ -432,6 +475,28 @@ func (c *Client) resolve(ctx context.Context, t Target) (resolved, error) {
 	return r, nil
 }
 
+// capabilities is the JSON this client offers a host: its display,
+// decoders and link, the route it found, and the user's overrides.
+func (c *Client) capabilities(cfg ClientConfig, addr string, path discovery.PathKind) ([]byte, error) {
+	var caps defaults.ClientCapabilities
+	if cfg.Capabilities != nil {
+		caps = cfg.Capabilities()
+	} else {
+		caps = defaults.ClientCapabilities{OS: runtime.GOOS, Display: clientDisplay(), Decoders: clientDecoders(),
+			Present10Bit: clientPresent10Bit, DirectDisplay: clientDirectDisplay}
+	}
+	if ap, err := netip.ParseAddrPort(addr); err == nil {
+		if name, link, err := linkinfo.Route(ap.Addr().Unmap()); err == nil {
+			caps.Link = link
+			c.logf("planck: route to %v via %s: wired %v, %d Mbps", ap.Addr(), name, link.Wired, link.SpeedMbps)
+		}
+	}
+	if err := cfg.Overrides.Validate(); err != nil {
+		return nil, err
+	}
+	return json.Marshal(clientCaps{V: clientCapsVersion, Client: caps, Route: defaults.RouteInfo{Kind: routeKind(path)}, Overrides: cfg.Overrides})
+}
+
 func (c *Client) pin(stored config.ClientConfig, key, addr string, fp [32]byte) error {
 	if err := stored.Pin(config.PinnedHost{HostID: key, CertFingerprint: hex.EncodeToString(fp[:]), PairedAt: time.Now(), LastAddr: addr}); err != nil {
 		return err
@@ -449,7 +514,7 @@ func (cc *conn) onFrame(info wire.VideoInfo, frame []byte) {
 	if sess == nil {
 		return
 	}
-	if cc.needKey.Load() {
+	if cc.needKey.Load() && !cc.intra.Load() {
 		if !info.Keyframe {
 			cc.drop()
 			return
@@ -496,6 +561,9 @@ func (cc *conn) onFrame(info wire.VideoInfo, frame []byte) {
 
 func (cc *conn) drop() {
 	cc.dropped.Add(1)
+	if cc.intra.Load() {
+		return
+	}
 	cc.needKey.Store(true)
 	cc.requestKey()
 }
@@ -543,8 +611,10 @@ func (cc *conn) decodeLoop(sink Sink, logf func(string, ...any)) {
 			if cc.sinkErr.Add(1) == 1 {
 				logf("planck: video sink: %v", err)
 			}
-			cc.needKey.Store(true)
-			cc.requestKey()
+			if !cc.intra.Load() {
+				cc.needKey.Store(true)
+				cc.requestKey()
+			}
 			continue
 		}
 		if err == nil {
@@ -669,7 +739,7 @@ func (cc *conn) stats() ClientStats {
 		Codec: cc.codec.String(), Width: int(acc.Width), Height: int(acc.Height),
 		RTTMs:          ms(int64(cc.sess.RTT())),
 		FramesReceived: ss.FramesComplete, FramesLost: ss.FramesLost, SlicesRecovered: ss.SlicesRecovered,
-		FramesDropped: cc.dropped.Load(), SinkErrors: cc.sinkErr.Load(), AudioPackets: cc.audioPkts.Load(), InputSent: cc.inputs.Load(),
+		FramesDropped: cc.dropped.Load(), FramesPartial: ss.FramesPartial, Profile: cc.profile, SinkErrors: cc.sinkErr.Load(), AudioPackets: cc.audioPkts.Load(), InputSent: cc.inputs.Load(),
 	}
 	s.Chroma = "4:2:0"
 	if acc.Chroma == wire.Chroma444 {

@@ -21,6 +21,7 @@ import (
 	encvt "github.com/planckdotgg/planck/pkg/encode/vt"
 	"github.com/planckdotgg/planck/pkg/gpu"
 	"github.com/planckdotgg/planck/pkg/input"
+	_ "github.com/planckdotgg/planck/pkg/pyrowave"
 )
 
 var (
@@ -177,6 +178,13 @@ func playerQueued(p audio.Player) time.Duration {
 // OpenDecodeSink decodes with VideoToolbox and hands each picture straight
 // back: the bitstream is decoded on the GPU and no pixel is copied.
 func OpenDecodeSink(cfg decode.Config) (Sink, error) {
+	if cfg.Codec == encode.PyroWave {
+		d, err := decode.Open(decode.Target{}, cfg)
+		if err != nil {
+			return nil, err
+		}
+		return &decodeSink{dec: d}, nil
+	}
 	d, err := decvt.Open(cfg)
 	if err != nil {
 		return nil, err
