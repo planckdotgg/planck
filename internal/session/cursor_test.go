@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"math/rand/v2"
 	"slices"
 	"sync"
@@ -204,7 +205,10 @@ func TestShapeCachesStayAlike(t *testing.T) {
 			n = r.IntN(4)
 		}
 		sh := testShape(n)
-		m := host.message(sh, sh.Hash())
+		var m wire.CursorShape
+		if err := host.send(sh, sh.Hash(), func(w wire.Message) error { m = *w.(*wire.CursorShape); return nil }); err != nil {
+			t.Fatal(err)
+		}
 		b, err := wire.AppendMessage(nil, &m)
 		if err != nil {
 			t.Fatal(err)
@@ -307,3 +311,155 @@ func TestCursorShapeReachesClient(t *testing.T) {
 		t.Fatalf("shapes %+v", s)
 	}
 }
+
+func noisyShape(seed uint64, side, hx, hy, dpi int) cursor.Shape {
+	r := rand.New(rand.NewPCG(seed, 9))
+	px := make([]byte, side*side*4)
+	for i := range px {
+		px[i] = byte(r.Uint32())
+	}
+	return cursor.Shape{W: side, H: side, HotX: hx, HotY: hy, DPI: dpi, RGBA: px}
+}
+
+// TestLargeShapeFitsControlFrame: a 256 x 256 cursor that does not
+// compress is halved until it fits a control frame, its hotspot and DPI
+// with it, so that it shows at the same size and point on the client.
+func TestLargeShapeFitsControlFrame(t *testing.T) {
+	sh := noisyShape(1, 256, 200, 100, 192)
+	if _, err := wire.AppendMessage(nil, &wire.CursorShape{ID: 1, Width: 256, Height: 256, DPI: 192, RGBA: sh.RGBA}); !errors.Is(err, wire.ErrTooLarge) {
+		t.Fatalf("the whole shape encodes: %v", err)
+	}
+	var host, client shapeCache
+	var sent []byte
+	err := host.send(sh, sh.Hash(), func(m wire.Message) error {
+		b, err := wire.AppendMessage(nil, m)
+		sent = b
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dm, err := wire.DecodeMessage(sent[4:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := client.resolve(*dm.(*wire.CursorShape))
+	if !ok || got.ID != sh.Hash() || got.Width != 64 || got.Height != 64 || got.HotX != 50 || got.HotY != 25 || got.DPI != 48 {
+		t.Fatalf("got %dx%d hot %d,%d DPI %d, %v", got.Width, got.Height, got.HotX, got.HotY, got.DPI, ok)
+	}
+	if m, _ := host.message(sh, sh.Hash()); !m.Ref() {
+		t.Error("the host does not refer to the shape it sent")
+	}
+}
+
+// TestShapeCachesSurviveFailedSends: a shape or reference the control
+// stream refuses, as it does a full queue, never enters the host's cache
+// or moves within it, so every reference the client gets resolves.
+func TestShapeCachesSurviveFailedSends(t *testing.T) {
+	r := rand.New(rand.NewPCG(7, 8))
+	var host, client shapeCache
+	failed := 0
+	for i := range 5000 {
+		n := r.IntN(48)
+		sh := testShape(n)
+		if n == 47 {
+			sh = noisyShape(uint64(i%3), 256, 3, 3, 96)
+		}
+		before := slices.Clone(host.shapes)
+		fail := r.IntN(3) == 0
+		err := host.send(sh, sh.Hash(), func(m wire.Message) error {
+			if fail {
+				return errors.New("queue full")
+			}
+			b, err := wire.AppendMessage(nil, m)
+			if err != nil {
+				return err
+			}
+			dm, err := wire.DecodeMessage(b[4:])
+			if err != nil {
+				return err
+			}
+			if got, ok := client.resolve(*dm.(*wire.CursorShape)); !ok || got.ID != sh.Hash() {
+				t.Fatalf("change %d to shape %d: got %+v, %v", i, n, got, ok)
+			}
+			return nil
+		})
+		if fail {
+			failed++
+			if err == nil || !slices.EqualFunc(before, host.shapes, func(a, b wire.CursorShape) bool { return a.ID == b.ID }) {
+				t.Fatalf("change %d: a refused send changed the host's cache (err %v)", i, err)
+			}
+		} else if err != nil {
+			t.Fatalf("change %d: %v", i, err)
+		}
+	}
+	if failed < 1000 {
+		t.Errorf("only %d sends refused", failed)
+	}
+}
+
+// TestLargeShapeKeepsSession: a 256 x 256 cursor too large for a control
+// frame whole reaches the client halved, and the session goes on to carry
+// the next shape.
+func TestLargeShapeKeepsSession(t *testing.T) {
+	var now atomic.Pointer[cursor.State]
+	now.Store(&cursor.State{Visible: true, Handle: 1})
+	big := noisyShape(2, 256, 10, 10, 96)
+	h, err := NewHost(HostConfig{
+		ConfigDir: t.TempDir(), Name: "test-host", ListenAddr: "127.0.0.1:0", DiscoveryAddr: "off", NoTailscale: true,
+		FPS: 60, BitrateKbps: 10_000, PIN: "246810",
+		OpenVideo: func(p VideoParams) (VideoPipe, error) {
+			return &fakePipe{fps: p.FPS, forced: new(atomic.Int64), kbps: new(atomic.Int64)}, nil
+		},
+		OpenAudio:  func() (audio.Capturer, error) { return &fakeCapturer{}, nil },
+		ReadCursor: func() (cursor.State, error) { return *now.Load(), nil },
+		ReadCursorShape: func(s cursor.State) (cursor.Shape, error) {
+			if s.Handle == 1 {
+				return big, nil
+			}
+			return testShape(0), nil
+		},
+		Logf: t.Logf,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(h.Stop)
+
+	var mu sync.Mutex
+	var got []wire.CursorShape
+	seen := func() []wire.CursorShape {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]wire.CursorShape(nil), got...)
+	}
+	c, err := NewClient(ClientConfig{
+		ConfigDir: t.TempDir(), Name: "test-client", PIN: "246810", NoAudio: true,
+		Quality: Quality{Codec: encode.HEVC, FPS: 60}, OpenSink: NullSinkOpener(&NullSink{}), Tailscale: noTailscale{}, Logf: t.Logf,
+		OnCursorShape: func(s wire.CursorShape) {
+			mu.Lock()
+			got = append(got, s)
+			mu.Unlock()
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Disconnect)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := c.Connect(ctx, Target{Addr: h.Addr().String()}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the large shape", func() bool { return len(seen()) == 1 })
+	now.Store(&cursor.State{Visible: true, Handle: 2})
+	waitFor(t, "the next shape", func() bool { return len(seen()) == 2 })
+	s := seen()
+	if s[0].ID != big.Hash() || s[0].Width != 64 || s[0].DPI != 24 || s[1].ID != testShape(0).Hash() {
+		t.Fatalf("shapes %+v %+v", s[0].Width, s[1].ID)
+	}
+}
+

@@ -2,6 +2,7 @@ package session
 
 import (
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/planckdotgg/planck/pkg/capture/cursor"
@@ -42,12 +43,8 @@ func (st *stream) cursorLoop() {
 		}
 		if err == nil && shapes != nil && s.Handle != 0 && s.Handle != handle {
 			if sh, err := readShape(s); err == nil {
-				handle = s.Handle
-				if id := sh.Hash(); id != shape {
-					m := shapes.message(sh, id)
-					if st.sess.SendControl(&m) == nil {
-						shape = id
-					}
+				if id := sh.Hash(); id == shape || shapes.send(sh, id, st.sess.SendControl) == nil {
+					handle, shape = s.Handle, id
 				}
 			}
 		}
@@ -79,19 +76,43 @@ func (st *stream) cursorLoop() {
 // ones, even after the host's starts afresh.
 type shapeCache struct{ shapes []wire.CursorShape }
 
+// send sends the message that shows sh, named id, and only once send
+// takes it does the shape become the most recent: a message the client
+// never gets leaves the caches alike.
+func (c *shapeCache) send(sh cursor.Shape, id uint64, send func(wire.Message) error) error {
+	m, err := c.message(sh, id)
+	if err != nil {
+		return err
+	}
+	if err := send(&m); err != nil {
+		return err
+	}
+	c.resolve(m)
+	return nil
+}
+
 // message is the message that shows sh, named id: a reference to it when
-// it was sent before, else the whole shape. Either way it becomes the
-// most recent.
-func (c *shapeCache) message(sh cursor.Shape, id uint64) wire.CursorShape {
-	if _, ok := c.use(id); ok {
-		return wire.CursorShape{ID: id}
+// it was sent before, else the whole shape, halved until it fits a control
+// frame, DPI and hotspot with it, so that it keeps its size on the client.
+func (c *shapeCache) message(sh cursor.Shape, id uint64) (wire.CursorShape, error) {
+	if c.has(id) {
+		return wire.CursorShape{ID: id}, nil
 	}
-	m := wire.CursorShape{
-		ID: id, Width: uint16(sh.W), Height: uint16(sh.H), HotX: uint16(sh.HotX), HotY: uint16(sh.HotY),
-		DPI: uint16(min(max(sh.DPI, 1), 0xffff)), RGBA: sh.RGBA,
+	for {
+		m := wire.CursorShape{
+			ID: id, Width: uint16(sh.W), Height: uint16(sh.H), HotX: uint16(sh.HotX), HotY: uint16(sh.HotY),
+			DPI: uint16(min(max(sh.DPI, 1), 0xffff)), RGBA: sh.RGBA,
+		}
+		_, err := wire.AppendMessage(nil, &m)
+		if !errors.Is(err, wire.ErrTooLarge) || max(sh.W, sh.H) <= 1 {
+			return m, err
+		}
+		sh = cursor.Fit(sh, max(sh.W, sh.H)/2)
 	}
-	c.add(m)
-	return m
+}
+
+func (c *shapeCache) has(id uint64) bool {
+	return slices.ContainsFunc(c.shapes, func(s wire.CursorShape) bool { return s.ID == id })
 }
 
 // resolve is the whole shape m shows, from the cache when m refers to one;

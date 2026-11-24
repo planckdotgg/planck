@@ -131,14 +131,17 @@ func besideInvert(kind []byte, w, h, x, y int) bool {
 	return false
 }
 
-// fit scales a shape larger than MaxSide down to fit, nearest pixel, and
+func fit(s Shape) Shape { return Fit(s, MaxSide) }
+
+// Fit scales a shape larger than side down to fit, nearest pixel, and
 // its DPI with it, each pixel the one at its centre, so that it keeps its size on the client.
-func fit(s Shape) Shape {
+func Fit(s Shape, side int) Shape {
+	side = max(side, 1)
 	n := max(s.W, s.H)
-	if n <= MaxSide {
+	if n <= side {
 		return s
 	}
-	w, h := max(s.W*MaxSide/n, 1), max(s.H*MaxSide/n, 1)
+	w, h := max(s.W*side/n, 1), max(s.H*side/n, 1)
 	px := make([]byte, w*h*4)
 	for y := range h {
 		for x := range w {
@@ -148,7 +151,7 @@ func fit(s Shape) Shape {
 	}
 	return Shape{
 		W: w, H: h, HotX: min(s.HotX*w/s.W, w-1), HotY: min(s.HotY*h/s.H, h-1),
-		DPI: max(s.DPI*MaxSide/n, 1), RGBA: px,
+		DPI: max(s.DPI*side/n, 1), RGBA: px,
 	}
 }
 
