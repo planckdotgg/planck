@@ -18,8 +18,9 @@ const MicChannels = 1
 const MicPCMFrameDuration = 5 * time.Millisecond
 
 // VirtualMicHint is what a host without a virtual input device tells the
-// client. Planck never installs one.
-const VirtualMicHint = "Virtual mic not detected — install Steam Streaming Microphone / virtual audio device"
+// client. Planck does not install one itself: Planck Virtual Audio ships in
+// drivers/audio/windows and the user installs it.
+const VirtualMicHint = "Virtual mic not detected — install Planck Virtual Audio (or Steam Streaming Microphone / another virtual audio device)"
 
 var (
 	// ErrNoVirtualMic: no user-installed virtual input device matched.
@@ -76,8 +77,11 @@ func pairedInput(output string, inputs []string) int {
 }
 
 // knownVirtualMics are playback-side device names, as substrings, of
-// virtual input devices a user may have installed, best first.
+// virtual input devices a user may have installed, best first. Planck
+// Virtual Audio leads: it converts between mono and stereo and offers only
+// 48 kHz, so its two sides cannot disagree on format.
 var knownVirtualMics = []string{
+	"Planck Virtual Audio",
 	"Steam Streaming Microphone",
 	"CABLE Input",
 	"VB-Audio Virtual Cable",
@@ -104,6 +108,18 @@ func pickVirtualMic(names []string, want string) int {
 		}
 	}
 	return -1
+}
+
+// passthroughFormatErr reports a setup error for Steam Streaming Microphone,
+// whose driver copies bytes from its playback side (output) to its
+// recording side (input) without converting, when the two formats differ.
+// Other virtual mics, Planck Virtual Audio among them, convert.
+func passthroughFormatErr(output, input string, outChannels, outRate, inChannels, inRate int) error {
+	if !strings.Contains(output, "Steam Streaming Microphone") || (outChannels == inChannels && outRate == inRate) {
+		return nil
+	}
+	return fmt.Errorf("%w: %q plays %d ch at %d Hz but %q records %d ch at %d Hz; Steam's driver does not convert, so set both to the same format (Sound settings > device Properties > Advanced)",
+		ErrVirtualMicSetup, output, outChannels, outRate, input, inChannels, inRate)
 }
 
 // FindVirtualMic looks for a virtual input device among the output devices:

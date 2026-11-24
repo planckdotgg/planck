@@ -87,7 +87,7 @@ func parseOptions(args []string, out io.Writer) (options, error) {
 	fs.StringVar(&cfg.PIN, "pin", "", "fixed 6-digit pairing PIN (default: a random one that changes after each pairing)")
 	fs.BoolVar(&cfg.NoAudio, "no-audio", false, "do not capture or stream audio")
 	excludePIDs := fs.String("audio-exclude-pids", "", "comma-separated processes, such as a voice chat app, left out of the streamed audio (macOS; Windows leaves out only Planck)")
-	fs.StringVar(&cfg.MicDevice, "mic-device", "", `virtual input device the client's microphone plays into, by part of its name (default: Steam Streaming Microphone, VB-Cable or BlackHole); "off" refuses the microphone`)
+	fs.StringVar(&cfg.MicDevice, "mic-device", "", `virtual input device the client's microphone plays into, by part of its name (default: Planck Virtual Audio, then Steam Streaming Microphone, VB-Cable or BlackHole); "off" refuses the microphone`)
 	clip := fs.String("clipboard", "both", "share the clipboard: both, host-to-client, client-to-host or off")
 	fs.BoolVar(&cfg.Synth, "synth", false, "stream a generated test pattern at -width x -height and -fps instead of a display")
 	if err := fs.Parse(args); err != nil {

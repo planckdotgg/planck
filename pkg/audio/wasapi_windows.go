@@ -10,7 +10,6 @@ import (
 	"math"
 	"os"
 	"runtime"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -692,9 +691,7 @@ func onCOMThread(fn func() error) error {
 }
 
 // prepareVirtualMic finds the input side of dev and its volume, and checks
-// that Steam Streaming Microphone passes audio: it copies bytes from its
-// playback side to its recording side without converting, so the two need
-// the same format.
+// that its two sides' formats let audio through (passthroughFormatErr).
 func prepareVirtualMic(dev *VirtualMic) error {
 	inputs, err := endpoints(eCapture)
 	if err != nil {
@@ -719,11 +716,7 @@ func prepareVirtualMic(dev *VirtualMic) error {
 			return err
 		}
 		dev.inputGainDB = in.levelDB
-		if strings.Contains(dev.Name, "Steam Streaming Microphone") && (out.channels != in.channels || out.rate != in.rate) {
-			return fmt.Errorf("%w: %q plays %d ch at %d Hz but %q records %d ch at %d Hz; Steam's driver does not convert, so set both to the same format (Sound settings > device Properties > Advanced)",
-				ErrVirtualMicSetup, dev.Name, out.channels, out.rate, dev.Input, in.channels, in.rate)
-		}
-		return nil
+		return passthroughFormatErr(dev.Name, dev.Input, out.channels, out.rate, in.channels, in.rate)
 	})
 }
 

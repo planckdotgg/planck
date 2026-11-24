@@ -27,9 +27,10 @@ Research: `planck-design/audio-clipboard-research.md` §3–§9.
 - Host: one jitter buffer and play-out loop per session, reusing
   `JitterBuffer` and `Playout` (Opus PLC; PCM conceals by fading the last frame).
 - Host sink (`MicSink`): writes into a user-installed virtual device found by
-  name — Windows render endpoints "Steam Streaming Microphone" or "CABLE Input",
-  macOS output devices "BlackHole", or a user-given substring. Nothing is
-  bundled. No device: the host reports a hint instead.
+  name — Windows render endpoints "Planck Virtual Audio" (the driver in
+  `drivers/audio/windows`, preferred), "Steam Streaming Microphone" or
+  "CABLE Input", macOS output devices "BlackHole", or a user-given substring.
+  The host never installs a driver. No device: the host reports a hint instead.
 - Echo: the client mic starts muted every session; Ctrl+Alt+U or the
   overlay's Sound & mic tray toggles it.
 

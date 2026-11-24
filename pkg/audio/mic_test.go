@@ -1,7 +1,9 @@
 package audio
 
 import (
+	"errors"
 	"math"
+	"strings"
 	"testing"
 	"time"
 )
@@ -35,6 +37,71 @@ func TestPairedInput(t *testing.T) {
 	} {
 		if got := pairedInput(out, inputs); got != want {
 			t.Errorf("pairedInput(%q) = %d, want %d", out, got, want)
+		}
+	}
+}
+
+// Planck Virtual Audio wins over every third-party virtual mic, whatever
+// order Windows lists the endpoints in, and the others still work without it.
+func TestPickVirtualMicPrefersPlanck(t *testing.T) {
+	names := []string{
+		"Speakers (Steam Streaming Microphone)",
+		"CABLE Input (VB-Audio Virtual Cable)",
+		"Speakers (Realtek(R) Audio)",
+		"Speakers (Planck Virtual Audio)",
+		"BlackHole 2ch",
+	}
+	if i := pickVirtualMic(names, ""); i != 3 {
+		t.Fatalf("auto pick %d (%q), want Planck Virtual Audio (3)", i, names[max(i, 0)])
+	}
+	if i := pickVirtualMic(names, "planck"); i != 3 {
+		t.Fatalf("pick \"planck\" = %d, want 3", i)
+	}
+	if i := pickVirtualMic(names, "steam"); i != 0 {
+		t.Fatalf("an explicit want still beats Planck: pick \"steam\" = %d, want 0", i)
+	}
+	without := []string{names[0], names[1], names[2], names[4]}
+	if i := pickVirtualMic(without, ""); i != 0 {
+		t.Fatalf("without Planck the pick is %d, want Steam Streaming Microphone (0)", i)
+	}
+	if !strings.Contains(VirtualMicHint, "Planck Virtual Audio") || strings.Index(VirtualMicHint, "Planck") > strings.Index(VirtualMicHint, "Steam") {
+		t.Fatalf("hint %q should name Planck Virtual Audio first", VirtualMicHint)
+	}
+}
+
+// Windows names a second instance "2- Planck Virtual Audio" on both sides;
+// the pairing must still find the matching microphone.
+func TestPairedInputPlanck(t *testing.T) {
+	inputs := []string{"Microphone (Steam Streaming Microphone)", "Microphone (Planck Virtual Audio)", "Microphone (2- Planck Virtual Audio)"}
+	for out, want := range map[string]int{
+		"Speakers (Planck Virtual Audio)":    1,
+		"Speakers (2- Planck Virtual Audio)": 2,
+	} {
+		if got := pairedInput(out, inputs); got != want {
+			t.Errorf("pairedInput(%q) = %d, want %d", out, got, want)
+		}
+	}
+}
+
+// Only Steam Streaming Microphone needs its two sides to match: Planck
+// Virtual Audio converts mono and stereo, so a mono speaker side feeding a
+// stereo microphone side is fine.
+func TestPassthroughFormatErr(t *testing.T) {
+	for _, tc := range []struct {
+		output, input                string
+		outCh, outRate, inCh, inRate int
+		setup                        bool
+	}{
+		{"Speakers (Planck Virtual Audio)", "Microphone (Planck Virtual Audio)", 1, 48000, 2, 48000, false},
+		{"Speakers (Planck Virtual Audio)", "Microphone (Planck Virtual Audio)", 2, 48000, 1, 48000, false},
+		{"CABLE Input (VB-Audio Virtual Cable)", "CABLE Output (VB-Audio Virtual Cable)", 2, 48000, 2, 44100, false},
+		{"Speakers (Steam Streaming Microphone)", "Microphone (Steam Streaming Microphone)", 2, 48000, 2, 48000, false},
+		{"Speakers (Steam Streaming Microphone)", "Microphone (Steam Streaming Microphone)", 2, 48000, 1, 48000, true},
+		{"Speakers (Steam Streaming Microphone)", "Microphone (Steam Streaming Microphone)", 2, 48000, 2, 44100, true},
+	} {
+		err := passthroughFormatErr(tc.output, tc.input, tc.outCh, tc.outRate, tc.inCh, tc.inRate)
+		if got := errors.Is(err, ErrVirtualMicSetup); got != tc.setup {
+			t.Errorf("%s %dch/%d -> %dch/%d: err %v, want setup error %v", tc.output, tc.outCh, tc.outRate, tc.inCh, tc.inRate, err, tc.setup)
 		}
 	}
 }
