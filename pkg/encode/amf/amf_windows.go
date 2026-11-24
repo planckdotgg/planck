@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"syscall"
+	"os"
+	"runtime"
 	"time"
 	"unsafe"
 
@@ -393,7 +395,7 @@ func Open(device win.Device, adapter gpu.Adapter, cfg encode.Config) (*Encoder, 
 		{"HevcGOPSPerIDR", int64Var(0)},
 		{"HevcHeaderInsertionMode", int64Var(2)}, // IDR aligned
 		{"HevcMaxNumRefFrames", int64Var(1)},
-		{"HevcQueryTimeout", int64Var(50)},
+		{"HevcQueryTimeout", int64Var(queryTimeoutMs())},
 		{"HevcInputQueueSize", int64Var(1)},
 		{"LowLatencyInternal", boolVar(true)},
 		{"HevcQualityPreset", int64Var(10)}, // speed
@@ -423,6 +425,17 @@ func (e *Encoder) Caps() encode.Caps {
 }
 
 var errNoOutput = errors.New("amf: no output within the query timeout")
+
+// pollOutput (PLANCK_AMF_POLL=1, an audit experiment) sets AMF's query
+// timeout to 0 and spins on QueryOutput instead of letting AMF wait.
+var pollOutput = os.Getenv("PLANCK_AMF_POLL") == "1"
+
+func queryTimeoutMs() int64 {
+	if pollOutput {
+		return 0
+	}
+	return 50
+}
 
 // Stages is how long the last Encode spent in SubmitInput and in waiting on
 // QueryOutput, and how many QueryOutput calls it made.
@@ -459,6 +472,13 @@ func (e *Encoder) Encode(f capture.Frame, forceKey bool, dst []byte) (encode.Pac
 		if e.data != nil {
 			e.queried, e.tries = clock.Now()-t1, tries+1
 			break
+		}
+		if pollOutput {
+			if clock.Now()-t1 > 2*time.Second {
+				return encode.Packet{}, errNoOutput
+			}
+			runtime.Gosched()
+			continue
 		}
 		if tries > 40 {
 			return encode.Packet{}, errNoOutput
