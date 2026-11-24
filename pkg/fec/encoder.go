@@ -106,7 +106,12 @@ func (e *Encoder) EncodeSlice(info wire.VideoInfo, slice int, data []byte, polic
 			d++
 		}
 		blockLen := min(d*ss, len(data)-off)
-		parity := min(policy.Parity(d), wire.MaxShards-d)
+		parity := policy.Parity(d)
+		if info.Keyframe {
+			// A lost keyframe shard costs a round trip for a new one.
+			parity = max(parity, 1)
+		}
+		parity = min(parity, wire.MaxShards-d)
 		total := d + parity
 		hdrEnd := e.headroom + wire.VideoHeaderLen
 		for i := 0; i < total; i++ {

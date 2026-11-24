@@ -2,6 +2,7 @@ package fec
 
 import (
 	"bytes"
+	"math"
 	"math/rand/v2"
 	"testing"
 
@@ -294,5 +295,44 @@ func BenchmarkEncodeDecode(b *testing.B) {
 			}
 			b.ReportMetric(float64(n)/float64(b.N), "pkts/frame")
 		})
+	}
+}
+
+func TestFirstLossRaisesEstimateAtOnce(t *testing.T) {
+	p := NewPolicy()
+	p.Observe(99, 100)
+	if l := p.Loss(); math.Abs(l-0.01) > 1e-9 {
+		t.Fatalf("after one report of 1%% loss the estimate is %.4f", l)
+	}
+	if p.Parity(30) == 0 {
+		t.Fatal("no parity after the first loss")
+	}
+}
+
+func TestKeyframesCarryParity(t *testing.T) {
+	for _, key := range []bool{false, true} {
+		enc := NewEncoder(testShard, 9, 16)
+		var pk packets
+		info := wire.VideoInfo{FrameID: 1, Keyframe: key, SliceCount: 2}
+		if _, err := enc.EncodeFrame(info, frameBytes(10*testShard, 1), NewPolicy(), pk.emit(9)); err != nil {
+			t.Fatal(err)
+		}
+		parity := 0
+		for _, b := range pk.bufs {
+			var h wire.VideoHeader
+			if err := h.Parse(b); err != nil {
+				t.Fatal(err)
+			}
+			if int(h.ShardIndex) >= int(h.DataShards) {
+				parity++
+			}
+		}
+		want := 0
+		if key {
+			want = 2
+		}
+		if parity != want {
+			t.Fatalf("keyframe=%v on a clean path: %d parity shards, want %d (one per slice)", key, parity, want)
+		}
 	}
 }

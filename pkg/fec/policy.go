@@ -40,7 +40,10 @@ type Policy struct {
 	// MaxRatio caps parity as a fraction of data shards.
 	MaxRatio float64
 	// Window is roughly how many shards the loss estimate averages over
-	// while loss is falling. Rising loss is tracked four times faster.
+	// while loss is falling. Rising loss is tracked four times faster, and
+	// the first loss on a clean path (estimate under cleanLoss) sets the
+	// estimate to its report at once, so the next frames carry parity
+	// before a second loss.
 	Window float64
 
 	loss atomic.Uint64
@@ -51,6 +54,9 @@ type Policy struct {
 func NewPolicy() *Policy {
 	return &Policy{Target: 1e-3, MaxRatio: 1, Window: 2000}
 }
+
+// cleanLoss is the estimate below which a path counts as clean.
+const cleanLoss = 0.001
 
 func (p *Policy) SetLoss(l float64) { p.loss.Store(math.Float64bits(l)) }
 func (p *Policy) Loss() float64     { return math.Float64frombits(p.loss.Load()) }
@@ -74,6 +80,9 @@ func (p *Policy) Observe(recv, sent int) {
 			w *= 4
 		}
 		next := cur + min(w, 1)*(sample-cur)
+		if cur < cleanLoss && sample > next {
+			next = sample
+		}
 		if p.loss.CompareAndSwap(old, math.Float64bits(next)) {
 			return
 		}
