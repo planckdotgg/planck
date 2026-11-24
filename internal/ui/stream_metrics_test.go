@@ -17,7 +17,7 @@ func showMetrics(t *testing.T, tt *mui.Tester) mui.Rect {
 }
 
 // TestMetricsOpensTopRightCompactKeepsCorner: off by default, top-right
-// 16 px in when shown, and compact and back keep its top-left corner.
+// 16 px in when shown, and compact and back keep its top-right corner.
 func TestMetricsOpensTopRightCompactKeepsCorner(t *testing.T) {
 	f := streamFake()
 	_, tt, _ := newStreamTester(t, f)
@@ -30,8 +30,8 @@ func TestMetricsOpensTopRightCompactKeepsCorner(t *testing.T) {
 	}
 	snapshot(t, tt, "metrics-expanded")
 	click(t, tt, "Compact metrics")
-	if c := bounds(t, tt, "Metrics"); c.X != m.X || c.Y != m.Y || c.W != compactW || c.H != compactH {
-		t.Fatalf("compact at %+v, want 196 x 36 at %v, %v", c, m.X, m.Y)
+	if c := bounds(t, tt, "Metrics"); c.X+c.W != m.X+m.W || c.Y != m.Y || c.W != compactW || c.H != compactH {
+		t.Fatalf("compact at %+v, want 196 x 36 with its top-right corner at %v, %v", c, m.X+m.W, m.Y)
 	}
 	snapshot(t, tt, "metrics-compact")
 	click(t, tt, "Expand metrics")
@@ -80,7 +80,8 @@ func TestMetricsDragsByHeadOnly(t *testing.T) {
 	if p.presses != 0 {
 		t.Fatalf("dragging the window reached the stream %d times", p.presses)
 	}
-	if !f.layout.Metrics || f.layout.MetricsX != float32(metricsInset)/testWidth {
+	want := Placement{AnchorX: AnchorStart, AnchorY: AnchorEnd, OffsetX: metricsInset, OffsetY: metricsInset}
+	if !f.layout.Metrics || f.layout.MetricsPlace != want {
 		t.Fatalf("stored layout %+v", f.layout)
 	}
 	again, tt2, _ := newStreamTester(t, f)
