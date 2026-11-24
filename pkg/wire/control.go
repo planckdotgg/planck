@@ -40,6 +40,9 @@ const (
 	MsgCapabilities MsgType = 10
 	// MsgProfile goes host to client, right after SessionReady.
 	MsgProfile MsgType = 11
+	// MsgPeerState goes both ways, to a peer with FeaturePeerState, at the
+	// start of a session and whenever it changes.
+	MsgPeerState MsgType = 12
 )
 
 // Message is a control-stream message. The set is closed: only types in this
@@ -77,6 +80,14 @@ const (
 	// FeatureCapabilities says the peer sends and reads Capabilities and
 	// Profile. Both Hellos must carry it before either message is sent.
 	FeatureCapabilities uint32 = 1 << 2
+	// FeaturePeerState says the peer reads PeerState. A peer sends it only
+	// to a peer whose Hello carries this bit.
+	FeaturePeerState uint32 = 1 << 3
+	// FeatureMic, from a host, says it accepts the client's microphone as
+	// FlowMic audio datagrams.
+	FeatureMic uint32 = 1 << 4
+	// FeatureClipboard says the peer reads clipboard streams.
+	FeatureClipboard uint32 = 1 << 5
 )
 
 type AuthMethod uint8
@@ -189,6 +200,18 @@ type Profile struct {
 	JSON []byte
 }
 
+// PeerState is what one side does with the session's optional flows.
+type PeerState struct {
+	// ClipboardSend: this side sends its clipboard changes.
+	ClipboardSend bool
+	// ClipboardRecv: this side applies the peer's clipboard items.
+	ClipboardRecv bool
+	// MicDevice, from a host, is the virtual input device the client's
+	// microphone plays into; empty when it has none, and MicHint says why.
+	MicDevice string
+	MicHint   string
+}
+
 type GoodbyeReason uint8
 
 const (
@@ -214,6 +237,7 @@ func (*StatsReport) Type() MsgType   { return MsgStatsReport }
 func (*Goodbye) Type() MsgType       { return MsgGoodbye }
 func (*Capabilities) Type() MsgType  { return MsgCapabilities }
 func (*Profile) Type() MsgType       { return MsgProfile }
+func (*PeerState) Type() MsgType     { return MsgPeerState }
 
 func (m *Hello) appendBody(b []byte) []byte {
 	b = binary.BigEndian.AppendUint16(b, m.Version)
@@ -349,6 +373,19 @@ func (m *Profile) appendBody(b []byte) []byte { return appendJSON(b, m.JSON) }
 func (m *Profile) decodeBody(d *decoder)      { m.JSON = d.json() }
 func (m *Profile) bodyTooLarge() bool         { return len(m.JSON) > MaxCapsJSON }
 
+func (m *PeerState) appendBody(b []byte) []byte {
+	b = append(b, boolByte(m.ClipboardSend), boolByte(m.ClipboardRecv))
+	b = appendString(b, m.MicDevice)
+	return appendString(b, m.MicHint)
+}
+
+func (m *PeerState) decodeBody(d *decoder) {
+	m.ClipboardSend = d.boolean()
+	m.ClipboardRecv = d.boolean()
+	m.MicDevice = d.str()
+	m.MicHint = d.str()
+}
+
 func appendJSON(b, js []byte) []byte {
 	b = binary.BigEndian.AppendUint32(b, uint32(len(js)))
 	return append(b, js...)
@@ -446,6 +483,8 @@ func newMessage(t MsgType) Message {
 		return &Capabilities{}
 	case MsgProfile:
 		return &Profile{}
+	case MsgPeerState:
+		return &PeerState{}
 	}
 	return nil
 }

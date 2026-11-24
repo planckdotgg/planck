@@ -157,7 +157,10 @@ func (sv *Server) handshake(parent context.Context, conn *quic.Conn) (*Session, 
 		_ = wire.WriteMessage(ctrl, &wire.Goodbye{Reason: wire.GoodbyeProtocolError, Message: "unsupported version"})
 		return nil, fmt.Errorf("client hello version %d role %d", hello.Version, hello.Role)
 	}
-	features := wire.FeatureInputDedup
+	features := wire.FeatureInputDedup | sv.cfg.Handlers.features()
+	if sv.cfg.Handlers.Mic != nil {
+		features |= wire.FeatureMic
+	}
 	if sv.cfg.Capabilities != nil && sv.cfg.Resolve != nil {
 		features |= wire.FeatureCapabilities
 	}

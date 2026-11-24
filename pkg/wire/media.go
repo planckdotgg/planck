@@ -124,29 +124,58 @@ func (h *VideoHeader) Parse(b []byte) error {
 	return nil
 }
 
-// AudioHeaderLen precedes one Opus packet.
+// AudioHeaderLen precedes one audio packet.
 const AudioHeaderLen = 16
 
+// AudioFlow says which stream an audio datagram belongs to.
+type AudioFlow uint8
+
+const (
+	// FlowDesktop is the host's desktop audio, host to client.
+	FlowDesktop AudioFlow = iota
+	// FlowMic is the client's microphone, client to host.
+	FlowMic
+)
+
+type AudioCodec uint8
+
+const (
+	AudioOpus AudioCodec = iota
+	// AudioPCM16 is raw little-endian int16 PCM.
+	AudioPCM16
+)
+
+// AudioHeader describes one audio packet. Hosts before the mic flow wrote
+// zeros where Flow, Codec and FrameQuarterMs go: desktop Opus at the
+// default frame length.
 type AudioHeader struct {
-	Seq       uint32
-	Timestamp int64
+	Flow  AudioFlow
+	Codec AudioCodec
+	// FrameQuarterMs is the packet's frame length in quarter milliseconds;
+	// zero means 10 ms.
+	FrameQuarterMs uint8
+	Seq            uint32
+	Timestamp      int64
 }
 
 func (h *AudioHeader) Put(b []byte) {
 	_ = b[AudioHeaderLen-1]
-	b[0], b[1], b[2], b[3] = KindAudio, 0, 0, 0
+	b[0], b[1], b[2], b[3] = KindAudio, byte(h.Flow), byte(h.Codec), h.FrameQuarterMs
 	binary.BigEndian.PutUint32(b[4:], h.Seq)
 	binary.BigEndian.PutUint64(b[8:], uint64(h.Timestamp))
 }
 
-// ParseAudio returns the header and the Opus payload, which aliases b.
+// ParseAudio returns the header and the payload, which aliases b.
 func ParseAudio(b []byte) (AudioHeader, []byte, error) {
 	if len(b) < AudioHeaderLen || b[0] != KindAudio {
 		return AudioHeader{}, nil, ErrBadDatagram
 	}
 	h := AudioHeader{
-		Seq:       binary.BigEndian.Uint32(b[4:]),
-		Timestamp: int64(binary.BigEndian.Uint64(b[8:])),
+		Flow:           AudioFlow(b[1]),
+		Codec:          AudioCodec(b[2]),
+		FrameQuarterMs: b[3],
+		Seq:            binary.BigEndian.Uint32(b[4:]),
+		Timestamp:      int64(binary.BigEndian.Uint64(b[8:])),
 	}
 	return h, b[AudioHeaderLen:], nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"sync"
@@ -22,6 +23,8 @@ var (
 	ErrClosed         = errors.New("transport: session closed")
 	ErrTooBig         = errors.New("transport: payload does not fit one media datagram")
 	ErrControlBacklog = errors.New("transport: control send queue full")
+	// ErrPeerUnsupported: the peer's Hello did not offer the feature.
+	ErrPeerUnsupported = errors.New("transport: peer does not support this")
 )
 
 const (
@@ -53,9 +56,25 @@ type Handlers struct {
 	VideoSlice func(VideoSlice)
 	VideoFrame func(info wire.VideoInfo, frame []byte)
 	Audio      func(h wire.AudioHeader, opus []byte)
-	Input      func(in wire.Input)
-	Rumble     func(r wire.Rumble)
-	Control    func(m wire.Message)
+	// Mic receives the client's microphone (host only). Setting it offers
+	// wire.FeatureMic.
+	Mic     func(h wire.AudioHeader, payload []byte)
+	Input   func(in wire.Input)
+	Rumble  func(r wire.Rumble)
+	Control func(m wire.Message)
+	// Clipboard receives the peer's clipboard items on their own goroutine;
+	// the item is the handler's to keep. Setting it offers
+	// wire.FeatureClipboard.
+	Clipboard func(c *wire.Clip)
+}
+
+// features are the Hello bits a side with these handlers offers.
+func (h Handlers) features() uint32 {
+	f := wire.FeaturePeerState
+	if h.Clipboard != nil {
+		f |= wire.FeatureClipboard
+	}
+	return f
 }
 
 // SessionStats are cumulative counters.
@@ -76,6 +95,12 @@ type SessionStats struct {
 	InputDuplicates uint64
 	// FramesPartial counts intra frames handed on with chunks missing.
 	FramesPartial uint64
+	// ClipboardSent and ClipboardReceived count clipboard items;
+	// ClipboardRefused counts received items dropped for their size, hash
+	// or format.
+	ClipboardSent     uint64
+	ClipboardReceived uint64
+	ClipboardRefused  uint64
 }
 
 type sentFrame struct {
@@ -169,7 +194,11 @@ type Session struct {
 
 	stats struct {
 		sent, recv, authFail, simDrop, complete, lost, recovered, pliSent, pliRecv, feedback, inputResent, inputDup, partial atomic.Uint64
+		clipSent, clipRecv, clipRefused                                                                                    atomic.Uint64
 	}
+
+	clipMu  sync.Mutex
+	clipOut *quic.SendStream
 
 	mediaUp     chan struct{}
 	mediaUpOnce sync.Once
@@ -275,6 +304,9 @@ func newSession(p sessionParams) (*Session, error) {
 }
 
 func (s *Session) start() {
+	if s.h.Clipboard != nil {
+		s.wg.Go(s.clipAcceptLoop)
+	}
 	s.wg.Add(5)
 	go s.recvLoop()
 	go s.pingLoop()
@@ -315,6 +347,9 @@ func (s *Session) Clock() *ClockEstimator      { return &s.clock }
 func (s *Session) RTT() time.Duration          { return s.clock.RTT() }
 func (s *Session) Done() <-chan struct{}       { return s.done }
 func (s *Session) RemoteControlAddr() net.Addr { return s.conn.RemoteAddr() }
+
+// PeerFeatures are the wire.Feature bits of the peer's Hello.
+func (s *Session) PeerFeatures() uint32 { return s.peerFeatures }
 
 // TargetBitrateKbps is the rate controller's current target (host only).
 func (s *Session) TargetBitrateKbps() int { return int(s.target.Load()) }
@@ -357,6 +392,10 @@ func (s *Session) Stats() SessionStats {
 		InputResent:      s.stats.inputResent.Load(),
 		InputDuplicates:  s.stats.inputDup.Load(),
 		FramesPartial:    s.stats.partial.Load(),
+
+		ClipboardSent:     s.stats.clipSent.Load(),
+		ClipboardReceived: s.stats.clipRecv.Load(),
+		ClipboardRefused:  s.stats.clipRefused.Load(),
 	}
 }
 
@@ -432,6 +471,98 @@ func (s *Session) SendAudio(seq uint32, ts int64, opus []byte) error {
 	h.Put(b[AEADHeaderLen:])
 	copy(b[AEADHeaderLen+wire.AudioHeaderLen:], opus)
 	return s.sealAndWriteLocked(b)
+}
+
+// SendMic sends one packet of the client's microphone (client only, to a
+// host with wire.FeatureMic). h.Flow is set to wire.FlowMic.
+func (s *Session) SendMic(h wire.AudioHeader, payload []byte) error {
+	if s.isHost {
+		return ErrWrongRole
+	}
+	if s.peerFeatures&wire.FeatureMic == 0 {
+		return ErrPeerUnsupported
+	}
+	if AEADOverhead+wire.AudioHeaderLen+len(payload) > s.maxDgram {
+		return ErrTooBig
+	}
+	h.Flow = wire.FlowMic
+	s.sealMu.Lock()
+	defer s.sealMu.Unlock()
+	b := s.txBuf[:AEADHeaderLen+wire.AudioHeaderLen+len(payload)]
+	h.Put(b[AEADHeaderLen:])
+	copy(b[AEADHeaderLen+wire.AudioHeaderLen:], payload)
+	return s.sealAndWriteLocked(b)
+}
+
+// SendClipboard writes one clipboard item on this side's clipboard stream,
+// opening it on first use, to a peer with wire.FeatureClipboard. It blocks
+// until the item is handed to QUIC; video and input do not wait on it.
+func (s *Session) SendClipboard(ctx context.Context, c *wire.Clip) error {
+	if s.peerFeatures&wire.FeatureClipboard == 0 {
+		return ErrPeerUnsupported
+	}
+	if len(c.Data) > wire.MaxClip {
+		return wire.ErrClipTooLarge
+	}
+	s.clipMu.Lock()
+	defer s.clipMu.Unlock()
+	if s.clipOut == nil {
+		str, err := s.conn.OpenUniStreamSync(ctx)
+		if err != nil {
+			return err
+		}
+		if _, err := str.Write([]byte{wire.StreamClipboard}); err != nil {
+			str.CancelWrite(0)
+			return err
+		}
+		s.clipOut = str
+	}
+	stop := context.AfterFunc(ctx, func() { s.clipOut.SetWriteDeadline(time.Now()) })
+	err := wire.WriteClip(s.clipOut, c)
+	stop()
+	if err != nil {
+		if !errors.Is(err, wire.ErrClipTooLarge) && !errors.Is(err, wire.ErrClipFormat) {
+			// A part-written frame cannot be resumed; the next item opens
+			// a new stream.
+			s.clipOut.CancelWrite(0)
+			s.clipOut = nil
+		}
+		return err
+	}
+	s.stats.clipSent.Add(1)
+	return nil
+}
+
+func (s *Session) clipAcceptLoop() {
+	ctx := s.conn.Context()
+	for {
+		str, err := s.conn.AcceptUniStream(ctx)
+		if err != nil {
+			return
+		}
+		s.wg.Go(func() { s.readClips(str) })
+	}
+}
+
+func (s *Session) readClips(str *quic.ReceiveStream) {
+	var kind [1]byte
+	if _, err := io.ReadFull(str, kind[:]); err != nil || kind[0] != wire.StreamClipboard {
+		str.CancelRead(0)
+		return
+	}
+	for {
+		c, err := wire.ReadClip(str, wire.MaxClip)
+		switch {
+		case err == nil:
+			s.stats.clipRecv.Add(1)
+			s.h.Clipboard(c)
+		case errors.Is(err, wire.ErrClipTooLarge), errors.Is(err, wire.ErrClipHash), errors.Is(err, wire.ErrClipFormat):
+			s.stats.clipRefused.Add(1)
+		default:
+			str.CancelRead(0)
+			return
+		}
+	}
 }
 
 // SendRumble sends a gamepad rumble command (host only).
@@ -586,11 +717,13 @@ func (s *Session) handleMedia(plain []byte, now int64) {
 			s.handleFeedback(fb, now)
 		}
 	case wire.KindAudio:
-		if s.isHost || s.h.Audio == nil {
-			return
-		}
-		if h, opus, err := wire.ParseAudio(plain); err == nil {
-			s.h.Audio(h, opus)
+		h, payload, err := wire.ParseAudio(plain)
+		switch {
+		case err != nil:
+		case !s.isHost && h.Flow == wire.FlowDesktop && s.h.Audio != nil:
+			s.h.Audio(h, payload)
+		case s.isHost && h.Flow == wire.FlowMic && s.h.Mic != nil:
+			s.h.Mic(h, payload)
 		}
 	case wire.KindInput:
 		var in wire.Input

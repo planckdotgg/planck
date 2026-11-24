@@ -79,7 +79,7 @@ func clientHandshake(ctx context.Context, conn *quic.Conn, cfg ClientConfig) (*S
 	stop := context.AfterFunc(ctx, func() { ctrl.CancelRead(0); ctrl.CancelWrite(0) })
 	defer stop()
 
-	var features uint32
+	features := cfg.Handlers.features()
 	if cfg.LANPath && lanDatagramOK(conn.RemoteAddr().(*net.UDPAddr).AddrPort().Addr()) {
 		features |= wire.FeatureLANDatagram
 	}
