@@ -151,6 +151,42 @@ func (r *Reassembler) SliceData(frameID uint32, slice int) []byte {
 	return s.backing[:s.sliceLen]
 }
 
+// PartialFrame appends frame frameID's slices to dst as far as they are
+// known: ready slices whole, and other slices with the data shards that
+// arrived and zeros for the rest. Slices with no shard seen are left out
+// (PyroWave chunks are self-describing, so offsets do not matter). missing
+// counts the zeroed data shards. ok is false once the frame has left the
+// window or when no shard of it arrived.
+func (r *Reassembler) PartialFrame(frameID uint32, dst []byte) (au []byte, missing int, ok bool) {
+	f := &r.ring[frameID%ringSize]
+	if !f.active || f.frameID != frameID {
+		return dst, 0, false
+	}
+	ss := r.shardSize
+	for i := 0; i < f.sliceCount; i++ {
+		s := &f.slices[i]
+		if !s.seen {
+			continue
+		}
+		if s.ready {
+			dst = append(dst, s.backing[:s.sliceLen]...)
+			continue
+		}
+		for k := 0; k < s.data; k++ {
+			end := min((k+1)*ss, s.sliceLen)
+			if s.present[k/64]&(1<<(k%64)) != 0 {
+				dst = append(dst, s.backing[k*ss:end]...)
+				continue
+			}
+			missing++
+			n := len(dst)
+			dst = append(dst, s.backing[k*ss:end]...)
+			clear(dst[n:])
+		}
+	}
+	return dst, missing, true
+}
+
 // Flush finalizes every open frame.
 func (r *Reassembler) Flush() {
 	for i := range r.ring {
