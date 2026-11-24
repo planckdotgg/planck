@@ -10,6 +10,7 @@ import (
 	"net"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,7 +36,9 @@ type HostConfig struct {
 	// ConfigDir holds host.json, the host identity and the paired clients.
 	// Empty uses config.Dir().
 	ConfigDir string
-	Name      string
+	// Name overrides host.json's name for this run; SetName renames for
+	// good.
+	Name string
 	// ListenAddr is the QUIC control address; empty means ":47701".
 	ListenAddr string
 	// MediaPort is the UDP media port; 0 picks a free one per session.
@@ -139,6 +142,8 @@ type HostStats struct {
 // Host serves one client at a time; a new client takes over.
 type Host struct {
 	cfg    HostConfig
+	dir    string
+	name   atomic.Pointer[string]
 	hostID string
 	cert   tls.Certificate
 	fp     [32]byte
@@ -185,9 +190,6 @@ func NewHost(cfg HostConfig) (*Host, error) {
 	if err := config.SaveHostConfig(dir, stored); err != nil {
 		return nil, err
 	}
-	if cfg.Name == "" {
-		cfg.Name = stored.Name
-	}
 	cert, err := config.LoadOrCreateIdentity(stored.CertPath, stored.KeyPath, "planck-host "+stored.HostID)
 	if err != nil {
 		return nil, err
@@ -205,11 +207,16 @@ func NewHost(cfg HostConfig) (*Host, error) {
 	if cfg.FPS <= 0 && cfg.Synth {
 		cfg.FPS = 60
 	}
-	h := &Host{inputTrace: newTracer[inputTraceRow](traceInputEnv), cfg: cfg, hostID: stored.HostID, cert: cert, fp: transport.CertFingerprint(cert), pairs: pairs,
+	h := &Host{inputTrace: newTracer[inputTraceRow](traceInputEnv), cfg: cfg, dir: dir, hostID: stored.HostID, cert: cert, fp: transport.CertFingerprint(cert), pairs: pairs,
 		whois: cfg.WhoIs, open: cfg.OpenVideo, logf: cfg.Logf, pin: cfg.PIN}
 	if h.logf == nil {
 		h.logf = log.Printf
 	}
+	name := cfg.Name
+	if name == "" {
+		name = stored.Name
+	}
+	h.setLiveName(name)
 	if h.open == nil {
 		h.open = DefaultVideoOpener
 	}
@@ -227,7 +234,40 @@ func NewHost(cfg HostConfig) (*Host, error) {
 func (h *Host) HostID() string { return h.hostID }
 
 // Name is the name clients see.
-func (h *Host) Name() string { return h.cfg.Name }
+func (h *Host) Name() string { return *h.name.Load() }
+
+// MaxHostNameLen is the longest name SetName takes, in bytes.
+const MaxHostNameLen = 64
+
+// SetName renames the host in host.json and, at once, in its discovery
+// replies, its next beacon and later handshakes. An empty name advertises
+// the machine's own name.
+func (h *Host) SetName(name string) error {
+	name = strings.TrimSpace(name)
+	if len(name) > MaxHostNameLen {
+		return fmt.Errorf("session: host name is %d bytes, at most %d", len(name), MaxHostNameLen)
+	}
+	err := config.UpdateHostConfig(h.dir, func(c *config.HostConfig) error {
+		c.Name = name
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	live := h.setLiveName(name)
+	if h.srv != nil {
+		h.srv.SetName(live)
+	}
+	return nil
+}
+
+func (h *Host) setLiveName(name string) string {
+	if name == "" {
+		name = config.Hostname()
+	}
+	h.name.Store(&name)
+	return name
+}
 
 // Fingerprint is the lowercase hex SHA-256 of the host certificate, which
 // clients pin.
@@ -267,7 +307,7 @@ func (h *Host) Start(ctx context.Context) error {
 	}
 	srv, err := transport.Listen(h.cfg.ListenAddr, transport.ServerConfig{
 		Certificate:  h.cert,
-		Name:         h.cfg.Name,
+		Name:         h.Name(),
 		Authorize:    h.authorize,
 		PIN:          h.PIN,
 		Negotiate:    h.negotiate,
@@ -311,17 +351,21 @@ func (h *Host) startDiscovery(ctx context.Context) error {
 		return fmt.Errorf("session: discovery: %w", err)
 	}
 	h.disc = conn
-	b := discovery.Beacon{
+	base := discovery.Beacon{
 		HostID:          h.hostID,
-		Name:            h.cfg.Name,
 		ControlPort:     uint16(h.srv.Addr().(*net.UDPAddr).Port),
 		CertFingerprint: h.Fingerprint(),
 		OS:              runtime.GOOS,
 	}
-	h.wg.Go(func() { _ = discovery.Serve(ctx, conn, b) })
+	beacon := func() discovery.Beacon {
+		b := base
+		b.Name = h.Name()
+		return b
+	}
+	h.wg.Go(func() { _ = discovery.ServeFunc(ctx, conn, beacon) })
 	if ua, ok := conn.LocalAddr().(*net.UDPAddr); ok && !ua.IP.IsLoopback() {
 		dst := discovery.BroadcastAddrs(uint16(ua.Port))
-		h.wg.Go(func() { _ = discovery.Announce(ctx, conn, b, dst, 2*time.Second) })
+		h.wg.Go(func() { _ = discovery.AnnounceFunc(ctx, conn, beacon, dst, 2*time.Second) })
 	}
 	return nil
 }
