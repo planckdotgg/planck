@@ -17,39 +17,49 @@ type inputForwarder struct {
 	// in, in pixels; nil, or zeros, map the pointer over the whole view.
 	video func() (fw, fh, dw, dh int)
 
-	keys    []mui.Key
-	mods    uint8
-	over    bool
-	x, y    uint16
-	button  int
-	pressed bool
+	keys []mui.Key
+	mods uint8
+	// over is whether the host has the pointer's position x, y.
+	over bool
+	x, y uint16
+	// button and pressed are the press on the view; held is whether the
+	// host has it, as only a press begun on the picture goes to the host.
+	button        int
+	pressed, held bool
 }
 
 // view builds the stream's input surface, which fills the stream view.
+// The pointer goes to the host over the picture alone, not over the bars
+// beside it, except to carry a press begun on the picture to its edge.
 func (f *inputForwarder) view(c *mui.Context) {
 	c.Key("planck-stream-input")
 	el := mui.Box(c).Fill().Label("Stream")
 	f.keyboard(c.KeysDown(), c.Modifiers())
 	x, y, over := el.PointerPosition()
 	b := el.Bounds()
+	in := false
 	if over && b.W > 0 && b.H > 0 {
 		var fw, fh, dw, dh int
 		if f.video != nil {
 			fw, fh, dw, dh = f.video()
 		}
-		nx, ny := mapPointer(x, y, b.W, b.H, fw, fh, dw, dh)
-		if !f.over || nx != f.x || ny != f.y {
-			f.send(input.Event{Type: input.TypeMouseMoveAbs, MouseAbs: input.MouseMoveAbs{X: nx, Y: ny}})
+		in = onPicture(x, y, b.W, b.H, fw, fh, dw, dh)
+		if in || f.held {
+			nx, ny := mapPointer(x, y, b.W, b.H, fw, fh, dw, dh)
+			if !f.over || nx != f.x || ny != f.y {
+				f.send(input.Event{Type: input.TypeMouseMoveAbs, MouseAbs: input.MouseMoveAbs{X: nx, Y: ny}})
+			}
+			f.x, f.y = nx, ny
 		}
-		f.x, f.y = nx, ny
 	}
-	f.over = over
+	f.over = in || (over && f.held)
 	btn, pressed := el.PressedButton()
-	if f.pressed && (!pressed || btn != f.button) {
+	if f.held && (!pressed || btn != f.button) {
 		f.sendButton(f.button, false)
+		f.held = false
 	}
-	if pressed && (!f.pressed || btn != f.button) {
-		f.sendButton(btn, true)
+	if pressed && (!f.pressed || btn != f.button) && in {
+		f.held = f.sendButton(btn, true)
 	}
 	f.button, f.pressed = btn, pressed
 }
@@ -59,12 +69,26 @@ func (f *inputForwarder) view(c *mui.Context) {
 // the surface places it. Over a bar the point clamps to the picture's
 // edge.
 func mapPointer(x, y, bw, bh float32, fw, fh, dw, dh int) (uint16, uint16) {
+	vx, vy, rw, rh := pictureOffset(x, y, bw, bh, fw, fh, dw, dh)
+	return normalize(vx, rw), normalize(vy, rh)
+}
+
+// onPicture reports whether a point of the view, as mapPointer takes it,
+// is on the picture rather than on a bar beside it.
+func onPicture(x, y, bw, bh float32, fw, fh, dw, dh int) bool {
+	vx, vy, rw, rh := pictureOffset(x, y, bw, bh, fw, fh, dw, dh)
+	return vx >= 0 && vx <= rw && vy >= 0 && vy <= rh
+}
+
+// pictureOffset is where a point of the view is from the picture's
+// top-left corner, and the picture's size, in the drawable's pixels.
+func pictureOffset(x, y, bw, bh float32, fw, fh, dw, dh int) (vx, vy, rw, rh float32) {
 	if dw <= 0 || dh <= 0 {
 		dw, dh = int(bw+0.5), int(bh+0.5)
 	}
 	px, py := x/bw*float32(dw), y/bh*float32(dh)
-	rx, ry, rw, rh := gpusurface.FitRect(fw, fh, dw, dh)
-	return normalize(px-float32(rx), float32(rw)), normalize(py-float32(ry), float32(rh))
+	rx, ry, w, h := gpusurface.FitRect(fw, fh, dw, dh)
+	return px - float32(rx), py - float32(ry), float32(w), float32(h)
 }
 
 // normalize maps a position along a side of length n onto 0..65535.
@@ -78,7 +102,8 @@ func normalize(v, n float32) uint16 {
 	return uint16(v / n * 65535)
 }
 
-func (f *inputForwarder) sendButton(b int, pressed bool) {
+// sendButton reports whether b is a button the host has.
+func (f *inputForwarder) sendButton(b int, pressed bool) bool {
 	var hb input.Button
 	switch b {
 	case 0:
@@ -88,9 +113,10 @@ func (f *inputForwarder) sendButton(b int, pressed bool) {
 	case 2:
 		hb = input.ButtonMiddle
 	default:
-		return
+		return false
 	}
 	f.send(input.Event{Type: input.TypeMouseButton, Button: input.MouseButton{Button: hb, Pressed: pressed}})
+	return true
 }
 
 // overlayChord is the modifiers of the stream overlay's keys, which stay
