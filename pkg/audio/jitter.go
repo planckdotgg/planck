@@ -142,6 +142,17 @@ func (j *JitterBuffer) Push(seq uint16, payload []byte) {
 	}
 }
 
+// Restart drops what is buffered; the next packet starts a new sequence,
+// as a new stream from the same host numbers its packets afresh.
+func (j *JitterBuffer) Restart() {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	for i := range j.slots {
+		j.slots[i].full = false
+	}
+	j.started, j.playing = false, false
+}
+
 func (j *JitterBuffer) reset(s uint64) {
 	j.stats.Resets++
 	for i := range j.slots {
