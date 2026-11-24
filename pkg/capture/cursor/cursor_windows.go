@@ -68,5 +68,8 @@ func read() (State, error) {
 		p = ci.pos
 	}
 	s.X, s.Y = int(p.X), int(p.Y)
+	if s.Visible {
+		s.Handle = ci.hCursor
+	}
 	return s, nil
 }

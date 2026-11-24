@@ -20,6 +20,9 @@ type State struct {
 	Captured bool
 	// X and Y are the cursor's place on the desktop, in physical pixels.
 	X, Y int
+	// Handle is the system's handle of the cursor's image, which changes
+	// as the cursor changes shape; 0 while none shows.
+	Handle uintptr
 }
 
 // Read reports the system cursor now.
