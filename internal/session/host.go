@@ -125,6 +125,9 @@ type HostConfig struct {
 	// ReadCursor replaces cursor.Read, the host's system cursor that
 	// clients reading wire.CursorState hear of.
 	ReadCursor func() (cursor.State, error)
+	// ReadCursorShape replaces cursor.ReadShape, the image of the cursor
+	// clients reading wire.CursorShape see.
+	ReadCursorShape func(cursor.State) (cursor.Shape, error)
 	// WhoIs replaces the local Tailscale daemon client.
 	WhoIs WhoIser
 	// FECMinLoss keeps parity for at least this loss rate.

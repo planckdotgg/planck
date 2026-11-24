@@ -182,3 +182,128 @@ func TestWarpCaptureReleasesOnFollow(t *testing.T) {
 		t.Fatalf("captured %v, want %v", got, want)
 	}
 }
+
+func testShape(n int) cursor.Shape {
+	return cursor.Shape{W: 2, H: 1, DPI: 96, RGBA: []byte{byte(n), byte(n >> 8), 0, 255, 0, 0, 0, 0}}
+}
+
+// TestShapeCachesStayAlike: across many changes among more shapes than
+// either end keeps, and a new stream starting the host's cache afresh in
+// the client's session, every reference the host sends names a shape the
+// client still has.
+func TestShapeCachesStayAlike(t *testing.T) {
+	r := rand.New(rand.NewPCG(5, 6))
+	var host, client shapeCache
+	refs := 0
+	for i := range 5000 {
+		if i == 2500 {
+			host = shapeCache{}
+		}
+		n := r.IntN(48)
+		if i%3 == 0 {
+			n = r.IntN(4)
+		}
+		sh := testShape(n)
+		m := host.message(sh, sh.Hash())
+		b, err := wire.AppendMessage(nil, &m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dm, err := wire.DecodeMessage(b[4:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, ok := client.resolve(*dm.(*wire.CursorShape))
+		if !ok || got.ID != sh.Hash() || !slices.Equal(got.RGBA, sh.RGBA) {
+			t.Fatalf("change %d to shape %d: got %+v, %v", i, n, got, ok)
+		}
+		if m.Ref() {
+			refs++
+		}
+		if len(host.shapes) > wire.CursorCacheSize || len(client.shapes) > wire.CursorCacheSize {
+			t.Fatalf("caches grew to %d and %d", len(host.shapes), len(client.shapes))
+		}
+	}
+	if refs < 2000 {
+		t.Errorf("only %d of 5000 changes went as references", refs)
+	}
+	if _, ok := client.resolve(wire.CursorShape{ID: 12345}); ok {
+		t.Error("resolved a reference to a shape never sent")
+	}
+}
+
+// TestCursorShapeReachesClient: a client that asks for the host's cursor
+// image gets it as the stream starts and as the cursor changes shape,
+// whole even when the host refers to one sent before; the host reads each
+// cursor once, not on every poll.
+func TestCursorShapeReachesClient(t *testing.T) {
+	var now atomic.Pointer[cursor.State]
+	now.Store(&cursor.State{Visible: true, Handle: 1})
+	var reads atomic.Int32
+	h, err := NewHost(HostConfig{
+		ConfigDir: t.TempDir(), Name: "test-host", ListenAddr: "127.0.0.1:0", DiscoveryAddr: "off", NoTailscale: true,
+		FPS: 60, BitrateKbps: 10_000, PIN: "246810",
+		OpenVideo: func(p VideoParams) (VideoPipe, error) {
+			return &fakePipe{fps: p.FPS, forced: new(atomic.Int64), kbps: new(atomic.Int64)}, nil
+		},
+		OpenAudio:  func() (audio.Capturer, error) { return &fakeCapturer{}, nil },
+		ReadCursor: func() (cursor.State, error) { return *now.Load(), nil },
+		ReadCursorShape: func(s cursor.State) (cursor.Shape, error) {
+			reads.Add(1)
+			return testShape(int(s.Handle % 2)), nil
+		},
+		Logf: t.Logf,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(h.Stop)
+
+	var mu sync.Mutex
+	var got []wire.CursorShape
+	seen := func() []wire.CursorShape {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]wire.CursorShape(nil), got...)
+	}
+	c, err := NewClient(ClientConfig{
+		ConfigDir: t.TempDir(), Name: "test-client", PIN: "246810", NoAudio: true,
+		Quality: Quality{Codec: encode.HEVC, FPS: 60}, OpenSink: NullSinkOpener(&NullSink{}), Tailscale: noTailscale{}, Logf: t.Logf,
+		OnCursorShape: func(s wire.CursorShape) {
+			mu.Lock()
+			got = append(got, s)
+			mu.Unlock()
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Disconnect)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := c.Connect(ctx, Target{Addr: h.Addr().String()}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the first shape", func() bool { return len(seen()) == 1 })
+	time.Sleep(10 * cursorPoll)
+	if n := reads.Load(); n != 1 {
+		t.Fatalf("read the same cursor %d times", n)
+	}
+	now.Store(&cursor.State{Visible: true, Handle: 2})
+	waitFor(t, "the second shape", func() bool { return len(seen()) == 2 })
+	now.Store(&cursor.State{})
+	time.Sleep(5 * cursorPoll)
+	now.Store(&cursor.State{Visible: true, Handle: 3})
+	waitFor(t, "the first shape again", func() bool { return len(seen()) == 3 })
+	// Another handle with the image already shown sends nothing.
+	now.Store(&cursor.State{Visible: true, Handle: 5})
+	time.Sleep(10 * cursorPoll)
+	s := seen()
+	a, b := testShape(1), testShape(0)
+	if len(s) != 3 || s[0].ID != a.Hash() || s[1].ID != b.Hash() || s[2].ID != a.Hash() || !slices.Equal(s[2].RGBA, a.RGBA) || s[2].Width != 2 {
+		t.Fatalf("shapes %+v", s)
+	}
+}

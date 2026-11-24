@@ -20,6 +20,16 @@ func (st *stream) cursorLoop() {
 	if read == nil {
 		read = cursor.Read
 	}
+	readShape := st.h.cfg.ReadCursorShape
+	if readShape == nil {
+		readShape = cursor.ReadShape
+	}
+	var shapes *shapeCache
+	if st.sess.PeerFeatures()&wire.FeatureCursorShape != 0 {
+		shapes = &shapeCache{}
+	}
+	var handle uintptr
+	var shape uint64
 	t := time.NewTicker(cursorPoll)
 	defer t.Stop()
 	var last wire.CursorState
@@ -29,6 +39,17 @@ func (st *stream) cursorLoop() {
 		s, err := read()
 		if errors.Is(err, cursor.ErrUnsupported) {
 			return
+		}
+		if err == nil && shapes != nil && s.Handle != 0 && s.Handle != handle {
+			if sh, err := readShape(s); err == nil {
+				handle = s.Handle
+				if id := sh.Hash(); id != shape {
+					m := shapes.message(sh, id)
+					if st.sess.SendControl(&m) == nil {
+						shape = id
+					}
+				}
+			}
 		}
 		if err == nil {
 			st.mu.Lock()
@@ -49,6 +70,58 @@ func (st *stream) cursorLoop() {
 			return
 		case <-t.C:
 		}
+	}
+}
+
+// shapeCache is the last wire.CursorCacheSize cursor shapes of a session,
+// the most recent first. The client's takes each message the host's makes
+// in the same order, so the host's shapes are always the client's first
+// ones, even after the host's starts afresh.
+type shapeCache struct{ shapes []wire.CursorShape }
+
+// message is the message that shows sh, named id: a reference to it when
+// it was sent before, else the whole shape. Either way it becomes the
+// most recent.
+func (c *shapeCache) message(sh cursor.Shape, id uint64) wire.CursorShape {
+	if _, ok := c.use(id); ok {
+		return wire.CursorShape{ID: id}
+	}
+	m := wire.CursorShape{
+		ID: id, Width: uint16(sh.W), Height: uint16(sh.H), HotX: uint16(sh.HotX), HotY: uint16(sh.HotY),
+		DPI: uint16(min(max(sh.DPI, 1), 0xffff)), RGBA: sh.RGBA,
+	}
+	c.add(m)
+	return m
+}
+
+// resolve is the whole shape m shows, from the cache when m refers to one;
+// ok is false for a reference to a shape the cache lacks.
+func (c *shapeCache) resolve(m wire.CursorShape) (wire.CursorShape, bool) {
+	if m.Ref() {
+		return c.use(m.ID)
+	}
+	c.add(m)
+	return m, true
+}
+
+func (c *shapeCache) use(id uint64) (wire.CursorShape, bool) {
+	for i, s := range c.shapes {
+		if s.ID == id {
+			copy(c.shapes[1:i+1], c.shapes[:i])
+			c.shapes[0] = s
+			return s, true
+		}
+	}
+	return wire.CursorShape{}, false
+}
+
+func (c *shapeCache) add(m wire.CursorShape) {
+	c.shapes = append(c.shapes, wire.CursorShape{})
+	copy(c.shapes[1:], c.shapes)
+	c.shapes[0] = m
+	if len(c.shapes) > wire.CursorCacheSize {
+		c.shapes[len(c.shapes)-1] = wire.CursorShape{}
+		c.shapes = c.shapes[:wire.CursorCacheSize]
 	}
 }
 

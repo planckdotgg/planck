@@ -91,7 +91,10 @@ type ClientConfig struct {
 	// OnRumble receives gamepad rumble from the host.
 	OnRumble func(input.RumbleEvent)
 	// OnCursor receives the host's cursor state, from a host that sends it.
-	OnCursor         func(wire.CursorState)
+	OnCursor func(wire.CursorState)
+	// OnCursorShape receives the host's cursor image, whole, from a host
+	// that sends it; setting it asks the host for it.
+	OnCursorShape    func(wire.CursorShape)
 	HandshakeTimeout time.Duration
 	SimulateLoss     float64
 	// Route says how a live stream moves between the host's routes.
@@ -541,10 +544,11 @@ func (c *Client) dialRoute(ctx context.Context, cc *conn, r resolved) (*route, e
 	cc.asked.Store(offerOf(offered, cfg.ViewSize != nil))
 
 	rt := &route{kind: r.kind, addr: r.addr}
+	var shapes shapeCache
 	sess, err := transport.Dial(ctx, r.addr, transport.ClientConfig{
 		Certificate: cert, Name: cfg.Name, VerifyHost: verify, Auth: method, PIN: cfg.PIN, Session: req,
 		HandshakeTimeout: cfg.HandshakeTimeout, SimulateLoss: cfg.SimulateLoss, LANPath: r.kind == discovery.PathLANDirect,
-		Capabilities: capsJSON, StreamSwitch: true,
+		Capabilities: capsJSON, StreamSwitch: true, CursorShape: cfg.OnCursorShape != nil,
 		Handlers: transport.Handlers{
 			VideoFrame: cc.onFrame,
 			Audio:      cc.onAudio,
@@ -563,6 +567,15 @@ func (c *Client) dialRoute(ctx context.Context, cc *conn, r resolved) (*route, e
 				case *wire.CursorState:
 					if cfg.OnCursor != nil {
 						cfg.OnCursor(*m)
+					}
+				case *wire.CursorShape:
+					if cfg.OnCursorShape == nil {
+						break
+					}
+					if s, ok := shapes.resolve(*m); ok {
+						cfg.OnCursorShape(s)
+					} else {
+						c.logf("planck: cursor shape %x is not cached", m.ID)
 					}
 				}
 			},
