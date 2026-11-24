@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 )
 
 const (
@@ -44,7 +45,8 @@ func Dir() (string, error) {
 }
 
 type HostConfig struct {
-	HostID                 string `json:"hostID"`
+	HostID string `json:"hostID"`
+	// Name is what clients see; empty advertises Hostname().
 	Name                   string `json:"name"`
 	ControlPort            uint16 `json:"controlPort"`
 	MediaPort              uint16 `json:"mediaPort"`
@@ -67,15 +69,17 @@ type ClientConfig struct {
 	AudioEnabled    bool                  `json:"audioEnabled"`
 	ThemeName       string                `json:"themeName"`
 	PinnedHosts     map[string]PinnedHost `json:"pinnedHosts"`
+	// HostAliases are names the user gave hosts on this client, by host
+	// ID; they replace the name the host advertises.
+	HostAliases map[string]string `json:"hostAliases,omitempty"`
 }
 
 // DefaultHostConfig returns settings for a new host in dir, with a fresh
 // random HostID and the identity files beside the config.
 func DefaultHostConfig(dir string) HostConfig {
-	name, _ := os.Hostname()
 	return HostConfig{
 		HostID:                 newHostID(),
-		Name:                   name,
+		Name:                   Hostname(),
 		ControlPort:            DefaultControlPort,
 		MediaPort:              DefaultMediaPort,
 		Codec:                  "hevc",
@@ -143,6 +147,39 @@ func SaveClientConfig(dir string, cfg ClientConfig) error {
 		return err
 	}
 	return saveJSON(filepath.Join(dir, ClientConfigFile), cfg)
+}
+
+// fileMu serializes the read-modify-write of the Update functions, which
+// the client's settings, its pins and a host's rename all do in one process.
+var fileMu sync.Mutex
+
+// UpdateHostConfig loads <dir>/host.json, applies fn and saves the result.
+func UpdateHostConfig(dir string, fn func(*HostConfig) error) error {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+	cfg, err := LoadHostConfig(dir)
+	if err != nil {
+		return err
+	}
+	if err := fn(&cfg); err != nil {
+		return err
+	}
+	return SaveHostConfig(dir, cfg)
+}
+
+// UpdateClientConfig loads <dir>/client.json, applies fn and saves the
+// result.
+func UpdateClientConfig(dir string, fn func(*ClientConfig) error) error {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+	cfg, err := LoadClientConfig(dir)
+	if err != nil {
+		return err
+	}
+	if err := fn(&cfg); err != nil {
+		return err
+	}
+	return SaveClientConfig(dir, cfg)
 }
 
 func (c HostConfig) Validate() error {

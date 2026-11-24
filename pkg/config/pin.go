@@ -19,6 +19,10 @@ type PinnedHost struct {
 	CertFingerprint string    `json:"certFingerprint"`
 	PairedAt        time.Time `json:"pairedAt"`
 	LastAddr        string    `json:"lastAddr,omitempty"`
+	// LastLANAddr and LastTailscaleAddr are the host's control addresses
+	// on each kind of route it was last reached or found on.
+	LastLANAddr       string `json:"lastLANAddr,omitempty"`
+	LastTailscaleAddr string `json:"lastTailscaleAddr,omitempty"`
 }
 
 // Pin records a paired host, replacing any earlier pin for the same HostID.
