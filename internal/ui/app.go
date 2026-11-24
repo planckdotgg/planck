@@ -34,6 +34,7 @@ type App struct {
 	goos       string
 	streamView func(c *mui.Context)
 	window     WindowHook
+	cursor     CursorHook
 	// videoTheme is theme with a clear window background, for a stream
 	// view whose video shows under the UI's layer.
 	videoTheme *mui.Theme
@@ -124,6 +125,10 @@ func (a *App) Notify() {
 // switch. Call it on the main thread.
 func (a *App) SetWindow(w WindowHook) { a.window = w }
 
+// SetCursor gives the stream overlay the mouse lock, for its shortcut and
+// its switch. Call it on the main thread.
+func (a *App) SetCursor(h CursorHook) { a.cursor = h }
+
 // OnOverlayChange registers fn to hear each time the overlay starts or
 // stops drawing over the stream, so that a video path the window's UI
 // cannot draw over makes way for it. fn runs on the main thread inside a
@@ -164,6 +169,9 @@ func (a *App) View(c *mui.Context) {
 		toHosts = true
 		a.noteOverlay(false)
 		a.leaveStreamFullscreen()
+		if a.cursor != nil {
+			a.cursor.StreamEnded()
+		}
 	}
 	if !a.streaming && tel.Connected {
 		w, h := c.Size()

@@ -148,6 +148,22 @@ type WindowHook interface {
 	SetFullscreen(on bool)
 }
 
+// CursorHook is the stream's mouse lock, which the app that streams
+// supplies (SetCursor). The UI calls it on the main thread.
+type CursorHook interface {
+	// CursorLocked reports whether the mouse is to be locked to the
+	// stream, by a game that captured it or by the user; it engages while
+	// the window has the focus and the stream's menu is closed.
+	CursorLocked() bool
+	// SetCursorLocked locks the mouse, or releases it until a click on the
+	// picture or SetCursorLocked(true).
+	SetCursorLocked(on bool)
+	// SetMenuOpen frees the mouse while the stream's menu is open.
+	SetMenuOpen(open bool)
+	// StreamEnded frees the mouse and forgets the stream's lock.
+	StreamEnded()
+}
+
 // EncoderInfo is a hardware encoder on this machine.
 type EncoderInfo struct {
 	GPU string

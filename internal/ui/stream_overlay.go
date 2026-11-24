@@ -51,8 +51,11 @@ var easeOverlay = mui.CubicBezier(0.16, 1, 0.3, 1)
 // alone.
 type overlay struct {
 	hidden   bool
-	toastAt  time.Time
+	toast    toast
 	tipUntil time.Time
+	// cursorLocked is whether the mouse lock was on last frame, and
+	// cursorTold whether this stream's toast said how to release it.
+	cursorLocked, cursorTold bool
 	// btn is the button's top-left corner in the view while it floats or
 	// is popped out of its dock; off is how far a drag moved it from
 	// there, folded into btn once it comes to rest, and fold is set for
@@ -89,6 +92,13 @@ type overlay struct {
 	tray        string
 	metrics     metricsWindow
 	saved       OverlayLayout
+}
+
+// toast is a short note across the top of the stream: a title, and the
+// overlay key that undoes it between lead and tail.
+type toast struct {
+	at                     time.Time
+	title, lead, key, tail string
 }
 
 // tween is a rect moving from one place to another over dur.
@@ -266,9 +276,11 @@ func (a *App) overlayView(c *mui.Context, well mui.Element, tel Telemetry) {
 	now := c.Now()
 	o.vw, o.vh = c.Size()
 	a.overlayShortcuts(c)
+	a.watchCursorLock()
 	if o.hidden {
-		a.hiddenToast(c, now)
-		a.noteOverlay(now.Before(o.toastAt.Add(toastIn + toastHold + toastOut)))
+		a.toastView(c, now)
+		a.noteMenu(false)
+		a.noteOverlay(now.Before(o.toast.at.Add(toastIn + toastHold + toastOut)))
 		return
 	}
 	a.noteOverlay(true)
@@ -286,6 +298,8 @@ func (a *App) overlayView(c *mui.Context, well mui.Element, tel Telemetry) {
 		btn := a.overlayButton(c, now)
 		a.streamMenu(c, tel, btn)
 	})
+	a.noteMenu(o.menuOpen)
+	a.toastView(c, now)
 	if l := o.layout(); l != o.saved && !o.moving(now) {
 		o.saved = l
 		if err := a.backend.SaveOverlayLayout(l); err != nil {
@@ -652,13 +666,13 @@ func (a *App) shortcut(shift bool, key string) string {
 	return "Ctrl Alt " + key
 }
 
-// hiddenToast says, once, how to bring the overlay back. It never takes
+// toastView shows the toast, if one is due, for a moment. It never takes
 // the pointer.
-func (a *App) hiddenToast(c *mui.Context, now time.Time) {
+func (a *App) toastView(c *mui.Context, now time.Time) {
 	o := &a.ovl
-	t := now.Sub(o.toastAt)
+	t := now.Sub(o.toast.at)
 	end := toastIn + toastHold + toastOut
-	if o.toastAt.IsZero() || t >= end {
+	if o.toast.at.IsZero() || t >= end {
 		return
 	}
 	c.After(end - t)
@@ -674,20 +688,30 @@ func (a *App) hiddenToast(c *mui.Context, now time.Time) {
 	if c.Preferences().ReduceMotion {
 		opacity = 1
 	}
+	note := func(s string) {
+		if s != "" {
+			mui.Text(c, s).Font(theme.FontUI).FontSize(theme.TextCaption + 1).TextColor(theme.RoleText3).SingleLine()
+		}
+	}
 	mui.Row(c).Absolute().Left(0).Right(0).Top(26).Justify(mui.Center).IgnoreInput(true).Children(func() {
 		mui.Row(c).Height(36).Padding(0, 14).Gap(9).AlignItems(mui.Center).Radius(theme.RadiusPill).
 			Background(theme.HUDGlass).Border(1, theme.HUDEdge).Shadow(0, 16, 40, 0, theme.FloatShadow).
 			Opacity(opacity).IgnoreInput(true).Children(func() {
 			mui.Image(c, theme.Mark).Size(10, 15).Opacity(0.8)
 			mui.Box(c).Size(1, 16).Background(theme.RoleText.Alpha(0.12))
-			mui.Text(c, "Overlay hidden").Font(theme.FontUI).FontSize(theme.TextBody).FontWeight(500).TextColor(theme.RoleText).SingleLine()
-			mui.Text(c, "press").Font(theme.FontUI).FontSize(theme.TextCaption + 1).TextColor(theme.RoleText3).SingleLine()
+			mui.Text(c, o.toast.title).Font(theme.FontUI).FontSize(theme.TextBody).FontWeight(500).TextColor(theme.RoleText).SingleLine()
+			note(o.toast.lead)
 			mui.Row(c).Height(18).PaddingX(5).AlignItems(mui.Center).Radius(3).Border(1, theme.RoleBorderStrong).Children(func() {
-				mui.Text(c, a.shortcut(false, "P")).Font(theme.FontMono).FontSize(theme.TextMini).TextColor(theme.RoleText2).SingleLine()
+				mui.Text(c, a.shortcut(false, o.toast.key)).Font(theme.FontMono).FontSize(theme.TextMini).TextColor(theme.RoleText2).SingleLine()
 			})
-			mui.Text(c, "to show").Font(theme.FontUI).FontSize(theme.TextCaption + 1).TextColor(theme.RoleText3).SingleLine()
+			note(o.toast.tail)
 		})
 	})
+}
+
+func (a *App) showToast(t toast) {
+	t.at = a.frameNow
+	a.ovl.toast = t
 }
 
 // overlayShortcuts are the overlay's keys, which work while it is hidden.
@@ -717,7 +741,46 @@ func (a *App) overlayShortcuts(c *mui.Context) {
 		s.SystemKeysCapture = !s.SystemKeysCapture
 		a.saveSettings(before, s)
 	})
+	c.OnWindowShortcut(chord, mui.KeyG, a.toggleCursorLock)
 	c.OnWindowShortcut(chord|mui.Shift, mui.KeyD, a.disconnect)
+}
+
+// toggleCursorLock locks the mouse to the stream, or releases it, and
+// says how to undo it.
+func (a *App) toggleCursorLock() {
+	if a.cursor == nil {
+		return
+	}
+	on := !a.cursor.CursorLocked()
+	a.cursor.SetCursorLocked(on)
+	a.ovl.cursorLocked, a.ovl.cursorTold = on, true
+	if on {
+		a.showToast(toast{title: "Cursor locked", lead: "press", key: "G", tail: "to release"})
+		return
+	}
+	a.showToast(toast{title: "Cursor released", key: "G", tail: "or click the stream to lock"})
+}
+
+// watchCursorLock says, the first time a stream's game locks the mouse,
+// how to release it.
+func (a *App) watchCursorLock() {
+	if a.cursor == nil {
+		return
+	}
+	o := &a.ovl
+	on := a.cursor.CursorLocked()
+	if on && !o.cursorLocked && !o.cursorTold {
+		o.cursorTold = true
+		a.showToast(toast{title: "Cursor locked", lead: "press", key: "G", tail: "to release"})
+	}
+	o.cursorLocked = on
+}
+
+// noteMenu frees the mouse while the stream's menu is open.
+func (a *App) noteMenu(open bool) {
+	if a.cursor != nil {
+		a.cursor.SetMenuOpen(open)
+	}
 }
 
 // toggleHidden hides the whole overlay, or brings it back; hiding shows
@@ -726,9 +789,9 @@ func (a *App) toggleHidden() {
 	o := &a.ovl
 	o.hidden = !o.hidden
 	o.menuOpen, o.tray = false, ""
-	o.toastAt = time.Time{}
+	o.toast = toast{}
 	if o.hidden {
-		o.toastAt = a.frameNow
+		a.showToast(toast{title: "Overlay hidden", lead: "press", key: "P", tail: "to show"})
 	}
 }
 

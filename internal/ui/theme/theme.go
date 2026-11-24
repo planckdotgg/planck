@@ -58,6 +58,7 @@ var (
 
 	IconFullscreen   = mustSVG("icons/ui-fullscreen.svg")
 	IconImmersive    = mustSVG("icons/ui-immersive.svg")
+	IconCursor       = mustSVG("icons/ui-cursor.svg")
 	IconDirect       = mustSVG("icons/ui-direct.svg")
 	IconDisplay      = mustSVG("icons/ui-display.svg")
 	IconResolution   = mustSVG("icons/ui-resolution.svg")

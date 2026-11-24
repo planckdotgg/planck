@@ -1,6 +1,7 @@
 package main
 
 import (
+	"runtime"
 	"slices"
 
 	"github.com/egoist/mygo/gpusurface"
@@ -16,6 +17,9 @@ type inputForwarder struct {
 	// video is the size of the picture shown and of the drawable it shows
 	// in, in pixels; nil, or zeros, map the pointer over the whole view.
 	video func() (fw, fh, dw, dh int)
+	// lock holds the pointer while the mouse is locked to the stream; nil
+	// leaves it free.
+	lock *pointerLock
 
 	keys []mui.Key
 	mods uint8
@@ -26,23 +30,34 @@ type inputForwarder struct {
 	// host has it, as only a press begun on the picture goes to the host.
 	button        int
 	pressed, held bool
+	// bw and bh are the view's size; wx and wy the scrolling not sent
+	// yet, under a wheel unit.
+	bw, bh, wx, wy float32
 }
 
 // view builds the stream's input surface, which fills the stream view.
 // The pointer goes to the host over the picture alone, not over the bars
 // beside it, except to carry a press begun on the picture to its edge.
+// While the lock holds the pointer relative, its motion goes instead, and
+// every press is on the picture.
 func (f *inputForwarder) view(c *mui.Context) {
 	c.Key("planck-stream-input")
 	el := mui.Box(c).Fill().Label("Stream")
+	el.HandleInput(f.scroll)
 	f.keyboard(c.KeysDown(), c.Modifiers())
 	x, y, over := el.PointerPosition()
 	b := el.Bounds()
-	in := false
-	if over && b.W > 0 && b.H > 0 {
-		var fw, fh, dw, dh int
-		if f.video != nil {
-			fw, fh, dw, dh = f.video()
-		}
+	f.bw, f.bh = b.W, b.H
+	fw, fh, dw, dh := f.videoSize()
+	relative := false
+	if f.lock != nil {
+		pic := pictureRect(b.W, b.H, fw, fh, dw, dh)
+		pic.X, pic.Y = pic.X+b.X, pic.Y+b.Y
+		f.lock.frame(c.WindowActive(), pic)
+		relative = f.lock.held() == pointerRelative
+	}
+	in := relative
+	if over && b.W > 0 && b.H > 0 && !relative {
 		in = onPicture(x, y, b.W, b.H, fw, fh, dw, dh)
 		if in || f.held {
 			nx, ny := mapPointer(x, y, b.W, b.H, fw, fh, dw, dh)
@@ -59,9 +74,66 @@ func (f *inputForwarder) view(c *mui.Context) {
 		f.held = false
 	}
 	if pressed && (!f.pressed || btn != f.button) && in {
-		f.held = f.sendButton(btn, true)
+		if f.lock == nil || !f.lock.clickPicture() {
+			f.held = f.sendButton(btn, true)
+		}
 	}
 	f.button, f.pressed = btn, pressed
+}
+
+func (f *inputForwarder) videoSize() (fw, fh, dw, dh int) {
+	if f.video != nil {
+		return f.video()
+	}
+	return 0, 0, 0, 0
+}
+
+// wheelDIPs is how far one notch of a mouse wheel scrolls a MyGo view,
+// which the host takes as WheelNotch: three lines of 33 DIPs on Windows, a
+// line of 40 on macOS.
+func wheelDIPs() float32 {
+	if runtime.GOOS == "windows" {
+		return 99
+	}
+	return 40
+}
+
+// scroll sends the wheel turned over the picture, or anywhere while the
+// pointer is held relative; a touchpad's finer scrolling adds up to whole
+// units.
+func (f *inputForwarder) scroll(ev mui.InputEvent) bool {
+	if ev.Kind != mui.InputScroll {
+		return false
+	}
+	if f.lock == nil || f.lock.held() != pointerRelative {
+		fw, fh, dw, dh := f.videoSize()
+		if f.bw <= 0 || f.bh <= 0 || !onPicture(ev.X, ev.Y, f.bw, f.bh, fw, fh, dw, dh) {
+			return false
+		}
+	}
+	k := input.WheelNotch / wheelDIPs()
+	f.wx += ev.DX * k
+	f.wy -= ev.DY * k
+	x, y := whole(float64(f.wx)), whole(float64(f.wy))
+	if x != 0 || y != 0 {
+		f.wx -= float32(x)
+		f.wy -= float32(y)
+		f.send(input.Event{Type: input.TypeMouseWheel, Wheel: input.MouseWheel{DX: x, DY: y}})
+	}
+	return true
+}
+
+// pictureRect is where the picture sits in a bw x bh view, in its DIPs.
+func pictureRect(bw, bh float32, fw, fh, dw, dh int) rect {
+	if bw <= 0 || bh <= 0 {
+		return rect{}
+	}
+	if dw <= 0 || dh <= 0 {
+		dw, dh = int(bw+0.5), int(bh+0.5)
+	}
+	rx, ry, w, h := gpusurface.FitRect(fw, fh, dw, dh)
+	sx, sy := bw/float32(dw), bh/float32(dh)
+	return rect{X: float32(rx) * sx, Y: float32(ry) * sy, W: float32(w) * sx, H: float32(h) * sy}
 }
 
 // mapPointer maps a point of a bw x bh view onto 0..65535 across the
@@ -129,7 +201,7 @@ func overlayKey(k mui.Key, m mui.Modifiers) bool {
 		return false
 	}
 	switch k {
-	case mui.KeyO, mui.KeyP, mui.KeyH, mui.KeyM, mui.KeyU, mui.KeyF, mui.KeyI:
+	case mui.KeyO, mui.KeyP, mui.KeyH, mui.KeyM, mui.KeyU, mui.KeyF, mui.KeyI, mui.KeyG:
 		return true
 	case mui.KeyD:
 		return m&mui.Shift != 0

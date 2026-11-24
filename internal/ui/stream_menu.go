@@ -364,6 +364,16 @@ func (a *App) modeGroup(c *mui.Context, m mui.MenuParts, e *overrideEdit, s *Set
 	if switchItem(c, m, "Immersive mode", s.SystemKeysCapture, rowParts{icon: theme.IconImmersive}, a.shortcut(false, "I")) {
 		s.SystemKeysCapture = !s.SystemKeysCapture
 	}
+	if a.cursor != nil {
+		on := a.cursor.CursorLocked()
+		r := rowParts{icon: theme.IconCursor}
+		if on {
+			r.caption = "Locks as this menu closes"
+		}
+		if switchItem(c, m, "Lock cursor", on, r, a.shortcut(false, "G")) {
+			a.toggleCursorLock()
+		}
+	}
 	if a.goos == "darwin" {
 		on := e.o.MetalDirectDisplay != defaults.ToggleOff
 		if switchItem(c, m, "Direct to display", on, rowParts{icon: theme.IconDirect, caption: "macOS · pauses while the overlay is open"}, "") {

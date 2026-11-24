@@ -28,6 +28,9 @@ func runGUI(o options) error {
 	ts := tailscale.New()
 	f := newFinder(fmt.Sprintf(":%d", o.discoveryPort), ts, nil, logf)
 	video := &videoView{logf: logf}
+	ptr := newPointerLock(nil, nil)
+	ptr.sys = newSystemPointer(video.win.Load, ptr.motion)
+	defer ptr.close()
 	b, err := newBackend(backendConfig{
 		dir: o.configDir, name: o.name, finder: f, tailscale: ts, openSink: video.open,
 		hostConfig: func(s ui.Settings) session.HostConfig {
@@ -36,7 +39,7 @@ func runGUI(o options) error {
 			c.DiscoveryAddr = fmt.Sprintf(":%d", o.discoveryPort)
 			return c
 		},
-		encoders: localEncoders(), logf: logf, overrides: o.overrides, viewSize: video.pixelSize,
+		encoders: localEncoders(), logf: logf, overrides: o.overrides, viewSize: video.pixelSize, onCursor: ptr.setHost,
 	})
 	if err != nil {
 		return err
@@ -44,7 +47,8 @@ func runGUI(o options) error {
 	app := ui.NewApp(b)
 	video.keyframe = b.RequestKeyframe
 	app.OnOverlayChange(video.overlayChanged)
-	fwd := &inputForwarder{send: b.SendInput, video: video.videoSize}
+	ptr.send, ptr.changed = b.SendInput, app.Notify
+	fwd := &inputForwarder{send: b.SendInput, video: video.videoSize, lock: ptr}
 	app.SetStreamView(fwd.view)
 	resizer := &viewResizer{delay: resizeSettle, send: b.resizeStream}
 
@@ -58,6 +62,7 @@ func runGUI(o options) error {
 		})
 		video.attach(win)
 		app.SetWindow(fullScreenHook{win})
+		app.SetCursor(cursorHook{ptr})
 		win.OnResize(func() {
 			video.resized()
 			resizer.changed(video.pixelSize())
@@ -94,6 +99,14 @@ type videoView struct {
 	// keyframe asks the host for one, as the present path changes.
 	keyframe func()
 }
+
+// cursorHook is the mouse lock as the overlay drives it.
+type cursorHook struct{ l *pointerLock }
+
+func (h cursorHook) CursorLocked() bool      { return h.l.locked() }
+func (h cursorHook) SetCursorLocked(on bool) { h.l.setLocked(on) }
+func (h cursorHook) SetMenuOpen(open bool)   { h.l.setMenuOpen(open) }
+func (h cursorHook) StreamEnded()            { h.l.reset() }
 
 // fullScreenHook is the window for the overlay's Fullscreen switch.
 type fullScreenHook struct{ w *mygo.Window }
