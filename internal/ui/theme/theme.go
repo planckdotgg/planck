@@ -54,6 +54,7 @@ var (
 	IconSetting = mustSVG("icons/ui-settings.svg")
 	IconHosting = mustSVG("icons/ui-hosting.svg")
 	IconChevron = mustSVG("icons/ui-chevron-down.svg")
+	IconEdit    = mustSVG("icons/ui-edit.svg")
 )
 
 func mustSVG(name string) *ui.SVG {

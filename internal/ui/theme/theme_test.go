@@ -43,7 +43,7 @@ func TestMonoFontIsMonospaced(t *testing.T) {
 
 func TestIconsParsed(t *testing.T) {
 	for name, s := range map[string]*ui.SVG{"Mark": Mark, "IconHosts": IconHosts, "IconPairing": IconPairing,
-		"IconSetting": IconSetting, "IconHosting": IconHosting, "IconChevron": IconChevron} {
+		"IconSetting": IconSetting, "IconHosting": IconHosting, "IconChevron": IconChevron, "IconEdit": IconEdit} {
 		w, h := ui.ImageSize(s)
 		if w <= 0 || h <= 0 {
 			t.Errorf("%s has size %vx%v", name, w, h)
