@@ -36,6 +36,34 @@ func allMessages() []Message {
 		&Profile{JSON: []byte(`{"route":1,"maxDatagram":1452,"codec":4}`)},
 		&Resize{Width: 2560, Height: 1440},
 		&HostStats{CaptureMicros: 2900, EncodeMicros: 1410},
+		&CursorState{Visible: true, Captured: true, HasPos: true, X: 32768, Y: 65535},
+	}
+}
+
+// TestCursorStateFlags: each flag has its own bit, a later host's unknown
+// bits are ignored, and a short body is refused.
+func TestCursorStateFlags(t *testing.T) {
+	for _, want := range []CursorState{{}, {Visible: true}, {Captured: true}, {HasPos: true, X: 1, Y: 2}} {
+		b, err := AppendMessage(nil, &want)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := DecodeMessage(b[4:])
+		if err != nil || *got.(*CursorState) != want {
+			t.Errorf("%+v: got %+v, %v", want, got, err)
+		}
+	}
+	got, err := DecodeMessage([]byte{byte(MsgCursorState), 0xf8 | cursorCaptured, 0, 0, 0, 0})
+	if err != nil || *got.(*CursorState) != (CursorState{Captured: true}) {
+		t.Errorf("unknown flag bits: got %+v, %v", got, err)
+	}
+	if _, err := DecodeMessage([]byte{byte(MsgCursorState), cursorVisible, 0, 0}); !errors.Is(err, ErrMalformed) {
+		t.Errorf("short body: %v, want ErrMalformed", err)
+	}
+	for _, f := range []uint32{FeatureLANDatagram, FeatureInputDedup, FeatureCapabilities, FeatureResize, FeaturePeerState, FeatureMic, FeatureClipboard, FeatureHostStats} {
+		if f&FeatureCursorState != 0 {
+			t.Errorf("FeatureCursorState %#x shares a bit with %#x", FeatureCursorState, f)
+		}
 	}
 }
 

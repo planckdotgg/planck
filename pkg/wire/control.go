@@ -50,6 +50,10 @@ const (
 	// MsgHostStats goes host to client, in answer to each StatsReport,
 	// only to a client whose Hello carries FeatureHostStats.
 	MsgHostStats MsgType = 16
+	// MsgCursorState goes host to client, only to a client whose Hello
+	// carries FeatureCursorState: at the start of a stream and whenever the
+	// host's cursor shows, hides, or is captured or let go.
+	MsgCursorState MsgType = 17
 )
 
 // Message is a control-stream message. The set is closed: only types in this
@@ -100,6 +104,8 @@ const (
 	FeatureClipboard uint32 = 1 << 6
 	// FeatureHostStats, from a client, says it reads HostStats.
 	FeatureHostStats uint32 = 1 << 8
+	// FeatureCursorState, from a client, says it reads CursorState.
+	FeatureCursorState uint32 = 1 << 9
 )
 
 type AuthMethod uint8
@@ -241,6 +247,26 @@ type HostStats struct {
 	EncodeMicros  uint32
 }
 
+// CursorState is the host's system cursor. Neither capture path draws the
+// cursor into the picture, so the client's own cursor stands in for a
+// Visible one.
+type CursorState struct {
+	Visible bool
+	// Captured is set while an app holds the mouse: the cursor is hidden,
+	// or confined to less than the desktop, as a game does.
+	Captured bool
+	// HasPos says X and Y hold the cursor's place on the streamed display,
+	// from 0 at its left or top edge to 65535 at its right or bottom edge.
+	HasPos bool
+	X, Y   uint16
+}
+
+const (
+	cursorVisible = 1 << iota
+	cursorCaptured
+	cursorHasPos
+)
+
 type GoodbyeReason uint8
 
 const (
@@ -269,6 +295,7 @@ func (*Profile) Type() MsgType       { return MsgProfile }
 func (*Resize) Type() MsgType        { return MsgResize }
 func (*PeerState) Type() MsgType     { return MsgPeerState }
 func (*HostStats) Type() MsgType     { return MsgHostStats }
+func (*CursorState) Type() MsgType   { return MsgCursorState }
 
 func (m *Hello) appendBody(b []byte) []byte {
 	b = binary.BigEndian.AppendUint16(b, m.Version)
@@ -437,6 +464,31 @@ func (m *HostStats) decodeBody(d *decoder) {
 	m.EncodeMicros = d.u32()
 }
 
+func (m *CursorState) appendBody(b []byte) []byte {
+	var f byte
+	if m.Visible {
+		f |= cursorVisible
+	}
+	if m.Captured {
+		f |= cursorCaptured
+	}
+	if m.HasPos {
+		f |= cursorHasPos
+	}
+	b = append(b, f)
+	b = binary.BigEndian.AppendUint16(b, m.X)
+	return binary.BigEndian.AppendUint16(b, m.Y)
+}
+
+// decodeBody ignores flag bits it does not know, which a later host may
+// set.
+func (m *CursorState) decodeBody(d *decoder) {
+	f := d.u8()
+	m.Visible, m.Captured, m.HasPos = f&cursorVisible != 0, f&cursorCaptured != 0, f&cursorHasPos != 0
+	m.X = d.u16()
+	m.Y = d.u16()
+}
+
 func appendJSON(b, js []byte) []byte {
 	b = binary.BigEndian.AppendUint32(b, uint32(len(js)))
 	return append(b, js...)
@@ -540,6 +592,8 @@ func newMessage(t MsgType) Message {
 		return &PeerState{}
 	case MsgHostStats:
 		return &HostStats{}
+	case MsgCursorState:
+		return &CursorState{}
 	}
 	return nil
 }
