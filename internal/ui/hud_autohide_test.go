@@ -190,3 +190,33 @@ func TestHUDHiddenPassesPresses(t *testing.T) {
 		t.Fatalf("press beside the shown pill: stream got %d presses, want 3", p.presses)
 	}
 }
+
+// TestHUDHotkeyFromAutoHiddenPill: the hotkey first shows a pill that hid
+// itself, and only the next press opens the drawer.
+func TestHUDHotkeyFromAutoHiddenPill(t *testing.T) {
+	a, tt, _, f := newStreamTester(t)
+	tt.Advance(hudReveal + time.Second)
+	if hudVisible(tt, f) {
+		t.Fatal("pill did not hide itself")
+	}
+	tt.Key(mui.Ctrl|mui.Alt, mui.KeyH)
+	tt.Frame()
+	if a.hudMode() != HUDPill || !hudVisible(tt, f) || tt.HasText("Glass to glass, by stage") {
+		t.Fatalf("first press: mode %v, want the pill shown alone", a.hudMode())
+	}
+	tt.Key(mui.Ctrl|mui.Alt, mui.KeyH)
+	tt.Frame()
+	if a.hudMode() != HUDDrawer || !tt.HasText("Glass to glass, by stage") {
+		t.Fatalf("second press: mode %v, want the drawer", a.hudMode())
+	}
+
+	a.CycleHUD()
+	tt.Frame()
+	tt.Advance(hudReveal + time.Second)
+	a.CycleHUD()
+	a.CycleHUD()
+	tt.Frame()
+	if a.hudMode() != HUDDrawer {
+		t.Fatalf("two presses before a frame from the hidden HUD: mode %v, want the drawer", a.hudMode())
+	}
+}
