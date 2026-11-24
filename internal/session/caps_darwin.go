@@ -78,7 +78,9 @@ func (*vddManager) create(VideoParams, []byte, bool) (string, func() error, erro
 func (*vddManager) close() error { return nil }
 
 // clientDisplay is the main display's current mode in backing pixels, and
-// the most frames a second its screen shows (ProMotion: 120).
+// the most frames a second its screen shows (ProMotion: 120). The main
+// display is the one with the menu bar, NSScreen.screens[0]; mainScreen is
+// the screen of the key window, which can be another display.
 func clientDisplay() defaults.ClientDisplay {
 	loadCG()
 	var d defaults.ClientDisplay
@@ -88,7 +90,7 @@ func clientDisplay() defaults.ClientDisplay {
 		cgDisplayModeRelease(mode)
 	}
 	if cls := objc.ID(objc.GetClass("NSScreen")); cls != 0 {
-		if scr := cls.Send(objc.RegisterName("mainScreen")); scr != 0 {
+		if scr := firstScreen(cls); scr != 0 {
 			if hz := objc.Send[int](scr, objc.RegisterName("maximumFramesPerSecond")); hz > 0 {
 				d.MaxHz = hz
 			}
@@ -100,6 +102,14 @@ func clientDisplay() defaults.ClientDisplay {
 	}
 	d.MinHz = min(24, d.MaxHz)
 	return d
+}
+
+func firstScreen(cls objc.ID) objc.ID {
+	screens := cls.Send(objc.RegisterName("screens"))
+	if screens == 0 || objc.Send[uint](screens, objc.RegisterName("count")) == 0 {
+		return 0
+	}
+	return screens.Send(objc.RegisterName("objectAtIndex:"), 0)
 }
 
 // clientDecoders lists VideoToolbox's hardware decoders and the Metal
