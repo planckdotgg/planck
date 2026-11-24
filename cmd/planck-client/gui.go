@@ -36,7 +36,7 @@ func runGUI(o options) error {
 			c.DiscoveryAddr = fmt.Sprintf(":%d", o.discoveryPort)
 			return c
 		},
-		encoders: localEncoders(), logf: logf, overrides: o.overrides,
+		encoders: localEncoders(), logf: logf, overrides: o.overrides, viewSize: video.pixelSize,
 	})
 	if err != nil {
 		return err
@@ -54,6 +54,7 @@ func runGUI(o options) error {
 	app.OnDrawerChange(video.drawerChanged)
 	fwd := &inputForwarder{send: b.SendInput, video: video.videoSize}
 	app.SetStreamView(fwd.view)
+	resizer := &viewResizer{delay: resizeSettle, send: b.resizeStream}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -64,9 +65,17 @@ func runGUI(o options) error {
 			BackgroundColor: "#0E0F12", Transparent: composeUnderUI, Content: app.Content(),
 		})
 		video.attach(win)
-		win.OnResize(video.resized)
-		win.OnEnterFullScreen(video.applyDirect)
-		win.OnLeaveFullScreen(video.applyDirect)
+		win.OnResize(func() {
+			video.resized()
+			resizer.changed(video.pixelSize())
+		})
+		fullScreen := func() {
+			video.applyDirect()
+			video.storeSize(win)
+			resizer.now(video.pixelSize())
+		}
+		win.OnEnterFullScreen(fullScreen)
+		win.OnLeaveFullScreen(fullScreen)
 	})
 	err = mygo.App.Run()
 	b.close()
@@ -79,9 +88,11 @@ type videoView struct {
 	logf func(string, ...any)
 	win  atomic.Pointer[mygo.Window]
 	cur  atomic.Pointer[surfaceHost]
-	// size is the window's content size in DIPs, width in the high half;
-	// resize tells the presenting thread it changed.
+	// size is the window's content size in DIPs and pixels in pixels,
+	// width in the high half; resize tells the presenting thread it
+	// changed.
 	size   atomic.Uint64
+	pixels atomic.Uint64
 	resize atomic.Bool
 	// frame is the size of the pictures decoded last and drawable the
 	// surface's, in pixels, width in the high half, for the pointer.
@@ -102,7 +113,12 @@ func (v *videoView) attach(w *mygo.Window) {
 func (v *videoView) storeSize(w *mygo.Window) {
 	cw, ch := w.ContentSize()
 	v.size.Store(packSize(cw, ch))
+	v.pixels.Store(packSize(windowPixels(w)))
 }
+
+// pixelSize is the window's content size in pixels, the size a stream on a
+// virtual display takes.
+func (v *videoView) pixelSize() (int, int) { return unpackSize(v.pixels.Load()) }
 
 func (v *videoView) contentSize() (int, int) { return unpackSize(v.size.Load()) }
 
