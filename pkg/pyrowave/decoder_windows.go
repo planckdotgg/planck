@@ -5,7 +5,10 @@ package pyrowave
 import (
 	"errors"
 	"fmt"
+	"time"
 	"unsafe"
+
+	"github.com/planckdotgg/planck/internal/clock"
 
 	"github.com/planckdotgg/planck/pkg/capture"
 	"github.com/planckdotgg/planck/pkg/decode"
@@ -27,7 +30,7 @@ func init() {
 // D3D11Decoder decodes on the presenting surface's device into a pool of
 // textures the surface presents directly. Bytes only go CPU to GPU.
 // Decode does not wait for the GPU; the context's order puts the present
-// after it. Frame.Latency is not measured (0).
+// after it. Finish waits and measures.
 type D3D11Decoder struct {
 	d      *d3d
 	plan   *plan
@@ -36,11 +39,14 @@ type D3D11Decoder struct {
 	upload []byte
 
 	coef, bands, recs, up gpuBuf
-	out                   [outputPool]struct{ tex, uav uintptr }
-	next                  int
-	format                capture.Format
-	f                     *frameState
-	prof                  *profiler
+	out                   [outputPool]struct {
+		tex, uav uintptr
+		start    time.Duration
+	}
+	next   int
+	format capture.Format
+	f      *frameState
+	prof   *profiler
 }
 
 // OpenD3D11Decoder opens a decoder on dev (an ID3D11Device*).
@@ -116,6 +122,7 @@ func (dd *D3D11Decoder) init() error {
 // Decode decodes one chunked frame (Reassembler.PartialFrame's output) and
 // returns its texture. Lost chunks decode as zero coefficients.
 func (dd *D3D11Decoder) Decode(au []byte, pts int64) (decode.Frame, error) {
+	start := clock.Now()
 	if len(au) > len(dd.upload) {
 		return decode.Frame{}, fmt.Errorf("pyrowave: %d-byte frame over the %d-byte limit", len(au), len(dd.upload))
 	}
@@ -134,6 +141,7 @@ func (dd *D3D11Decoder) Decode(au []byte, pts int64) (decode.Frame, error) {
 	}
 	d.mark(dd.prof, "upload")
 	o := &dd.out[dd.next]
+	o.start = start
 	dd.next = (dd.next + 1) % outputPool
 	f.uavs = [6]uintptr{dd.coef.uav, dd.bands.uav, dd.recs.uav, dd.up.uav, o.uav, 0}
 	f.srvs[0] = 0
@@ -172,6 +180,18 @@ func (dd *D3D11Decoder) Decode(au []byte, pts int64) (decode.Frame, error) {
 func (dd *D3D11Decoder) Wait() {
 	dd.d.wait(dd.f)
 	dd.d.profEnd(dd.prof)
+}
+
+// Finish waits until the GPU has finished every decode submitted, f's
+// among them, and sets f.Latency.
+func (dd *D3D11Decoder) Finish(f *decode.Frame) {
+	dd.d.wait(dd.f)
+	for i := range dd.out {
+		if dd.out[i].tex == f.Surface {
+			f.Latency = clock.Now() - dd.out[i].start
+			return
+		}
+	}
 }
 
 // Release is a no-op: output textures are reused round robin, three deep.

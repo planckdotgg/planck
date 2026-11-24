@@ -24,7 +24,8 @@ type SinkOpener func(decode.Config) (Sink, error)
 var _ Sink = (*player.Player)(nil)
 
 // decodeSink decodes each access unit and gives the picture straight back,
-// for headless benchmarks.
+// for headless benchmarks. A decoder that returns before the GPU is done
+// is waited for, so that decode and end-to-end times include the GPU's.
 type decodeSink struct {
 	dec   decode.Decoder
 	after func()
@@ -34,6 +35,9 @@ func (s *decodeSink) Submit(au []byte, pts int64) (player.Timing, error) {
 	f, err := s.dec.Decode(au, pts)
 	if err != nil {
 		return player.Timing{PTS: pts}, err
+	}
+	if fin, ok := s.dec.(decode.Finisher); ok {
+		fin.Finish(&f)
 	}
 	s.dec.Release(f)
 	return player.Timing{PTS: f.PTS, Decode: f.Latency}, nil

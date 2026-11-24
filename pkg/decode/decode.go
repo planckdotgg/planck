@@ -64,6 +64,14 @@ type Decoder interface {
 	Close() error
 }
 
+// Finisher is a Decoder whose Decode returns before the GPU has written
+// the picture, so that presenting it overlaps decoding. Finish blocks
+// until the picture is written and sets f.Latency to the time from
+// Decode's call, for callers that measure decoding.
+type Finisher interface {
+	Finish(f *Frame)
+}
+
 // Target is the GPU a decoder writes its pictures on: the presenting
 // surface's, so pictures never leave it.
 type Target struct {

@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
@@ -193,6 +194,7 @@ type metalSlot struct {
 	surface  uintptr // IOSurfaceRef
 	tex      uintptr
 	cb       uintptr // the last command buffer that used the slot, retained
+	start    time.Time
 }
 
 // metalFrame holds what per-frame calls point at, on the heap.
@@ -344,9 +346,10 @@ func (d *MetalDecoder) dispatch(enc uintptr, pipe int, gx, gy, threads int) {
 }
 
 // Decode decodes one chunked frame (Reassembler.PartialFrame's output) and
-// returns its IOSurface. It commits without waiting. Frame.Latency is not
-// measured (0).
+// returns its IOSurface. It commits without waiting; Finish waits and
+// measures.
 func (d *MetalDecoder) Decode(au []byte, pts int64) (decode.Frame, error) {
+	start := time.Now()
 	if len(au) > d.maxFrame {
 		return decode.Frame{}, fmt.Errorf("pyrowave: %d-byte frame over the %d-byte limit", len(au), d.maxFrame)
 	}
@@ -396,7 +399,7 @@ func (d *MetalDecoder) Decode(au []byte, pts int64) (decode.Frame, error) {
 	f.p.OutOff = [4]uint32{pl.planeOff[0], pl.planeOff[1], pl.planeOff[2], 0}
 	d.dispatch(enc, pipeYUV2RGB, (pl.L.Width+15)/16, (pl.L.Height+15)/16, 256)
 	msg(enc, selEndEncoding)
-	s.cb = msg(cb, selRetain)
+	s.cb, s.start = msg(cb, selRetain), start
 	msg(cb, selCommit)
 	return decode.Frame{Surface: s.surface, Format: capture.FormatBGRA8, Width: pl.L.Width, Height: pl.L.Height, PTS: pts}, nil
 }
@@ -410,6 +413,17 @@ func (d *MetalDecoder) Wait() float64 {
 	}
 	msg(s.cb, selWaitUntilCompleted)
 	return objc.Send[float64](objc.ID(s.cb), selGPUEnd) - objc.Send[float64](objc.ID(s.cb), selGPUStart)
+}
+
+// Finish waits until f's picture is written and sets its Latency.
+func (d *MetalDecoder) Finish(f *decode.Frame) {
+	for i := range d.slots {
+		if s := &d.slots[i]; s.surface == f.Surface && s.cb != 0 {
+			msg(s.cb, selWaitUntilCompleted)
+			f.Latency = time.Since(s.start)
+			return
+		}
+	}
 }
 
 // Release is a no-op: output surfaces are reused round robin, three deep.
