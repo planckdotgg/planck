@@ -72,27 +72,73 @@ func (a *App) streamScreen(c *mui.Context, tel Telemetry, connecting string) {
 			mui.Box(c).Fill().Children(func() { a.streamView(c) })
 		}
 		mode := a.hudMode()
-		if mode == HUDHidden {
+		if !a.hudShown(c, well, mode) {
+			a.hudRects = a.hudRects[:0]
 			return
 		}
 		mui.Column(c).Absolute().Top(theme.Space4).Left(0).Right(0).AlignItems(mui.Center).Gap(theme.Space2).
-			Children(func() {
-				a.hudPill(c, tel, mode)
-				if mode == HUDDrawer {
-					a.hudDrawer(c, tel)
-				}
-			})
+			PassThrough().Children(func() {
+			a.hudRects = a.hudRects[:0]
+			a.hudRects = append(a.hudRects, a.hudPill(c, tel, mode).Bounds())
+			if mode == HUDDrawer {
+				a.hudRects = append(a.hudRects, a.hudDrawer(c, tel).Bounds())
+			}
+		})
 	})
+}
+
+// hudShown reports whether the HUD shows this frame, asking for the frame
+// that hides it. The pointer is only read, never caught: while the HUD is
+// hidden nothing is drawn over the stream, so every press reaches it.
+func (a *App) hudShown(c *mui.Context, well mui.Element, mode HUDMode) bool {
+	if mode == HUDHidden {
+		a.hudHeld = false
+		return false
+	}
+	now := c.Now()
+	held := mode == HUDDrawer || a.hudPinned || a.pointerOnHUD(well)
+	if a.hudHeld && !held {
+		a.hudUntil = now.Add(hudLinger)
+	}
+	a.hudHeld = held
+	if held {
+		return true
+	}
+	if left := a.hudUntil.Sub(now); left > 0 {
+		c.After(left)
+		return true
+	}
+	return false
+}
+
+// pointerOnHUD reports whether the pointer is in the top edge band or over
+// the pill or drawer as last drawn.
+func (a *App) pointerOnHUD(well mui.Element) bool {
+	x, y, over := well.PointerPosition()
+	if !over {
+		return false
+	}
+	if y < hudEdge {
+		return true
+	}
+	b := well.Bounds()
+	wx, wy := x+b.X, y+b.Y
+	for _, r := range a.hudRects {
+		if wx >= r.X && wx < r.X+r.W && wy >= r.Y && wy < r.Y+r.H {
+			return true
+		}
+	}
+	return false
 }
 
 func hudDivider(c *mui.Context) {
 	mui.Box(c).Width(1).Height(20).Background(theme.HUDEdge)
 }
 
-// hudPill is the always-on reading: glass to glass in ember, then fps,
+// hudPill is the glanceable reading: glass to glass in ember, then fps,
 // bitrate, path and codec.
-func (a *App) hudPill(c *mui.Context, t Telemetry, mode HUDMode) {
-	mui.Row(c).Height(44).AlignItems(mui.Center).Gap(theme.Space3).Padding(0, theme.Space1+2, 0, theme.Space4).
+func (a *App) hudPill(c *mui.Context, t Telemetry, mode HUDMode) mui.Element {
+	return mui.Row(c).Height(44).AlignItems(mui.Center).Gap(theme.Space3).Padding(0, theme.Space1+2, 0, theme.Space4).
 		Radius(theme.RadiusPill).Background(theme.HUDGlass).Border(1, theme.HUDEdge).
 		Shadow(0, 16, 40, 0, theme.FloatShadow).Label(hudSummary(t)).Children(func() {
 		mui.Image(c, theme.Mark).Size(11, 17)
@@ -144,10 +190,10 @@ func hudReading(c *mui.Context, v, unit string) {
 	})
 }
 
-func (a *App) hudDrawer(c *mui.Context, t Telemetry) {
+func (a *App) hudDrawer(c *mui.Context, t Telemetry) mui.Element {
 	before := a.backend.Settings()
 	s := before
-	mui.Column(c).Width(600).Padding(theme.Space5).Gap(theme.Space4).Radius(theme.RadiusMd).
+	d := mui.Column(c).Width(600).Padding(theme.Space5).Gap(theme.Space4).Radius(theme.RadiusMd).
 		Background(theme.HUDGlass).Border(1, theme.HUDEdge).Shadow(0, 16, 40, 0, theme.FloatShadow).
 		Label("Stream controls").Children(func() {
 		mui.Row(c).FillWidth().AlignItems(mui.Center).Children(func() {
@@ -164,6 +210,7 @@ func (a *App) hudDrawer(c *mui.Context, t Telemetry) {
 		mui.Row(c).FillWidth().Gap(theme.Space6).Children(func() {
 			mui.Box(c).Grow(1).Basis(0).Children(func() { switchRow(c, "Audio", "", &s.AudioEnabled, false) })
 			mui.Box(c).Grow(1).Basis(0).Children(func() { switchRow(c, "System keys", "", &s.SystemKeysCapture, false) })
+			mui.Box(c).Grow(1).Basis(0).Children(func() { switchRow(c, "Pin HUD", "", &a.hudPinned, false) })
 		})
 		divider(c)
 		mui.Row(c).FillWidth().AlignItems(mui.Center).Gap(theme.Space2).Children(func() {
@@ -177,6 +224,7 @@ func (a *App) hudDrawer(c *mui.Context, t Telemetry) {
 		})
 	})
 	a.saveSettings(before, s)
+	return d
 }
 
 func drawerRow(c *mui.Context, name string, control func()) {
