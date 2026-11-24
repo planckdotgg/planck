@@ -19,18 +19,21 @@ var (
 	cgAssociateMouseAndPosition func(connected uint32) int32
 	cgWarpMouseCursorPosition   func(at cgPoint) int32
 	cgEventGetLocation          func(ev uintptr) cgPoint
+	cgEventCreate               func(source uintptr) uintptr
 )
 
-// NSEvent types of the mouse's motion: moved, and dragged with the left,
-// right or another button.
-const motionEvents = 1<<5 | 1<<6 | 1<<7 | 1<<27
+// NSEvent types of the mouse's motion: moved, dragged with the left, right
+// or another button, and leaving a tracking area, as the window's view.
+const motionEvents = 1<<5 | 1<<6 | 1<<7 | 1<<27 | 1<<9
 
 // macPointer holds the macOS pointer as SDL's Cocoa backend does: relative,
 // the cursor hidden and dissociated from the mouse, which reports its
 // motion as NSEvent deltas; confined, the cursor moving as usual and warped
-// back onto the picture whenever an event finds it off it. A warp leaves
-// the mouse's events suppressed for a moment unless the cursor is
-// associated again at once, which warp does outside relative mode.
+// back onto the picture whenever an event finds it off it. MyGo's view
+// hears the mouse's moves over it alone, so while held the window takes
+// them wherever the cursor is. A warp leaves the mouse's events
+// suppressed for a moment unless the cursor is associated again at once,
+// which warp does outside relative mode.
 type macPointer struct {
 	win    func() *mygo.Window
 	motion func(dx, dy float64)
@@ -51,6 +54,7 @@ func newSystemPointer(win func() *mygo.Window, motion func(dx, dy float64)) poin
 		apple.Register(&cgAssociateMouseAndPosition, cg, "CGAssociateMouseAndMouseCursorPosition")
 		apple.Register(&cgWarpMouseCursorPosition, cg, "CGWarpMouseCursorPosition")
 		apple.Register(&cgEventGetLocation, cg, "CGEventGetLocation")
+		apple.Register(&cgEventCreate, cg, "CGEventCreate")
 	})
 	return &macPointer{win: win, motion: motion}
 }
@@ -68,11 +72,21 @@ func (p *macPointer) hold(m pointerMode, area rect) {
 		connected = 0
 	}
 	cgAssociateMouseAndPosition(connected)
+	p.allMoves(true)
 }
 
 func (p *macPointer) free() {
 	p.mode = pointerFree
 	cgAssociateMouseAndPosition(1)
+	p.allMoves(false)
+}
+
+// allMoves has the window take the mouse's moves off its view too, or
+// leaves them to the view's tracking area.
+func (p *macPointer) allMoves(on bool) {
+	if w := p.win(); w != nil {
+		objc.ID(w.NativeHandle()).Send(objc.RegisterName("setAcceptsMouseMovedEvents:"), on)
+	}
 }
 
 func (p *macPointer) warp(x, y float32) {
@@ -116,7 +130,9 @@ func (p *macPointer) event(ev objc.ID) {
 	case pointerRelative:
 		p.motion(objc.Send[float64](ev, objc.RegisterName("deltaX")), objc.Send[float64](ev, objc.RegisterName("deltaY")))
 	case pointerConfined:
-		at := cgEventGetLocation(objc.Send[uintptr](ev, objc.RegisterName("CGEvent")))
+		now := cgEventCreate(0)
+		at := cgEventGetLocation(now)
+		apple.CFRelease(now)
 		x, y := clampInto(at.X, p.area.X, p.area.W), clampInto(at.Y, p.area.Y, p.area.H)
 		if x != at.X || y != at.Y {
 			p.warpGlobal(x, y)
