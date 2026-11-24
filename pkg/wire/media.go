@@ -53,6 +53,9 @@ type VideoInfo struct {
 	CaptureTS  int64
 	EncodeTS   int64
 	SliceCount uint8
+	// Epoch is the stream the frame belongs to: 0 from the start, and the
+	// Epoch of each Stream message after it.
+	Epoch uint8
 }
 
 // VideoHeader describes one shard of one Reed-Solomon block of one slice.
@@ -84,7 +87,7 @@ func (h *VideoHeader) Put(b []byte) {
 	b[6] = h.ShardIndex
 	b[7] = h.DataShards
 	b[8] = h.ParityShards
-	b[9] = 0
+	b[9] = h.Epoch
 	binary.BigEndian.PutUint16(b[10:], h.ShardLen)
 	binary.BigEndian.PutUint32(b[12:], h.FrameID)
 	binary.BigEndian.PutUint32(b[16:], h.BlockLen)
@@ -106,6 +109,7 @@ func (h *VideoHeader) Parse(b []byte) error {
 	h.ShardIndex = b[6]
 	h.DataShards = b[7]
 	h.ParityShards = b[8]
+	h.Epoch = b[9]
 	h.ShardLen = binary.BigEndian.Uint16(b[10:])
 	h.FrameID = binary.BigEndian.Uint32(b[12:])
 	h.BlockLen = binary.BigEndian.Uint32(b[16:])

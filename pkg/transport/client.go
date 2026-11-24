@@ -38,6 +38,9 @@ type ClientConfig struct {
 	// goes to a host that offers it too, and the host's Capabilities and
 	// Profile come back (Session.PeerCapabilities, Session.Profile).
 	Capabilities []byte
+	// StreamSwitch offers wire.FeatureStreamSwitch: the Control handler
+	// takes wire.Stream and moves the session with SetStream.
+	StreamSwitch bool
 }
 
 // Dial connects to a host, authenticates, negotiates the session and brings
@@ -85,6 +88,9 @@ func clientHandshake(ctx context.Context, conn *quic.Conn, cfg ClientConfig) (*S
 	}
 	if cfg.Capabilities != nil {
 		features |= wire.FeatureCapabilities
+	}
+	if cfg.StreamSwitch {
+		features |= wire.FeatureStreamSwitch
 	}
 	if err := wire.WriteMessage(ctrl, &wire.Hello{Version: wire.Version, Role: wire.RoleClient, Name: cfg.Name, Features: features}); err != nil {
 		return nil, err

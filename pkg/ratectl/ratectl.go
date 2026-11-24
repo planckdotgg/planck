@@ -232,6 +232,18 @@ func (c *Controller) SetPath(p Path) {
 	c.target = c.clamp(c.target)
 }
 
+// SetLimits takes a new stream's cap and, when start is positive, starts
+// it there; otherwise the target only moves under the new cap.
+func (c *Controller) SetLimits(maxKbps, startKbps int) {
+	if maxKbps > 0 {
+		c.cfg.MaxKbps = maxKbps
+	}
+	if startKbps > 0 {
+		c.target = float64(startKbps)
+	}
+	c.target = c.clamp(c.target)
+}
+
 // Ceiling is the highest rate allowed on the current path.
 func (c *Controller) Ceiling() int {
 	switch c.path {

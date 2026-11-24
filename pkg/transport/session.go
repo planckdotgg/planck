@@ -119,7 +119,7 @@ type Session struct {
 	ctrl      *quic.Stream
 	ctrlOut   chan wire.Message
 	id        uint64
-	cfg       wire.SessionConfig
+	cfg       atomic.Pointer[wire.SessionConfig]
 	shardSize int
 	maxDgram  int
 	identity  string
@@ -132,7 +132,7 @@ type Session struct {
 	profile      []byte
 	// intra marks a PyroWave stream: every frame decodes alone, so a lost
 	// chunk is delivered as zeros instead of costing a keyframe.
-	intra bool
+	intra atomic.Bool
 
 	udp      *net.UDPConn
 	sealMu   sync.Mutex
@@ -261,7 +261,6 @@ func newSession(p sessionParams) (*Session, error) {
 		ctrl:         p.ctrl,
 		ctrlOut:      make(chan wire.Message, 64),
 		id:           p.ready.SessionID,
-		cfg:          p.ready.Config,
 		shardSize:    int(p.ready.ShardSize),
 		maxDgram:     p.maxDgram,
 		identity:     p.identity,
@@ -271,7 +270,6 @@ func newSession(p sessionParams) (*Session, error) {
 		peerName:     p.peerName,
 		peerCaps:     p.peerCaps,
 		profile:      p.profile,
-		intra:        p.ready.Config.Codec == wire.CodecPyroWave,
 		udp:          p.udp,
 		sealer:       sealer,
 		opener:       opener,
@@ -288,6 +286,8 @@ func newSession(p sessionParams) (*Session, error) {
 	if p.simLoss > 0 {
 		s.impair = NewImpairer(Impairment{Loss: p.simLoss, Seed: p.ready.SessionID | 1}, p.maxDgram, s.writeLocked)
 	}
+	s.cfg.Store(&p.ready.Config)
+	s.intra.Store(p.ready.Config.Codec == wire.CodecPyroWave)
 	if s.isHost {
 		s.enc = fec.NewEncoder(s.shardSize, AEADHeaderLen, AEADTagLen)
 		s.emitVideo = s.sendSealed
@@ -339,7 +339,7 @@ func (s *Session) waitMedia(timeout time.Duration) error {
 }
 
 func (s *Session) ID() uint64                  { return s.id }
-func (s *Session) Config() wire.SessionConfig  { return s.cfg }
+func (s *Session) Config() wire.SessionConfig  { return *s.cfg.Load() }
 func (s *Session) ShardSize() int              { return s.shardSize }
 func (s *Session) MaxDatagram() int            { return s.maxDgram }
 func (s *Session) PeerName() string            { return s.peerName }
@@ -385,6 +385,28 @@ func (s *Session) SetPath(p ratectl.Path) {
 	s.rcMu.Unlock()
 }
 
+// SetStream moves the session to a stream settled mid-session: Config
+// says what it carries from now on. On a host, the rate controller takes
+// its cap and start rate (zero keeps the old ones, as for ResolveResult)
+// and the parity its floors.
+func (s *Session) SetStream(cfg wire.SessionConfig, startKbps, maxKbps int, parity ParityProfile) {
+	s.cfg.Store(&cfg)
+	s.intra.Store(cfg.Codec == wire.CodecPyroWave)
+	if !s.isHost {
+		return
+	}
+	if cfg.BitrateKbps > 0 && (maxKbps <= 0 || maxKbps > int(cfg.BitrateKbps)) {
+		maxKbps = int(cfg.BitrateKbps)
+	}
+	s.videoMu.Lock()
+	s.pol = newPolicies(s.policy, parity)
+	s.videoMu.Unlock()
+	s.rcMu.Lock()
+	s.rc.SetLimits(maxKbps, startKbps)
+	s.target.Store(int64(s.rc.TargetKbps()))
+	s.rcMu.Unlock()
+}
+
 func (s *Session) Stats() SessionStats {
 	return SessionStats{
 		PacketsSent:      s.stats.sent.Load(),
@@ -414,7 +436,7 @@ func (s *Session) SendVideoFrame(info wire.VideoInfo, frame []byte) error {
 		return ErrWrongRole
 	}
 	if info.SliceCount == 0 {
-		info.SliceCount = max(s.cfg.Slices, 1)
+		info.SliceCount = max(s.cfg.Load().Slices, 1)
 	}
 	s.videoMu.Lock()
 	defer s.videoMu.Unlock()
@@ -759,7 +781,7 @@ func (s *Session) handleVideo(plain []byte, now int64) {
 	if fs := &s.firstSeen[res.Info.FrameID%sentRingSize]; fs.id != res.Info.FrameID || fs.at == 0 {
 		fs.id, fs.at = res.Info.FrameID, now
 	}
-	if s.intra {
+	if s.intra.Load() {
 		if s.hasPending && newerID(res.Info.FrameID, s.pendingInfo.FrameID) {
 			s.deliverPartial(s.pendingInfo)
 		}
@@ -783,7 +805,7 @@ func (s *Session) handleVideo(plain []byte, now int64) {
 	}
 	s.stats.complete.Add(1)
 	late := false
-	if s.intra {
+	if s.intra.Load() {
 		late = s.delivered && !newerID(res.Info.FrameID, s.lastDelivered)
 		if !late {
 			s.lastDelivered, s.delivered = res.Info.FrameID, true
@@ -818,7 +840,7 @@ func (s *Session) onFrameFinal(st fec.FrameStats) {
 	s.finLost = true
 	s.pendingFB = true
 	s.stats.lost.Add(1)
-	if s.intra {
+	if s.intra.Load() {
 		return
 	}
 	now := Mono()

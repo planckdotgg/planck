@@ -54,6 +54,9 @@ const (
 	// carries FeatureCursorState: at the start of a stream and whenever the
 	// host's cursor shows, hides, or is captured or let go.
 	MsgCursorState MsgType = 17
+	// MsgStream goes host to client, only to a client whose Hello carries
+	// FeatureStreamSwitch, when a Resize settled a new stream.
+	MsgStream MsgType = 18
 )
 
 // Message is a control-stream message. The set is closed: only types in this
@@ -106,6 +109,10 @@ const (
 	FeatureHostStats uint32 = 1 << 8
 	// FeatureCursorState, from a client, says it reads CursorState.
 	FeatureCursorState uint32 = 1 << 9
+	// FeatureStreamSwitch, from a client, says it follows a stream whose
+	// codec, format or size changes mid-session: the host announces each
+	// new stream in a Stream message and tags its frames with the epoch.
+	FeatureStreamSwitch uint32 = 1 << 10
 )
 
 type AuthMethod uint8
@@ -218,6 +225,13 @@ type Profile struct {
 	JSON []byte
 }
 
+// Stream announces the stream a Resize settled: Profile is its pkg/defaults
+// ResolvedProfile as JSON, and every video frame of it carries Epoch.
+type Stream struct {
+	Epoch   uint8
+	Profile []byte
+}
+
 // Resize asks the host to stream at the client window's new size, in
 // pixels. The host answers with a Profile once the stream changed, or
 // keeps the stream as it is.
@@ -296,6 +310,7 @@ func (*Resize) Type() MsgType        { return MsgResize }
 func (*PeerState) Type() MsgType     { return MsgPeerState }
 func (*HostStats) Type() MsgType     { return MsgHostStats }
 func (*CursorState) Type() MsgType   { return MsgCursorState }
+func (*Stream) Type() MsgType        { return MsgStream }
 
 func (m *Hello) appendBody(b []byte) []byte {
 	b = binary.BigEndian.AppendUint16(b, m.Version)
@@ -430,6 +445,14 @@ func (m *Capabilities) bodyTooLarge() bool { return len(m.JSON) > MaxCapsJSON }
 func (m *Profile) appendBody(b []byte) []byte { return appendJSON(b, m.JSON) }
 func (m *Profile) decodeBody(d *decoder)      { m.JSON = d.json() }
 func (m *Profile) bodyTooLarge() bool         { return len(m.JSON) > MaxCapsJSON }
+
+func (m *Stream) appendBody(b []byte) []byte { return appendJSON(append(b, m.Epoch), m.Profile) }
+func (m *Stream) bodyTooLarge() bool         { return len(m.Profile) > MaxCapsJSON }
+
+func (m *Stream) decodeBody(d *decoder) {
+	m.Epoch = d.u8()
+	m.Profile = d.json()
+}
 
 func (m *Resize) appendBody(b []byte) []byte {
 	b = binary.BigEndian.AppendUint16(b, m.Width)
@@ -594,6 +617,8 @@ func newMessage(t MsgType) Message {
 		return &HostStats{}
 	case MsgCursorState:
 		return &CursorState{}
+	case MsgStream:
+		return &Stream{}
 	}
 	return nil
 }

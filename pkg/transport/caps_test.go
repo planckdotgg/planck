@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/planckdotgg/planck/pkg/fec"
 	"github.com/planckdotgg/planck/pkg/wire"
@@ -33,7 +34,7 @@ func TestCapabilitiesExchange(t *testing.T) {
 	if string(p.client.PeerCapabilities()) != `{"os":"windows"}` || string(p.host.PeerCapabilities()) != `{"v":1}` {
 		t.Fatalf("caps: client saw %q, host saw %q", p.client.PeerCapabilities(), p.host.PeerCapabilities())
 	}
-	if string(p.client.Profile()) != `{"codec":4}` || p.client.Config().Codec != wire.CodecPyroWave || !p.client.intra {
+	if string(p.client.Profile()) != `{"codec":4}` || p.client.Config().Codec != wire.CodecPyroWave || !p.client.intra.Load() {
 		t.Fatalf("client profile %q config %+v", p.client.Profile(), p.client.Config())
 	}
 	if k := p.host.TargetBitrateKbps(); k != 300_000 {
@@ -86,8 +87,9 @@ func TestPyroWaveNeedsCapabilities(t *testing.T) {
 func TestIntraPartialDelivery(t *testing.T) {
 	const shard = 512
 	var frames [][]byte
-	s := &Session{intra: true, txBuf: make([]byte, 1500), ctrlOut: make(chan wire.Message, 8), done: make(chan struct{}),
+	s := &Session{txBuf: make([]byte, 1500), ctrlOut: make(chan wire.Message, 8), done: make(chan struct{}),
 		h: Handlers{VideoFrame: func(_ wire.VideoInfo, f []byte) { frames = append(frames, bytes.Clone(f)) }}}
+	s.intra.Store(true)
 	s.dec = fec.NewDecoder(shard, s.onFrameFinal)
 	enc := fec.NewEncoder(shard, 0, 0)
 	frame := func(id uint32) []byte {
@@ -131,5 +133,53 @@ func TestIntraPartialDelivery(t *testing.T) {
 	}
 	if st := s.Stats(); st.FramesPartial != 1 || st.PLIsSent != 0 || len(s.ctrlOut) != 0 {
 		t.Fatalf("stats %+v, %d control messages queued", st, len(s.ctrlOut))
+	}
+}
+
+// TestSetStream: a PyroWave session moved to HEVC mid-session loses its
+// intra delivery, its rate controller takes the new cap, and frames carry
+// the new epoch to the client.
+func TestSetStream(t *testing.T) {
+	epochs := make(chan uint8, 8)
+	p := newPair(t, pairOpts{
+		server: func(c *ServerConfig) {
+			c.Capabilities = func() []byte { return []byte(`{}`) }
+			c.Resolve = func(r ResolveRequest) (ResolveResult, error) {
+				cfg := r.Request
+				cfg.Codec, cfg.Slices, cfg.BitrateKbps = wire.CodecPyroWave, 1, 400_000
+				return ResolveResult{Config: cfg, Profile: []byte(`{"codec":4}`), StartKbps: 300_000, MaxKbps: 400_000}, nil
+			}
+		},
+		client: func(c *ClientConfig) {
+			c.Capabilities = []byte(`{"v":1}`)
+			c.Handlers.VideoFrame = func(info wire.VideoInfo, _ []byte) { epochs <- info.Epoch }
+		},
+	})
+	hevc := wire.SessionConfig{Codec: wire.CodecHEVC, Chroma: wire.Chroma420, Width: 5120, Height: 1440, FPS: 120, BitrateKbps: 80_000, Slices: 2}
+	p.host.SetStream(hevc, 0, 150_000, ParityProfile{MinPercent: 10})
+	p.client.SetStream(hevc, 0, 0, ParityProfile{})
+	if p.client.intra.Load() || p.host.Config() != hevc || p.client.Config() != hevc {
+		t.Fatalf("after SetStream: client intra %v, host config %+v", p.client.intra.Load(), p.host.Config())
+	}
+	if k := p.host.TargetBitrateKbps(); k != 80_000 {
+		t.Fatalf("target %d kbps, want the HEVC cap 80000", k)
+	}
+	if n := p.host.pol.normal.Parity(10); n < 1 {
+		t.Fatalf("normal parity %d for 10 shards, want the 10%% floor", n)
+	}
+	if err := p.host.SendVideoFrame(wire.VideoInfo{FrameID: 1, Keyframe: true, Epoch: 1}, make([]byte, 4000)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case e := <-epochs:
+		if e != 1 {
+			t.Fatalf("client saw epoch %d, want 1", e)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no frame reached the client")
+	}
+	p.host.SetStream(wire.SessionConfig{Codec: wire.CodecPyroWave, Width: 1280, Height: 768, FPS: 120, BitrateKbps: 400_000}, 300_000, 400_000, ParityProfile{})
+	if k := p.host.TargetBitrateKbps(); k != 300_000 {
+		t.Fatalf("back on PyroWave: target %d kbps, want its start 300000", k)
 	}
 }

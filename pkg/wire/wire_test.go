@@ -37,6 +37,7 @@ func allMessages() []Message {
 		&Resize{Width: 2560, Height: 1440},
 		&HostStats{CaptureMicros: 2900, EncodeMicros: 1410},
 		&CursorState{Visible: true, Captured: true, HasPos: true, X: 32768, Y: 65535},
+		&Stream{Epoch: 3, Profile: []byte(`{"route":1,"codec":2,"width":5120,"height":1440}`)},
 	}
 }
 
@@ -221,6 +222,22 @@ func FuzzDecodeMessage(f *testing.F) {
 			t.Fatalf("re-encoding differs:\n in %x\nout %x", body, again[4:])
 		}
 	})
+}
+
+// TestVideoHeaderEpoch: the epoch rides in the byte older hosts left
+// zero, so their frames read as epoch 0.
+func TestVideoHeaderEpoch(t *testing.T) {
+	h := VideoHeader{VideoInfo: VideoInfo{FrameID: 9, SliceCount: 1, Epoch: 200}, BlockCount: 1, DataShards: 1, ShardLen: 64, BlockLen: 64}
+	pkt := make([]byte, VideoHeaderLen+64)
+	h.Put(pkt)
+	var got VideoHeader
+	if err := got.Parse(pkt); err != nil || got.Epoch != 200 {
+		t.Fatalf("epoch %d, err %v; want 200", got.Epoch, err)
+	}
+	pkt[9] = 0
+	if err := got.Parse(pkt); err != nil || got.Epoch != 0 {
+		t.Fatalf("legacy header: epoch %d, err %v; want 0", got.Epoch, err)
+	}
 }
 
 func TestVideoHeaderRoundTripAndValidation(t *testing.T) {
