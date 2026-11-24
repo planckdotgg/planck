@@ -34,6 +34,7 @@ func allMessages() []Message {
 		&Goodbye{Reason: GoodbyeNormal, Message: "bye"},
 		&Capabilities{Role: RoleClient, JSON: []byte(`{"v":1,"client":{"os":"darwin"},"route":{"kind":1},"overrides":{"codec":"pyrowave"}}`)},
 		&Profile{JSON: []byte(`{"route":1,"maxDatagram":1452,"codec":4}`)},
+		&Resize{Width: 2560, Height: 1440},
 	}
 }
 

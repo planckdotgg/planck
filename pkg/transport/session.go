@@ -309,6 +309,7 @@ func (s *Session) Config() wire.SessionConfig  { return s.cfg }
 func (s *Session) ShardSize() int              { return s.shardSize }
 func (s *Session) MaxDatagram() int            { return s.maxDgram }
 func (s *Session) PeerName() string            { return s.peerName }
+func (s *Session) PeerFeatures() uint32        { return s.peerFeatures }
 func (s *Session) Identity() string            { return s.identity }
 func (s *Session) PeerFingerprint() [32]byte   { return s.peerFP }
 func (s *Session) Clock() *ClockEstimator      { return &s.clock }

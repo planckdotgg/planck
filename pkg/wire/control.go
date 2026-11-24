@@ -38,8 +38,12 @@ const (
 	MsgGoodbye
 	// MsgCapabilities goes both ways, once, right after AuthOK.
 	MsgCapabilities MsgType = 10
-	// MsgProfile goes host to client, right after SessionReady.
+	// MsgProfile goes host to client, right after SessionReady, and again
+	// when a Resize changed the stream.
 	MsgProfile MsgType = 11
+	// MsgResize goes client to host, only to a host whose Hello carries
+	// FeatureResize.
+	MsgResize MsgType = 12
 )
 
 // Message is a control-stream message. The set is closed: only types in this
@@ -77,6 +81,9 @@ const (
 	// FeatureCapabilities says the peer sends and reads Capabilities and
 	// Profile. Both Hellos must carry it before either message is sent.
 	FeatureCapabilities uint32 = 1 << 2
+	// FeatureResize, from a host, says it takes Resize: a stream on a
+	// virtual display follows the client's window size.
+	FeatureResize uint32 = 1 << 3
 )
 
 type AuthMethod uint8
@@ -189,6 +196,13 @@ type Profile struct {
 	JSON []byte
 }
 
+// Resize asks the host to stream at the client window's new size, in
+// pixels. The host answers with a Profile once the stream changed, or
+// keeps the stream as it is.
+type Resize struct {
+	Width, Height uint16
+}
+
 type GoodbyeReason uint8
 
 const (
@@ -214,6 +228,7 @@ func (*StatsReport) Type() MsgType   { return MsgStatsReport }
 func (*Goodbye) Type() MsgType       { return MsgGoodbye }
 func (*Capabilities) Type() MsgType  { return MsgCapabilities }
 func (*Profile) Type() MsgType       { return MsgProfile }
+func (*Resize) Type() MsgType        { return MsgResize }
 
 func (m *Hello) appendBody(b []byte) []byte {
 	b = binary.BigEndian.AppendUint16(b, m.Version)
@@ -349,6 +364,16 @@ func (m *Profile) appendBody(b []byte) []byte { return appendJSON(b, m.JSON) }
 func (m *Profile) decodeBody(d *decoder)      { m.JSON = d.json() }
 func (m *Profile) bodyTooLarge() bool         { return len(m.JSON) > MaxCapsJSON }
 
+func (m *Resize) appendBody(b []byte) []byte {
+	b = binary.BigEndian.AppendUint16(b, m.Width)
+	return binary.BigEndian.AppendUint16(b, m.Height)
+}
+
+func (m *Resize) decodeBody(d *decoder) {
+	m.Width = d.u16()
+	m.Height = d.u16()
+}
+
 func appendJSON(b, js []byte) []byte {
 	b = binary.BigEndian.AppendUint32(b, uint32(len(js)))
 	return append(b, js...)
@@ -446,6 +471,8 @@ func newMessage(t MsgType) Message {
 		return &Capabilities{}
 	case MsgProfile:
 		return &Profile{}
+	case MsgResize:
+		return &Resize{}
 	}
 	return nil
 }
