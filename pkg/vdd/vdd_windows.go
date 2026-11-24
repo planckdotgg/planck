@@ -175,6 +175,7 @@ func (v *VirtualDisplay) attach(spec DisplaySpec) error {
 	if err := setMode(v.GDIName, spec.Width, spec.Height, spec.RefreshMilliHz); err != nil {
 		return err
 	}
+	v.applyScale(spec)
 	hdr, err := setHDR(p, spec.HDR)
 	if err != nil {
 		return err
@@ -184,6 +185,26 @@ func (v *VirtualDisplay) attach(spec DisplaySpec) error {
 		return makePrimary(v.IddAdapter, v.TargetID)
 	}
 	return nil
+}
+
+// applyScale sets the display scale the spec asks for, if any. A display
+// at the wrong scale still streams, so a failure only lands in ScaleErr.
+func (v *VirtualDisplay) applyScale(spec DisplaySpec) {
+	v.ScaleErr = nil
+	if spec.ScalePct <= 0 {
+		return
+	}
+	c, err := queryActive()
+	if err != nil {
+		v.ScaleErr = err
+		return
+	}
+	p := c.findPath(v.IddAdapter, v.TargetID)
+	if p == nil {
+		v.ScaleErr = fmt.Errorf("vdd: scale: target %d is not on the desktop", v.TargetID)
+		return
+	}
+	v.ScalePct, v.ScaleErr = setScale(p, spec.ScalePct)
 }
 
 // matchOutput finds the DXGI output named GDIName. A requested render
@@ -231,6 +252,8 @@ func (v *VirtualDisplay) Resize(w, h int) error {
 	// added with; any other size fails here quickly (DISP_CHANGE_BADMODE).
 	if setMode(v.GDIName, w, h, spec.RefreshMilliHz) == nil {
 		v.Width, v.Height, v.spec = w, h, spec
+		// Windows may pick the scale again for the new mode.
+		v.applyScale(spec)
 		return nil
 	}
 	d := v.drv

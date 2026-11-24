@@ -62,3 +62,31 @@ func TestElevatedGPUNameCommandQuotes(t *testing.T) {
 		t.Fatalf("command not one line or not quoted: %s", c)
 	}
 }
+
+// TestDPIRelative: a scale asks for the nearest Windows step, counted from
+// the recommended one and kept within what the display allows.
+func TestDPIRelative(t *testing.T) {
+	for _, c := range []struct {
+		pct, minRel, maxRel, want int
+	}{
+		{100, -4, 3, -4}, // SudoVDA recommended 200%: 100% is 4 steps down
+		{200, -4, 3, 0},
+		{150, -4, 3, -2},
+		{100, 0, 4, 0}, // recommended 100%
+		{200, 0, 4, 4},
+		{300, 0, 4, 4}, // above the display's maximum
+		{110, -2, 2, -2},
+		{113, -2, 2, -1}, // nearer 125 than 100
+		{50, -1, 3, -1},  // below 100% is 100%
+		{900, -1, 3, 3},
+	} {
+		if got := dpiRelative(c.pct, c.minRel, c.maxRel); got != c.want {
+			t.Errorf("%d%% in [%d, %d]: %d, want %d", c.pct, c.minRel, c.maxRel, got, c.want)
+		}
+	}
+	for _, c := range []struct{ minRel, rel, want int }{{-4, -4, 100}, {-4, 0, 200}, {0, 0, 100}, {-2, 1, 175}, {0, 20, 500}} {
+		if got := dpiPercent(c.minRel, c.rel); got != c.want {
+			t.Errorf("min %d rel %d: %d%%, want %d%%", c.minRel, c.rel, got, c.want)
+		}
+	}
+}

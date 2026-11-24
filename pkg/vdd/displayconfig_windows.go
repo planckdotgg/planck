@@ -37,6 +37,10 @@ const (
 	infoGetAdapterName        = 4
 	infoGetAdvancedColorInfo  = 9
 	infoSetAdvancedColorState = 10
+	// The DPI scale calls are undocumented; Windows's display settings use
+	// them (DISPLAYCONFIG_DEVICE_INFO_GET/SET_DPI_SCALE, -3 and -4).
+	infoGetDPIScale = 0xfffffffd
+	infoSetDPIScale = 0xfffffffc
 
 	modeInfoTypeSource = 1
 	modeIdxInvalid     = 0xffffffff
@@ -104,6 +108,16 @@ type advancedColorInfo struct { // 32 bytes
 type setAdvancedColorState struct { // 24 bytes
 	Header deviceInfoHeader
 	Value  uint32 // bit 0 enable
+}
+
+type dpiScaleGet struct { // 32 bytes
+	Header                 deviceInfoHeader
+	MinRel, CurRel, MaxRel int32
+}
+
+type dpiScaleSet struct { // 24 bytes
+	Header deviceInfoHeader
+	Rel    int32
 }
 
 type displayConfig struct {
@@ -324,4 +338,36 @@ func setHDR(p *pathInfo, on bool) (bool, error) {
 		return enabled, fmt.Errorf("vdd: set HDR %v: %w", on, syscall.Errno(r))
 	}
 	return on, nil
+}
+
+// setScale sets the display scale of the path's source to the step
+// nearest pct and reports the scale that results.
+func setScale(p *pathInfo, pct int) (int, error) {
+	get := new(dpiScaleGet)
+	get.Header = deviceInfoHeader{Type: infoGetDPIScale, Size: uint32(unsafe.Sizeof(*get)), AdapterID: p.Source.AdapterID, ID: p.Source.ID}
+	if err := getDeviceInfo(&get.Header); err != nil {
+		return 0, err
+	}
+	minRel, maxRel := int(get.MinRel), int(get.MaxRel)
+	rel := dpiRelative(pct, minRel, maxRel)
+	if rel == int(get.CurRel) {
+		return dpiPercent(minRel, rel), nil
+	}
+	set := new(dpiScaleSet)
+	set.Header = deviceInfoHeader{Type: infoSetDPIScale, Size: uint32(unsafe.Sizeof(*set)), AdapterID: p.Source.AdapterID, ID: p.Source.ID}
+	set.Rel = int32(rel)
+	if r, _, _ := syscall.SyscallN(procDisplayConfigSetDeviceInfo.Addr(), uintptr(unsafe.Pointer(&set.Header))); r != 0 {
+		return dpiPercent(minRel, int(get.CurRel)), fmt.Errorf("vdd: set display scale %d%%: %w", dpiPercent(minRel, rel), syscall.Errno(r))
+	}
+	return dpiPercent(minRel, rel), nil
+}
+
+// scale reads the display scale of the path's source, in percent.
+func scale(p *pathInfo) (int, error) {
+	get := new(dpiScaleGet)
+	get.Header = deviceInfoHeader{Type: infoGetDPIScale, Size: uint32(unsafe.Sizeof(*get)), AdapterID: p.Source.AdapterID, ID: p.Source.ID}
+	if err := getDeviceInfo(&get.Header); err != nil {
+		return 0, err
+	}
+	return dpiPercent(int(get.MinRel), int(get.CurRel)), nil
 }

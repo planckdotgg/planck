@@ -36,6 +36,9 @@ type VideoParams struct {
 	// VirtualDisplay asks for a SudoVDA display of Width x Height at FPS
 	// on Adapter's GPU, captured in place of Display.
 	VirtualDisplay bool
+	// ScalePct is the Windows display scale a virtual display takes, in
+	// percent: the client display's (100 for a 1x display).
+	ScalePct int
 	// ChunkLen is the shard size PyroWave frames its chunks in.
 	ChunkLen int
 }

@@ -192,6 +192,8 @@ type sudoDisplay struct{ *vdd.VirtualDisplay }
 
 func (d sudoDisplay) Name() string { return d.GDIName }
 
+func (d sudoDisplay) Scale() (int, error) { return d.ScalePct, d.ScaleErr }
+
 // create makes a virtual display for p on p.Adapter's GPU.
 func (m *vddManager) create(p VideoParams, seed []byte, primary bool) (VirtualDisplay, error) {
 	a, err := pickAdapter(p.Adapter)
@@ -207,7 +209,7 @@ func (m *vddManager) create(p VideoParams, seed []byte, primary bool) (VirtualDi
 		}
 	}
 	vd, err := m.drv.CreateDisplay(vdd.DisplaySpec{Width: p.Width &^ 1, Height: p.Height &^ 1, RefreshMilliHz: p.FPS * 1000,
-		ID: vdd.MonitorID(seed), RenderAdapter: a.LUID, Primary: primary})
+		ID: vdd.MonitorID(seed), RenderAdapter: a.LUID, ScalePct: p.ScalePct, Primary: primary})
 	if err != nil {
 		return nil, err
 	}

@@ -89,8 +89,13 @@ type DisplaySpec struct {
 	Serial         string
 	RenderAdapter  gpu.LUID // 0 = leave the driver's choice
 	HDR            bool     // turn Windows advanced color on (true) or off (false)
-	Primary        bool
-	AttachTimeout  time.Duration // default 5 s
+	// ScalePct is the Windows display scale to set, in percent: the step
+	// nearest it (100 is unscaled). 0 leaves Windows's choice, which for
+	// SudoVDA's small reported size is often 200%: games in borderless
+	// windows then see half the display.
+	ScalePct      int
+	Primary       bool
+	AttachTimeout time.Duration // default 5 s
 }
 
 const (
@@ -144,6 +149,10 @@ type VirtualDisplay struct {
 	Width, Height  int
 	RefreshMilliHz int
 	HDR            bool
+	// ScalePct is the Windows display scale in effect, in percent; 0 when
+	// the spec left it alone. ScaleErr says why it is not the spec's.
+	ScalePct int
+	ScaleErr error
 
 	drv  *Driver
 	spec DisplaySpec
@@ -164,4 +173,34 @@ type Monitor struct {
 func ElevatedGPUNameCommand(adapterName string) string {
 	return fmt.Sprintf(`New-ItemProperty -Path 'HKLM:\SOFTWARE\SudoMaker\SudoVDA' -Name gpuName -PropertyType String -Value '%s' -Force | Out-Null; Get-PnpDevice -FriendlyName 'SudoMaker Virtual Display Adapter' | ForEach-Object { Disable-PnpDevice -InstanceId $_.InstanceId -Confirm:$false; Enable-PnpDevice -InstanceId $_.InstanceId -Confirm:$false }`,
 		strings.ReplaceAll(adapterName, "'", "''"))
+}
+
+// dpiSteps are the display scales Windows offers, in percent. The
+// DisplayConfig DPI calls count in steps of this table from the scale
+// Windows recommends for the display.
+var dpiSteps = [...]int{100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500}
+
+// dpiRelative is the step nearest pct, relative to the recommended scale,
+// within [minRel, maxRel]. minRel is the step of 100%, so -minRel is the
+// recommended step's index.
+func dpiRelative(pct, minRel, maxRel int) int {
+	best := 0
+	for i, s := range dpiSteps {
+		if abs(s-pct) < abs(dpiSteps[best]-pct) {
+			best = i
+		}
+	}
+	return min(max(best+minRel, minRel), maxRel)
+}
+
+// dpiPercent is the scale rel steps from the recommended one.
+func dpiPercent(minRel, rel int) int {
+	return dpiSteps[min(max(rel-minRel, 0), len(dpiSteps)-1)]
+}
+
+func abs(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
 }

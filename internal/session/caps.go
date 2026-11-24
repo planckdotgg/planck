@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/netip"
 	"runtime"
 	"sync"
@@ -158,6 +159,15 @@ func (h *Host) profileConfig(p *defaults.ResolvedProfile, req wire.SessionConfig
 		acc.AudioSampleRate, acc.AudioChannels = audio.SampleRate, audio.Channels
 	}
 	return acc
+}
+
+// scalePercent is the display scale, in percent, for a client display of
+// backing scale s: 100 at 1x or unknown.
+func scalePercent(s float64) int {
+	if s <= 1 {
+		return 100
+	}
+	return int(math.Round(s * 100))
 }
 
 // profileVideoConfig is the video part of a profile's SessionConfig.

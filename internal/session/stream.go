@@ -102,6 +102,10 @@ func newStream(h *Host, sess *transport.Session) *stream {
 	if prof != nil {
 		st.profile = prof
 		st.params = paramsFromProfile(st.params, prof, sess.ShardSize())
+		var cc clientCaps
+		if json.Unmarshal(sess.PeerCapabilities(), &cc) == nil {
+			st.params.ScalePct = scalePercent(cc.Client.Display.Scale)
+		}
 		h.logf("planck: profile %s %dx%d@%d %d-bit 4:4:4=%v on %s (%s), virtual display %v, %d/%d kbps, slices %d split %v",
 			prof.Codec, prof.Width, prof.Height, prof.FPS, prof.BitDepth, prof.Chroma444, prof.EncodeAdapter.Name, prof.EncoderAPI,
 			prof.VirtualDisplay, prof.BitrateKbps, prof.MaxBitrateKbps, prof.Slices, prof.Split)
@@ -144,6 +148,11 @@ func (st *stream) openVirtualDisplay() (VirtualDisplay, error) {
 }
 
 func (st *stream) useVirtualDisplay(vd VirtualDisplay) {
+	if s, ok := vd.(interface{ Scale() (int, error) }); ok {
+		if pct, err := s.Scale(); err != nil || pct != st.params.ScalePct {
+			st.h.logf("planck: virtual display %s at %d%% scale, not %d%%: %v", vd.Name(), pct, st.params.ScalePct, err)
+		}
+	}
 	st.params.Display = vd.Name()
 	st.mu.Lock()
 	st.vdName = vd.Name()

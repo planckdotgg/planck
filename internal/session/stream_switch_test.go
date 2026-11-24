@@ -90,10 +90,15 @@ func ultrawideClientCaps() defaults.ClientCapabilities {
 
 func startSwitchHost(t *testing.T, vdd *fakeVDD, pipes *pipeLog) *Host {
 	t.Helper()
+	return startSwitchHostWith(t, vdd.open, pipes)
+}
+
+func startSwitchHostWith(t *testing.T, open func(VideoParams, []byte, bool) (VirtualDisplay, error), pipes *pipeLog) *Host {
+	t.Helper()
 	var forced, kbps atomic.Int64
 	h, err := NewHost(HostConfig{
 		ConfigDir: t.TempDir(), Name: "switch-host", ListenAddr: "127.0.0.1:0", DiscoveryAddr: "off",
-		NoTailscale: true, NoAudio: true, Capabilities: vddHostCaps, OpenVirtualDisplay: vdd.open, Logf: t.Logf,
+		NoTailscale: true, NoAudio: true, Capabilities: vddHostCaps, OpenVirtualDisplay: open, Logf: t.Logf,
 		OpenVideo: func(p VideoParams) (VideoPipe, error) {
 			pipes.mu.Lock()
 			pipes.opens = append(pipes.opens, p)
@@ -223,5 +228,48 @@ func TestStaleEpochFramesDropped(t *testing.T) {
 	cc.onFrame(wire.VideoInfo{FrameID: 8, Keyframe: true, Epoch: 3}, []byte{1, 2, 3})
 	if len(cc.frames) != 0 || cc.dropped.Load() != 0 || cc.lastPLI.Load() != 0 {
 		t.Fatalf("other streams' frames: %d queued, %d dropped, PLI at %d", len(cc.frames), cc.dropped.Load(), cc.lastPLI.Load())
+	}
+}
+
+// TestVirtualDisplayTakesClientScale: the virtual display takes the
+// client display's scale, 100% for a 1x display, so a game in a
+// borderless window on it sees the whole display.
+func TestVirtualDisplayTakesClientScale(t *testing.T) {
+	for _, c := range []struct {
+		scale float64
+		want  int
+	}{{1, 100}, {0, 100}, {2, 200}} {
+		vdd, pipes := &fakeVDD{}, &pipeLog{}
+		var got atomic.Int64
+		h := startSwitchHostWith(t, func(p VideoParams, seed []byte, primary bool) (VirtualDisplay, error) {
+			got.Store(int64(p.ScalePct))
+			return vdd.open(p, seed, primary)
+		}, pipes)
+		var view atomic.Uint64
+		view.Store(packView(1600, 900))
+		caps := ultrawideClientCaps()
+		caps.Display.Scale = c.scale
+		c2, err := NewClient(ClientConfig{
+			ConfigDir: t.TempDir(), Name: "scale-client", PIN: h.PIN(), NoAudio: true,
+			Capabilities: func() defaults.ClientCapabilities { return caps },
+			OpenSink:     NullSinkOpener(&NullSink{}), OpenAudioPlayer: func() (audio.Player, error) { return &fakePlayer{}, nil },
+			Tailscale: noTailscale{}, Logf: t.Logf,
+			ViewSize: func() (int, int) { v := view.Load(); return int(v >> 32), int(uint32(v)) },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := c2.Connect(ctx, Target{Addr: h.Addr().String()}); err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		cancel()
+		waitFor(t, "the virtual display", func() bool { live, _, _ := vdd.state(); return live == 1 })
+		if int(got.Load()) != c.want {
+			t.Errorf("client scale %v: virtual display at %d%%, want %d%%", c.scale, got.Load(), c.want)
+		}
+		c2.Disconnect()
+		waitFor(t, "the display removed", func() bool { live, _, _ := vdd.state(); return live == 0 })
 	}
 }
