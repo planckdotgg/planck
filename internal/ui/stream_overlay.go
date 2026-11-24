@@ -18,6 +18,10 @@ const (
 	// dockReach is how near an edge the button's centre must come to rest
 	// for it to dock there.
 	dockReach = 56
+	// dockHysteresis is how much nearer than the lit edge another must be,
+	// or how far past dockReach the lit edge must go, for a drag to light
+	// another or none.
+	dockHysteresis = 12
 	// tabLong and tabShort size the docked tab, hitLong and hitShort its
 	// hit zone; a tab stays dockCorner from the view's corners.
 	tabLong, tabShort = 40, 8
@@ -74,6 +78,10 @@ type overlay struct {
 	released    bool
 	releaseDock DockEdge
 	releaseFrac float32
+	// target is the edge and place the dragged button's dock target lights,
+	// where letting go docks it.
+	target      DockEdge
+	targetFrac  float32
 	snapFn      func(mui.Point) mui.Point
 	vw, vh      float32
 	menuOpen    bool
@@ -138,17 +146,58 @@ func (o *overlay) layout() OverlayLayout {
 // to, and where along it: left and right before top and bottom.
 func dockFor(cx, cy, vw, vh float32) (DockEdge, float32) {
 	l, r, t, b := cx, vw-cx, cy, vh-cy
+	e := DockNone
 	switch {
 	case min(l, r) <= dockReach && l <= r:
-		return DockLeft, dockFrac(cy, vh)
+		e = DockLeft
 	case min(l, r) <= dockReach:
-		return DockRight, dockFrac(cy, vh)
+		e = DockRight
 	case min(t, b) <= dockReach && t <= b:
-		return DockTop, dockFrac(cx, vw)
+		e = DockTop
 	case min(t, b) <= dockReach:
-		return DockBottom, dockFrac(cx, vw)
+		e = DockBottom
 	}
-	return DockNone, 0
+	return e, edgeFrac(e, cx, cy, vw, vh)
+}
+
+// dockCandidate is dockFor for a button being dragged whose target lights
+// prev: prev keeps the lead until another edge is dockHysteresis nearer, or
+// it is dockHysteresis past dockReach, so that a corner lights one edge.
+func dockCandidate(cx, cy, vw, vh float32, prev DockEdge) (DockEdge, float32) {
+	e, _ := dockFor(cx, cy, vw, vh)
+	if prev != DockNone && e != prev {
+		d := edgeDist(prev, cx, cy, vw, vh)
+		if d <= dockReach+dockHysteresis && (e == DockNone || edgeDist(e, cx, cy, vw, vh) > d-dockHysteresis) {
+			e = prev
+		}
+	}
+	return e, edgeFrac(e, cx, cy, vw, vh)
+}
+
+// edgeDist is how far cx, cy is from edge e.
+func edgeDist(e DockEdge, cx, cy, vw, vh float32) float32 {
+	switch e {
+	case DockLeft:
+		return cx
+	case DockRight:
+		return vw - cx
+	case DockTop:
+		return cy
+	case DockBottom:
+		return vh - cy
+	}
+	return 0
+}
+
+// edgeFrac is where along edge e a tab level with cx, cy rests.
+func edgeFrac(e DockEdge, cx, cy, vw, vh float32) float32 {
+	switch e {
+	case DockLeft, DockRight:
+		return dockFrac(cy, vh)
+	case DockTop, DockBottom:
+		return dockFrac(cx, vw)
+	}
+	return 0
 }
 
 // dockFrac is where a tab centred at v along an edge of length n rests, as
@@ -161,8 +210,14 @@ func dockFrac(v, n float32) float32 {
 	return min(max(v, lo), max(n-lo, lo)) / n
 }
 
+// snap docks the button where its target shows, or, with none lit, where
+// the throw to p carries it.
 func (o *overlay) snap(p mui.Point) mui.Point {
 	o.released = true
+	if o.target != DockNone {
+		o.releaseDock, o.releaseFrac = o.target, o.targetFrac
+		return p
+	}
 	o.releaseDock, o.releaseFrac = dockFor(o.btn.X+p.X+btnSize/2, o.btn.Y+p.Y+btnSize/2, o.vw, o.vh)
 	return p
 }
@@ -409,6 +464,8 @@ func (a *App) bubble(c *mui.Context, now time.Time) mui.Element {
 	}
 	if dragging {
 		a.dockTarget(c, b)
+	} else {
+		o.target = DockNone
 	}
 	if b.Clicked() {
 		o.menuOpen = !o.menuWasOpen
@@ -494,15 +551,14 @@ func (a *App) traceLine(c *mui.Context, tab mui.Rect) {
 	mui.Box(c).Absolute().Left(r.X).Top(r.Y).Size(r.W, r.H).Background(theme.HUDTrace).IgnoreInput(true)
 }
 
-// dockTarget lights the edge the dragged button would dock to where the
-// throw would carry it: an ember lip, a wash from the edge, and the tab
-// it would melt into.
+// dockTarget lights the edge the dragged button docks to if let go where
+// it is: an ember lip, a wash from the edge, and the tab it would melt
+// into, level with the button.
 func (a *App) dockTarget(c *mui.Context, b mui.Element) {
 	o := &a.ovl
 	at := b.DragOffset()
-	vx, vy := b.DragVelocity()
-	px, py := o.btn.X+mui.Project(at.X, vx), o.btn.Y+mui.Project(at.Y, vy)
-	e, frac := dockFor(px+btnSize/2, py+btnSize/2, o.vw, o.vh)
+	e, frac := dockCandidate(o.btn.X+at.X+btnSize/2, o.btn.Y+at.Y+btnSize/2, o.vw, o.vh, o.target)
+	o.target, o.targetFrac = e, frac
 	if e == DockNone {
 		return
 	}
