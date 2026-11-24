@@ -72,7 +72,11 @@ func (a *App) streamScreen(c *mui.Context, tel Telemetry, connecting string) {
 			mui.Box(c).Fill().Children(func() { a.streamView(c) })
 		}
 		mode := a.hudMode()
-		if !a.hudShown(c, well, mode) {
+		shown := a.hudShown(c, well, mode)
+		a.mu.Lock()
+		a.hudVisible = shown
+		a.mu.Unlock()
+		if !shown {
 			a.hudRects = a.hudRects[:0]
 			return
 		}

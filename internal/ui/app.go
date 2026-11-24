@@ -84,6 +84,9 @@ type App struct {
 	pairBusy     bool
 	toPairing    bool
 	toHosts      bool
+	// hudVisible is whether the HUD is on screen, as last drawn or as the
+	// hotkey just made it.
+	hudVisible bool
 }
 
 // NewApp returns the UI driving backend, and subscribes to its changes.
@@ -119,11 +122,15 @@ func (a *App) Notify() {
 
 // CycleHUD steps the HUD from pill to drawer to hidden and back, for the
 // HUD hotkey and for input layers that capture keys before the window.
-// Each step shows the pill for a while, as connecting does.
+// Each step shows the pill for a while, as connecting does; a pill that
+// hid itself first just shows again.
 func (a *App) CycleHUD() {
 	a.mu.Lock()
-	a.hud = (a.hud + 1) % 3
+	if a.hud != HUDPill || a.hudVisible {
+		a.hud = (a.hud + 1) % 3
+	}
 	a.hudRevealed = true
+	a.hudVisible = a.hud != HUDHidden
 	a.mu.Unlock()
 	a.Notify()
 }
