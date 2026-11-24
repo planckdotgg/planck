@@ -49,7 +49,7 @@ func TestLockedPointerSendsMotionNotPlaces(t *testing.T) {
 	tt.Frame()
 	tt.ReleaseButton(0, 20, 200)
 	tt.Frame()
-	tt.Scroll(20, 200, 0, -40)
+	tt.Scroll(20, 200, 0, -wheelDIPs())
 	tt.Frame()
 	got := take()
 	if abs := ofType(got, input.TypeMouseMoveAbs); len(abs) != 0 {
