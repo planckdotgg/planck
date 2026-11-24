@@ -348,8 +348,8 @@ func TestOverlayHideShortcut(t *testing.T) {
 }
 
 // TestMenuOpensInward: docked left the menu opens to the right of the
-// button, docked right to its left; Escape closes the tray, then the
-// menu.
+// button, docked right to its left, and its flyouts open further inward;
+// Escape closes the flyout, then the menu.
 func TestMenuOpensInward(t *testing.T) {
 	for _, dock := range []DockEdge{DockLeft, DockRight} {
 		f := streamFake()
@@ -370,13 +370,20 @@ func TestMenuOpensInward(t *testing.T) {
 			snapshot(t, tt, "menu-docked-right")
 		}
 		click(t, tt, "VSync")
-		if a.ovl.tray != "vsyncMode" || !shows(tt, "VSync: Off") {
-			t.Fatalf("VSync tray did not open: %q", tt.Texts())
+		if !shows(tt, "VSync: Off") {
+			t.Fatalf("VSync flyout did not open: %q", tt.Texts())
+		}
+		fly := bounds(t, tt, "VSync: Off")
+		switch {
+		case dock == DockLeft && fly.X < menu.X+menu.W:
+			t.Errorf("docked left: flyout item at %+v, menu row %+v", fly, menu)
+		case dock == DockRight && fly.X+fly.W > menu.X:
+			t.Errorf("docked right: flyout item at %+v, menu row %+v", fly, menu)
 		}
 		tt.Key(0, mui.KeyEscape)
 		tt.Frame()
-		if a.ovl.tray != "" || !a.ovl.menuOpen {
-			t.Fatalf("first Escape: tray %q, menu open %v; want the tray closed alone", a.ovl.tray, a.ovl.menuOpen)
+		if shows(tt, "VSync: Off") || !a.ovl.menuOpen {
+			t.Fatalf("first Escape: flyout shown %v, menu open %v; want the flyout closed alone", shows(tt, "VSync: Off"), a.ovl.menuOpen)
 		}
 		tt.Key(0, mui.KeyEscape)
 		tt.Frame()
@@ -466,9 +473,9 @@ func TestMenuFlyoutPicksForThisHost(t *testing.T) {
 	}
 }
 
-// TestMenuColorTrayDisables444: the colour tray holds three chips, with
-// 4:4:4 unavailable, and why, when the host resolved it out.
-func TestMenuColorTrayDisables444(t *testing.T) {
+// TestMenuColorFlyoutDisables444: the colour flyout holds three choices,
+// with 4:4:4 unavailable, and why, when the host resolved it out.
+func TestMenuColorFlyoutDisables444(t *testing.T) {
 	f := streamFake()
 	f.tel.Profile.EncoderAPI = "AMF"
 	f.tel.Profile.Decisions = []defaults.Decision{{Knob: "chroma", Value: "420", Source: defaults.SourceAuto, Why: "4:4:4 not on both ends"}}
@@ -477,7 +484,7 @@ func TestMenuColorTrayDisables444(t *testing.T) {
 	click(t, tt, "Color")
 	for _, name := range []string{"Color: 8-bit 4:2:0", "Color: 10-bit 4:2:0", "Color: 10-bit 4:4:4"} {
 		if !shows(tt, name) {
-			t.Fatalf("chip %q missing: %q", name, tt.Texts())
+			t.Fatalf("choice %q missing: %q", name, tt.Texts())
 		}
 	}
 	if !inForce(t, tt, "Color: 10-bit 4:2:0") {
@@ -486,27 +493,27 @@ func TestMenuColorTrayDisables444(t *testing.T) {
 	if !tt.HasText("4:4:4 needs an encoder and a decoder that both do it. This host is encoding on AMF, without 4:4:4 here.") {
 		t.Fatalf("reason missing: %q", tt.Texts())
 	}
-	snapshot(t, tt, "menu-color-tray")
+	snapshot(t, tt, "menu-color-flyout")
 	click(t, tt, "Color: 10-bit 4:4:4")
 	if got := f.override("h-bigboi"); got.Chroma == "444" {
-		t.Fatal("an unavailable chip took the press")
+		t.Fatal("an unavailable choice took the press")
 	}
 	click(t, tt, "Color: 8-bit 4:2:0")
 	if got := f.override("h-bigboi"); got.BitDepth != "8" || got.Chroma != "420" {
 		t.Fatalf("color: %+v", got)
 	}
-	if !a.ovl.menuOpen || a.ovl.tray != "color" {
-		t.Fatal("picking a chip closed the tray or the menu")
+	if !a.ovl.menuOpen || !shows(tt, "Color: 8-bit 4:2:0") {
+		t.Fatal("picking a choice closed the flyout or the menu")
 	}
 
 	f.set(func(f *fakeBackend) { f.overrides["h-bigboi"] = defaults.UserOverrides{BitDepth: "8", Chroma: "444"} })
 	tt.Frame()
 	if !shows(tt, "Color: 8-bit 4:4:4") || !inForce(t, tt, "Color: 8-bit 4:4:4") {
-		t.Fatalf("a pair outside the three is not a fourth chip in force: %q", tt.Texts())
+		t.Fatalf("a pair outside the three is not a fourth choice in force: %q", tt.Texts())
 	}
 }
 
-// TestMenuSwitchesStayOpen: switches and the sound tray change settings
+// TestMenuSwitchesStayOpen: switches and the sound panel change settings
 // without closing the menu.
 func TestMenuSwitchesStayOpen(t *testing.T) {
 	f := streamFake()
@@ -532,7 +539,7 @@ func TestMenuSwitchesStayOpen(t *testing.T) {
 	if !tt.HasText("muted · mic on") {
 		t.Fatalf("sound row value: %q", tt.Texts())
 	}
-	snapshot(t, tt, "menu-sound-tray")
+	snapshot(t, tt, "menu-sound-panel")
 	tt.Key(mui.Ctrl|mui.Alt, mui.KeyF)
 	tt.Frame()
 	if win.full {
@@ -664,5 +671,49 @@ func TestOverlayReducedMotionPopsAtOnce(t *testing.T) {
 	tt.Frame()
 	if !shows(tt, "Stream controls") {
 		t.Fatal("reduced motion: the button did not pop out at once")
+	}
+}
+
+// TestMenuFlyoutsKeepMenuHeight: Color, Bitrate, VSync and Sound & mic
+// open beside the menu, inside the window, and the menu keeps its height;
+// the sound panel holds the mic's hint, wrapped in it.
+func TestMenuFlyoutsKeepMenuHeight(t *testing.T) {
+	for _, dock := range []DockEdge{DockLeft, DockRight} {
+		f := streamFake()
+		f.layout = OverlayLayout{Placed: true, Dock: dock, DockFrac: 0.8}
+		f.tel.MicMuted, f.tel.MicHint = true, "Virtual mic not detected — install Steam Streaming Microphone / virtual audio device"
+		_, tt, _ := newStreamTester(t, f)
+		openMenu(t, tt)
+		menu := bounds(t, tt, "Stream controls menu")
+		for _, c := range []struct{ row, panel, inside string }{
+			{"Color", "Color options", "Color: 8-bit 4:2:0"},
+			{"Bitrate", "Bitrate options", "Video bitrate"},
+			{"VSync", "VSync options", "VSync: Auto"},
+			{"Sound & mic", "Sound & mic options", "Microphone"},
+		} {
+			click(t, tt, c.row)
+			if got := bounds(t, tt, "Stream controls menu"); got.H != menu.H || got.Y != menu.Y {
+				t.Errorf("docked %d, %s open: menu %+v, was %+v", dock, c.row, got, menu)
+			}
+			p := bounds(t, tt, c.panel)
+			if p.X < 0 || p.Y < 0 || p.X+p.W > testWidth || p.Y+p.H > testHeight {
+				t.Errorf("docked %d: %s panel %+v leaves the %dx%d window", dock, c.row, p, testWidth, testHeight)
+			}
+			if p.X < menu.X+menu.W && p.X+p.W > menu.X {
+				t.Errorf("docked %d: %s panel %+v overlaps the menu %+v", dock, c.row, p, menu)
+			}
+			in := bounds(t, tt, c.inside)
+			if in.X < p.X || in.X+in.W > p.X+p.W || in.Y < p.Y || in.Y+in.H > p.Y+p.H {
+				t.Errorf("docked %d: %q %+v outside its panel %+v", dock, c.inside, in, p)
+			}
+		}
+		hint := bounds(t, tt, f.tel.MicHint)
+		sound := bounds(t, tt, "Sound & mic options")
+		if hint.X+hint.W > sound.X+sound.W || hint.H < 20 {
+			t.Errorf("docked %d: mic hint %+v not wrapped inside %+v", dock, hint, sound)
+		}
+		if dock == DockLeft {
+			snapshot(t, tt, "menu-sound-flyout")
+		}
 	}
 }

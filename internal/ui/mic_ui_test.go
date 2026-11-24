@@ -22,7 +22,7 @@ func waitMuted(t *testing.T, f *fakeBackend, tt *mui.Tester, want bool) {
 	tt.Frame()
 }
 
-// TestOverlayMicAndClipboard: the Sound tray's Microphone switch and
+// TestOverlayMicAndClipboard: the Sound panel's Microphone switch and
 // Ctrl+Alt+U drive the host's virtual mic, and Shared clipboard turns both
 // directions on and off together.
 func TestOverlayMicAndClipboard(t *testing.T) {
@@ -65,7 +65,7 @@ func TestOverlayMicAndClipboard(t *testing.T) {
 }
 
 // TestOverlayMicWithoutVirtualMic: with no virtual mic on the host the mic
-// stays muted and the tray says why.
+// stays muted and the panel says why.
 func TestOverlayMicWithoutVirtualMic(t *testing.T) {
 	f := streamFake()
 	f.tel.MicMuted, f.tel.MicHint = true, "Virtual mic not detected — install Steam Streaming Microphone / virtual audio device"
