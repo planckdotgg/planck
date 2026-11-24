@@ -502,7 +502,8 @@ func (s *Surface) OnPresented(f func(tag, submitted, presented int64)) {
 }
 
 // Present draws the frame in surface, an IOSurfaceRef in BGRA ('BGRA'),
-// NV12 ('420v') or P010 ('x420'), and presents it at once.
+// NV12 ('420v') or P010 ('x420'), and presents it at once. A frame of
+// another shape than the drawable shows whole between black bars.
 func (s *Surface) Present(surface uintptr) error { return s.PresentTagged(surface, 0) }
 
 // PresentTagged is Present with a tag the OnPresented handler receives
@@ -526,12 +527,8 @@ func (s *Surface) PresentTagged(surface uintptr, tag int64) error {
 	target := msg(d, selTexture)
 	dw, dh := msg(target, selWidth), msg(target, selHeight)
 	load := uintptr(loadActionDontCare)
-	if s.direct.Load() {
-		if s.fitFrame(f.width, f.height, dw, dh) {
-			load = loadActionClear
-		}
-	} else {
-		s.fit = [4]float32{1, 1, 0, 0}
+	if s.fitFrame(f.width, f.height, dw, dh) {
+		load = loadActionClear
 	}
 	msg1(s.attachment, selSetLoadAction, load)
 	msg1(s.attachment, selSetTexture, target)
@@ -568,6 +565,13 @@ func (s *Surface) PresentTagged(surface uintptr, tag int64) error {
 		s.timings.recs[i].Encoded = Now()
 	}
 	return nil
+}
+
+// fitFrame places a fw x fh frame whole in the dw x dh drawable and
+// reports whether it leaves bars to clear.
+func (s *Surface) fitFrame(fw, fh, dw, dh uintptr) (bars bool) {
+	s.fit, bars = fitRect(fw, fh, dw, dh)
+	return bars
 }
 
 // onPresented is the presented handler of the drawables of every surface,

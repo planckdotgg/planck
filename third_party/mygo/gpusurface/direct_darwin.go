@@ -45,8 +45,7 @@ func (s *Surface) ScreenSize() (w, h int) {
 }
 
 // SetDirect turns direct mode on or off. On, the drawables take the
-// screen's size, a frame of another shape shows whole between black bars,
-// and the layers of the content view's other subviews are hidden; off
+// screen's size and the layers of the content view's other subviews are hidden; off
 // shows them as they were and gives the drawables the size Resize last
 // set. The window should be full screen with nothing to show over the
 // frames while it is on. Call it on the main thread. It needs
@@ -96,9 +95,4 @@ func (s *Surface) SetDirect(on bool) error {
 	}
 	send(class("CATransaction"), "flush")
 	return nil
-}
-
-func (s *Surface) fitFrame(fw, fh, dw, dh uintptr) (bars bool) {
-	s.fit, bars = fitRect(fw, fh, dw, dh)
-	return bars
 }

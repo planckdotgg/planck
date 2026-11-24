@@ -99,3 +99,17 @@ func TestFitRect(t *testing.T) {
 		}
 	}
 }
+
+func TestFitRectPixels(t *testing.T) {
+	for _, c := range []struct{ fw, fh, dw, dh, x, y, w, h int }{
+		{1920, 1080, 1920, 1080, 0, 0, 1920, 1080},
+		{1920, 1080, 5120, 1440, 1280, 0, 2560, 1440},
+		{5120, 1440, 1920, 1080, 0, 270, 1920, 540},
+		{1920, 1080, 3024, 1964, 0, 131, 3024, 1701},
+		{0, 0, 800, 600, 0, 0, 800, 600},
+	} {
+		if x, y, w, h := FitRect(c.fw, c.fh, c.dw, c.dh); x != c.x || y != c.y || w != c.w || h != c.h {
+			t.Errorf("FitRect(%d, %d, %d, %d) = %d, %d, %d, %d; want %d, %d, %d, %d", c.fw, c.fh, c.dw, c.dh, x, y, w, h, c.x, c.y, c.w, c.h)
+		}
+	}
+}
