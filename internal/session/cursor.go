@@ -159,6 +159,10 @@ const (
 	warpFar   = 65535 / 50
 	warpNear  = 65535 / 100
 	warpPolls = 3
+	// warpStallPolls is how long a cursor held where it last followed a
+	// move takes to count: the host's input stalling looks like a warp
+	// back to there for as long as the stall lasts.
+	warpStallPolls = 16
 )
 
 // warpCapture tells a game that holds the mouse by warping its hidden
@@ -170,12 +174,16 @@ const (
 // warpFar from the move and within warpNear of one point inside the
 // display, and lets it go when the cursor shows, is confined, or follows
 // the moves warpPolls polls in a row. Only moves the host injected count.
+// A point the cursor last went to with a move takes warpStallPolls.
 type warpCapture struct {
 	started bool
 	abs     uint32
 	streak  int
 	ax, ay  uint16
 	held    bool
+	// followed is whether fx, fy is where the cursor last followed a move.
+	followed bool
+	fx, fy   uint16
 }
 
 // observe takes a poll of the cursor, m as the system reports it, and the
@@ -185,7 +193,7 @@ func (w *warpCapture) observe(m wire.CursorState, abs uint32, tx, ty uint16) boo
 	moved := w.started && abs != w.abs
 	w.started, w.abs = true, abs
 	if m.Visible || m.Captured || !m.HasPos {
-		w.held, w.streak = false, 0
+		w.held, w.streak, w.followed = false, 0, false
 		return false
 	}
 	if !moved {
@@ -202,7 +210,11 @@ func (w *warpCapture) observe(m wire.CursorState, abs uint32, tx, ty uint16) boo
 		}
 		return w.held
 	}
-	if near(m.X, m.Y, tx, ty, warpFar) || !inside(m.X, warpNear) || !inside(m.Y, warpNear) {
+	if near(m.X, m.Y, tx, ty, warpFar) {
+		w.streak, w.followed, w.fx, w.fy = 0, true, m.X, m.Y
+		return false
+	}
+	if !inside(m.X, warpNear) || !inside(m.Y, warpNear) {
 		w.streak = 0
 		return false
 	}
@@ -210,7 +222,11 @@ func (w *warpCapture) observe(m wire.CursorState, abs uint32, tx, ty uint16) boo
 		w.streak, w.ax, w.ay = 0, m.X, m.Y
 	}
 	w.streak++
-	if w.streak >= warpPolls {
+	need := warpPolls
+	if w.followed && near(w.ax, w.ay, w.fx, w.fy, warpNear) {
+		need = warpStallPolls
+	}
+	if w.streak >= need {
 		w.held, w.streak = true, 0
 	}
 	return w.held

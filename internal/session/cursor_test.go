@@ -463,3 +463,28 @@ func TestLargeShapeKeepsSession(t *testing.T) {
 	}
 }
 
+// TestWarpCaptureStall: a hidden cursor that stops where the last move put
+// it while the host's input stalls, as a cursor: none video's can, is not
+// a capture for a stall of up to warpStallPolls polls; a game that holds
+// the cursor at a point it happened to follow a move to still is, then.
+func TestWarpCaptureStall(t *testing.T) {
+	var w warpCapture
+	var moves uint32
+	w.observe(wire.CursorState{HasPos: true, X: 10000, Y: 10000}, moves, 0, 0)
+	p := [2]uint16{20000, 20000}
+	warpRun(&w, &moves, []*[2]uint16{pt(15000, 15000), pt(20000, 20000)}, [][2]uint16{{15000, 15000}, p})
+	var targets []*[2]uint16
+	var at [][2]uint16
+	for i := range warpStallPolls - 1 {
+		targets = append(targets, pt(uint16(22000+i*1500), 20000))
+		at = append(at, p)
+	}
+	for i, c := range warpRun(&w, &moves, targets, at) {
+		if c {
+			t.Fatalf("captured on poll %d of a stall", i)
+		}
+	}
+	if !warpRun(&w, &moves, []*[2]uint16{pt(50000, 20000)}, [][2]uint16{p})[0] {
+		t.Fatal("not captured after warpStallPolls polls held at one point")
+	}
+}
