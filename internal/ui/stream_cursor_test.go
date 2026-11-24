@@ -45,11 +45,12 @@ func TestCursorShortcutTogglesLock(t *testing.T) {
 	if cur.locked || !tt.HasText("Cursor released") || !tt.HasText("or click the stream to lock") {
 		t.Fatalf("release: locked %v, texts %q", cur.locked, tt.Texts())
 	}
+	tt.Advance(toastIn)
 	snapshot(t, tt, "cursor-released-toast")
 	if want := []bool{true, false}; !slices.Equal(cur.sets, want) {
 		t.Fatalf("lock calls %v, want %v", cur.sets, want)
 	}
-	tt.Advance(toastIn + toastHold + toastOut)
+	tt.Advance(toastHold + toastOut)
 	if tt.HasText("Cursor released") {
 		t.Fatal("the toast outlived its time")
 	}
@@ -86,6 +87,7 @@ func TestMenuFreesCursor(t *testing.T) {
 	if !shows(tt, "Lock cursor") || !tt.HasText("Locks as this menu closes") || !tt.HasText("Ctrl Alt G") {
 		t.Fatalf("no Lock cursor row: %q", tt.Texts())
 	}
+	snapshot(t, tt, "menu-lock-cursor")
 	click(t, tt, "Lock cursor")
 	if cur.locked || !shows(tt, "Lock cursor") {
 		t.Fatalf("the row: locked %v, menu shown %v", cur.locked, shows(tt, "Lock cursor"))
