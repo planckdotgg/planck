@@ -9,6 +9,7 @@ import (
 	"errors"
 	"runtime"
 	"sync"
+	"time"
 
 	mui "github.com/egoist/mygo/ui"
 	"github.com/planckdotgg/planck/internal/ui/theme"
@@ -23,13 +24,26 @@ const (
 	ScreenSettings
 )
 
-// HUDMode is how much of the HUD shows over the stream.
+// HUDMode is how much of the HUD shows over the stream. The pill shows
+// for a while on connect, then while the pointer is at the top edge or
+// over it, unless pinned; the drawer keeps it showing; hidden turns the
+// HUD off.
 type HUDMode int
 
 const (
 	HUDPill HUDMode = iota
 	HUDDrawer
 	HUDHidden
+)
+
+const (
+	// hudReveal is how long the pill shows on connect and after the HUD
+	// hotkey brings it back.
+	hudReveal = 2500 * time.Millisecond
+	// hudLinger is how long it stays after the pointer leaves it.
+	hudLinger = 1500 * time.Millisecond
+	// hudEdge is the band along the top of the stream that reveals it.
+	hudEdge = theme.Space5
 )
 
 // App is the client UI. Build it with NewApp and mount Content in a
@@ -49,11 +63,19 @@ type App struct {
 	quickConnect string
 	pin          string
 	streaming    bool
+	hudPinned    bool
+	// hudUntil is when the unpinned pill hides, once nothing holds it;
+	// hudHeld is whether the drawer, the pin or the pointer held it last
+	// frame; hudRects are where the pill and drawer were drawn.
+	hudUntil time.Time
+	hudHeld  bool
+	hudRects []mui.Rect
 
 	mu           sync.Mutex
 	services     mui.Services
 	haveServices bool
 	hud          HUDMode
+	hudRevealed  bool
 	connecting   string
 	cancel       context.CancelFunc
 	connectErr   string
@@ -97,9 +119,11 @@ func (a *App) Notify() {
 
 // CycleHUD steps the HUD from pill to drawer to hidden and back, for the
 // HUD hotkey and for input layers that capture keys before the window.
+// Each step shows the pill for a while, as connecting does.
 func (a *App) CycleHUD() {
 	a.mu.Lock()
 	a.hud = (a.hud + 1) % 3
+	a.hudRevealed = true
 	a.mu.Unlock()
 	a.Notify()
 }
@@ -113,6 +137,7 @@ func (a *App) hudMode() HUDMode {
 func (a *App) setHUD(m HUDMode) {
 	a.mu.Lock()
 	a.hud = m
+	a.hudRevealed = true
 	a.mu.Unlock()
 }
 
@@ -130,6 +155,8 @@ func (a *App) View(c *mui.Context) {
 	toHosts := a.toHosts
 	a.toHosts = false
 	connecting := a.connecting
+	revealed := a.hudRevealed
+	a.hudRevealed = false
 	a.mu.Unlock()
 
 	c.OnWindowShortcut(mui.Ctrl|mui.Alt, mui.KeyH, a.CycleHUD)
@@ -138,6 +165,9 @@ func (a *App) View(c *mui.Context) {
 	// A stream, even one started from Pairing, ends on Hosts.
 	if a.streaming && !tel.Connected {
 		toHosts = true
+	}
+	if revealed || (!a.streaming && tel.Connected) {
+		a.hudUntil = c.Now().Add(hudReveal)
 	}
 	a.streaming = tel.Connected
 	if toHosts {
