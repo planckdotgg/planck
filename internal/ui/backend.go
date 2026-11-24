@@ -188,6 +188,15 @@ type CursorHook interface {
 	StreamEnded()
 }
 
+// SystemKeysHook is immersive mode's capture of the system's own keys,
+// which the app that streams supplies (SetSystemKeys). The UI calls it on
+// the main thread.
+type SystemKeysHook interface {
+	// SystemKeysProblem is why the system's keys cannot be captured, such
+	// as a permission the OS wants, "" while they can.
+	SystemKeysProblem() string
+}
+
 // EncoderInfo is a hardware encoder on this machine.
 type EncoderInfo struct {
 	GPU string

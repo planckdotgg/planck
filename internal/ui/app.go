@@ -35,6 +35,7 @@ type App struct {
 	streamView func(c *mui.Context)
 	window     WindowHook
 	cursor     CursorHook
+	sysKeys    SystemKeysHook
 	// streamWin, when set, shows streams in a window of their own
 	// (StreamContent), and the window Content is in keeps the launcher.
 	streamWin StreamWindowHook
@@ -168,6 +169,10 @@ func (a *App) SetWindow(w WindowHook) { a.window = w }
 // SetCursor gives the stream overlay the mouse lock, for its shortcut and
 // its switch. Call it on the main thread.
 func (a *App) SetCursor(h CursorHook) { a.cursor = h }
+
+// SetSystemKeys has the stream overlay say when immersive mode cannot
+// capture the system's keys. Call it before Run.
+func (a *App) SetSystemKeys(h SystemKeysHook) { a.sysKeys = h }
 
 // OnOverlayChange registers fn to hear each time the overlay starts or
 // stops drawing over the stream, so that a video path the window's UI

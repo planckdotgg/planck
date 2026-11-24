@@ -363,7 +363,11 @@ func (a *App) modeGroup(c *mui.Context, m mui.MenuParts, e *overrideEdit, s *Set
 			a.setStreamFullscreen(!w.Fullscreen())
 		}
 	}
-	if switchItem(c, m, "Immersive mode", s.SystemKeysCapture, rowParts{icon: theme.IconImmersive}, a.shortcut(false, "I")) {
+	immersive := rowParts{icon: theme.IconImmersive}
+	if s.SystemKeysCapture && a.sysKeys != nil {
+		immersive.caption = a.sysKeys.SystemKeysProblem()
+	}
+	if switchItem(c, m, "Immersive mode", s.SystemKeysCapture, immersive, a.shortcut(false, "I")) {
 		s.SystemKeysCapture = !s.SystemKeysCapture
 	}
 	if a.cursor != nil {

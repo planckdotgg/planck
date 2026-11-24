@@ -56,6 +56,8 @@ type overlay struct {
 	// cursorLocked is whether the mouse lock was on last frame, and
 	// cursorTold whether this stream's toast said how to release it.
 	cursorLocked, cursorTold bool
+	// sysKeysTold is the system key capture's problem a toast told of.
+	sysKeysTold string
 	// btn is the button's top-left corner in the view while it floats or
 	// is popped out of its dock; off is how far a drag moved it from
 	// there, folded into btn once it comes to rest, and fold is set for
@@ -292,6 +294,7 @@ func (a *App) overlayView(c *mui.Context, well mui.Element, tel Telemetry) {
 	o.vw, o.vh = c.Size()
 	a.overlayShortcuts(c)
 	a.watchCursorLock()
+	a.watchSystemKeys()
 	if o.hidden {
 		a.toastView(c, now)
 		a.noteMenu(false)
@@ -722,9 +725,11 @@ func (a *App) toastView(c *mui.Context, now time.Time) {
 			mui.Box(c).Size(1, 16).Background(theme.RoleText.Alpha(0.12))
 			mui.Text(c, o.toast.title).Font(theme.FontUI).FontSize(theme.TextBody).FontWeight(500).TextColor(theme.RoleText).SingleLine()
 			note(o.toast.lead)
-			mui.Row(c).Height(18).PaddingX(5).AlignItems(mui.Center).Radius(3).Border(1, theme.RoleBorderStrong).Children(func() {
-				mui.Text(c, a.shortcut(false, o.toast.key)).Font(theme.FontMono).FontSize(theme.TextMini).TextColor(theme.RoleText2).SingleLine()
-			})
+			if o.toast.key != "" {
+				mui.Row(c).Height(18).PaddingX(5).AlignItems(mui.Center).Radius(3).Border(1, theme.RoleBorderStrong).Children(func() {
+					mui.Text(c, a.shortcut(false, o.toast.key)).Font(theme.FontMono).FontSize(theme.TextMini).TextColor(theme.RoleText2).SingleLine()
+				})
+			}
 			note(o.toast.tail)
 		})
 	})
@@ -795,6 +800,19 @@ func (a *App) watchCursorLock() {
 		a.showToast(toast{title: "Cursor locked", lead: "press", key: "G", tail: "to release"})
 	}
 	o.cursorLocked = on
+}
+
+// watchSystemKeys says, once for each new reason, that immersive mode
+// cannot capture the system's keys and what to do about it.
+func (a *App) watchSystemKeys() {
+	if a.sysKeys == nil {
+		return
+	}
+	p := a.sysKeys.SystemKeysProblem()
+	if p != "" && p != a.ovl.sysKeysTold {
+		a.showToast(toast{title: "System keys stay on this " + machineWord(a.goos), tail: p})
+	}
+	a.ovl.sysKeysTold = p
 }
 
 // noteMenu frees the mouse while the stream's menu is open.
