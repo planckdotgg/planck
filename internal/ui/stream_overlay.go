@@ -89,7 +89,6 @@ type overlay struct {
 	vw, vh      float32
 	menuOpen    bool
 	menuWasOpen bool
-	tray        string
 	metrics     metricsWindow
 	saved       OverlayLayout
 }
@@ -788,7 +787,7 @@ func (a *App) noteMenu(open bool) {
 func (a *App) toggleHidden() {
 	o := &a.ovl
 	o.hidden = !o.hidden
-	o.menuOpen, o.tray = false, ""
+	o.menuOpen = false
 	o.toast = toast{}
 	if o.hidden {
 		a.showToast(toast{title: "Overlay hidden", lead: "press", key: "P", tail: "to show"})

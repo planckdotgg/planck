@@ -14,7 +14,9 @@ import (
 const (
 	menuWidth   = 320
 	flyoutWidth = 236
-	menuGap     = 6
+	// panelWidth is a flyout of controls rather than choices.
+	panelWidth = 280
+	menuGap    = 6
 )
 
 // rebuildNote closes each flyout whose choice restarts the stream.
@@ -29,7 +31,6 @@ func (a *App) streamMenu(c *mui.Context, tel Telemetry, btn mui.Element) {
 	m := mui.MenuBase(c.Key("overlay-menu"), &o.menuOpen)
 	m.Trigger.Absolute().Left(0).Top(0).Size(0, 0).TabStop(false).AccessHidden(true)
 	if !o.menuOpen {
-		o.tray = ""
 		return
 	}
 	if btn == (mui.Element{}) {
@@ -43,9 +44,6 @@ func (a *App) streamMenu(c *mui.Context, tel Telemetry, btn mui.Element) {
 		a.anchorMenu(panel, btn)
 		panel.Width(menuWidth).Radius(theme.RadiusMd).Clip().Background(theme.HUDGlass).Border(1, theme.HUDEdge).
 			Shadow(0, 16, 40, 0, theme.FloatShadow).Label("Stream controls menu")
-		if o.tray != "" && panel.Shortcut(0, mui.KeyEscape) {
-			o.tray = ""
-		}
 		a.menuHead(c, tel)
 		mui.Column(c).FillWidth().Padding(6).Gap(1).Children(func() {
 			a.modeGroup(c, m, e, &s)
@@ -189,24 +187,16 @@ func switchItem(c *mui.Context, m mui.MenuParts, label string, on bool, r rowPar
 	return it.Clicked()
 }
 
-// chevron trails a row that opens a flyout (right) or a tray (down, up
-// while open).
-func chevron(c *mui.Context, tray, open bool) {
+// chevron trails a row that opens a flyout.
+func chevron(c *mui.Context, open bool) {
 	col := theme.RoleText3
 	if open {
 		col = theme.RoleText
 	}
-	if !tray {
-		mui.Icon(c, theme.IconChevronRight).Size(12, 12).TextColor(col).Shrink(0)
-		return
-	}
-	ic := mui.Icon(c, theme.IconChevron).Size(12, 12).TextColor(col).Shrink(0)
-	if open {
-		ic.Rotate(180)
-	}
+	mui.Icon(c, theme.IconChevronRight).Size(12, 12).TextColor(col).Shrink(0)
 }
 
-// choice is one choice of a flyout or a tray.
+// choice is one choice of a flyout.
 type choice struct {
 	label, detail string
 	selected      bool
@@ -215,11 +205,12 @@ type choice struct {
 	pick   func()
 }
 
-// flyout is a row opening a panel of four or more choices, or of choices
-// that carry a detail, on the side away from the button.
-func (a *App) flyout(c *mui.Context, m mui.MenuParts, label string, r rowParts, note string, choices []choice) {
+// sidePanel is a row opening a panel beside the menu, on the side away
+// from the button, which body fills. The menu never grows with what a row
+// holds: every row with more than a switch opens one.
+func (a *App) sidePanel(c *mui.Context, m mui.MenuParts, label string, r rowParts, width float32, body func()) {
 	it := m.SubmenuItem()
-	r.trailing = func() { chevron(c, false, r.open) }
+	r.trailing = func() { chevron(c, r.open) }
 	menuRow(c, it, label, r)
 	m.Submenu(it, func(panel mui.Element) {
 		if a.ovl.menuOpensLeft() {
@@ -227,27 +218,61 @@ func (a *App) flyout(c *mui.Context, m mui.MenuParts, label string, r rowParts, 
 		} else {
 			panel.AttachTo(it, mui.AnchorTopEnd, mui.AnchorTopStart).Margin(-7, 0, 0, menuGap+6)
 		}
-		panel.Width(flyoutWidth).Padding(6, 6, 0, 6).Radius(theme.RadiusMd).Clip().Background(theme.HUDGlass).
-			Border(1, theme.HUDEdge).Shadow(0, 16, 40, 0, theme.FloatShadow).Label(label)
+		panel.Width(width).Padding(6, 6, 0, 6).Radius(theme.RadiusMd).Clip().Background(theme.HUDGlass).
+			Border(1, theme.HUDEdge).Shadow(0, 16, 40, 0, theme.FloatShadow).Label(label + " options")
+		body()
+	})
+}
+
+// flyout is a side panel of choices, with why any cannot be taken and
+// note under them. keepOpen leaves the menu open as one is picked.
+func (a *App) flyout(c *mui.Context, m mui.MenuParts, label string, r rowParts, note string, choices []choice, keepOpen bool) {
+	a.sidePanel(c, m, label, r, flyoutWidth, func() {
+		var reasons []string
 		for _, ch := range choices {
 			fi := m.RadioItem(ch.selected).Label(label+": "+ch.label).Height(30).Padding(0, 8, 0, 6).Gap(8).
-				Radius(theme.RadiusSm).AlignItems(mui.Center).Cursor(mui.CursorPointer)
-			if fi.Highlighted() {
-				fi.Background(theme.HUDRowHover)
+				Radius(theme.RadiusSm).AlignItems(mui.Center).Disabled(ch.reason != "")
+			if keepOpen {
+				fi.KeepOpen()
+			}
+			text := theme.RoleText
+			switch {
+			case ch.reason != "":
+				text = theme.Carbon500
+				if indexOf(reasons, ch.reason) < 0 {
+					reasons = append(reasons, ch.reason)
+				}
+			default:
+				fi.Cursor(mui.CursorPointer)
+				if fi.Highlighted() {
+					fi.Background(theme.HUDRowHover)
+				}
 			}
 			fi.Children(func() {
 				selSlice(c, ch.selected, 12)
-				mui.Text(c, ch.label).Font(theme.FontUI).FontSize(theme.TextBody).TextColor(theme.RoleText).SingleLine().Grow(1)
+				mui.Text(c, ch.label).Font(theme.FontUI).FontSize(theme.TextBody).TextColor(text).SingleLine().Grow(1)
 				if ch.detail != "" {
 					mui.Text(c, ch.detail).Font(theme.FontMono).FontSize(theme.TextMini).TextColor(theme.RoleText3).SingleLine()
 				}
 			})
-			if fi.Clicked() {
+			if fi.Clicked() && ch.reason == "" {
 				ch.pick()
 			}
 		}
-		mui.Text(c, note).Font(theme.FontUI).FontSize(theme.TextCaption).FixedLineHeight(15).TextColor(theme.RoleText3).
-			FillWidth().Padding(8, 8, 10, 8)
+		for _, n := range append(reasons, note) {
+			if n != "" {
+				mui.Text(c, n).Font(theme.FontUI).FontSize(theme.TextCaption).FixedLineHeight(15).TextColor(theme.RoleText3).
+					FillWidth().Padding(8, 8, 10, 8)
+			}
+		}
+	})
+}
+
+// controlPanel is a side panel of controls, as a slider and switches,
+// that stays open while they are used.
+func (a *App) controlPanel(c *mui.Context, m mui.MenuParts, label string, r rowParts, body func()) {
+	a.sidePanel(c, m, label, r, panelWidth, func() {
+		mui.Column(c).FillWidth().Padding(4, 4, 10, 4).Gap(9).Children(body)
 	})
 }
 
@@ -260,30 +285,7 @@ func selSlice(c *mui.Context, on bool, h float32) {
 	}
 }
 
-// tray is a row that opens its two or three choices, or its slider, in
-// place under it, pushing the rows below down.
-func (a *App) tray(c *mui.Context, m mui.MenuParts, id, label string, r rowParts, body func()) {
-	o := &a.ovl
-	it := m.Item().KeepOpen()
-	r.open = o.tray == id
-	it.Expanded(r.open)
-	r.trailing = func() { chevron(c, true, r.open) }
-	menuRow(c, it, label, r)
-	if it.Clicked() {
-		if o.tray == id {
-			o.tray = ""
-		} else {
-			o.tray = id
-		}
-		r.open = o.tray == id
-	}
-	if r.open {
-		mui.Column(c).FillWidth().Padding(10).Gap(9).Radius(theme.RadiusSm).Background(theme.HUDTray).
-			Label(label + " choices").Children(body)
-	}
-}
-
-// chips lays a tray's choices out in a row the keys take as one item,
+// chips lays a panel's choices out in a row the keys take as one item,
 // with the reason under it for any that cannot be taken.
 func chips(c *mui.Context, m mui.MenuParts, label string, choices []choice) {
 	var reason string
@@ -323,9 +325,9 @@ func chips(c *mui.Context, m mui.MenuParts, label string, choices []choice) {
 	}
 }
 
-// traySlider is a tray's slider: ember at 45 % while auto holds the
+// panelSlider is a panel's slider: ember at 45 % while auto holds the
 // value, full once the user took it, with the scale's ends printed.
-func traySlider(c *mui.Context, label string, v *float64, lo, hi float64, live bool, loText, hiText string) bool {
+func panelSlider(c *mui.Context, label string, v *float64, lo, hi float64, live bool, loText, hiText string) bool {
 	changed := false
 	mui.Column(c).FillWidth().Gap(4).Children(func() {
 		s := mui.SliderBase(c.Key(label), v, lo, hi).FillWidth().Height(16).Label(label)
@@ -410,17 +412,16 @@ func (a *App) videoGroup(c *mui.Context, m mui.MenuParts, e *overrideEdit, tel T
 		codec = codecName(p.Codec)
 	}
 	a.knobFlyout(c, m, e, knobCodec, theme.IconCodec, "Codec", codec, nil)
-	a.colorTray(c, m, e, tel)
+	a.colorFlyout(c, m, e, tel)
 	fps := ""
 	if p != nil && p.FPS > 0 {
 		fps = fmt.Sprint(p.FPS)
 	}
 	a.knobFlyout(c, m, e, knobFPS, theme.IconFrameRate, "Frame rate", fps, nil)
-	a.bitrateTray(c, m, e, tel)
+	a.bitratePanel(c, m, e, tel)
 	vs := e.o.VSyncMode
-	a.tray(c, m, knobVSync.id, "VSync", rowParts{icon: theme.IconVSync, value: knobLabel(knobVSync, string(vs))}, func() {
-		chips(c, m, "VSync", knobChoices(knobVSync, string(vs), func(v string) { e.o.VSyncMode = defaults.Toggle(v) }))
-	})
+	a.flyout(c, m, "VSync", rowParts{icon: theme.IconVSync, value: knobLabel(knobVSync, string(vs))}, "",
+		knobChoices(knobVSync, string(vs), func(v string) { e.o.VSyncMode = defaults.Toggle(v) }), true)
 }
 
 // knobFlyout is a knob's flyout. value is what the stream resolved to,
@@ -440,7 +441,7 @@ func (a *App) knobFlyout(c *mui.Context, m mui.MenuParts, e *overrideEdit, k kno
 		}
 		choices = append(choices, ch)
 	}
-	a.flyout(c, m, label, rowParts{icon: icon, value: shown}, rebuildNote, choices)
+	a.flyout(c, m, label, rowParts{icon: icon, value: shown}, rebuildNote, choices, false)
 }
 
 func knobLabel(k knob, v string) string {
@@ -458,7 +459,7 @@ func knobChoices(k knob, cur string, set func(string)) []choice {
 	return out
 }
 
-// colorPair is one of the colour tray's choices: a bit depth with a chroma.
+// colorPair is one of the colour flyout's choices: a bit depth with a chroma.
 type colorPair struct {
 	depth  defaults.BitDepthPref
 	chroma defaults.ChromaPref
@@ -474,9 +475,9 @@ func (p colorPair) label() string {
 
 var colorPairs = []colorPair{{"8", "420"}, {"10", "420"}, {"10", "444"}}
 
-// colorTray sets bit depth and chroma together. The pair in force is the
+// colorFlyout sets bit depth and chroma together. The pair in force is the
 // overrides' when both are set, else what the stream resolved to.
-func (a *App) colorTray(c *mui.Context, m mui.MenuParts, e *overrideEdit, tel Telemetry) {
+func (a *App) colorFlyout(c *mui.Context, m mui.MenuParts, e *overrideEdit, tel Telemetry) {
 	cur := colorPair{e.o.BitDepth, e.o.Chroma}
 	if cur.depth == defaults.Auto || cur.chroma == defaults.Auto {
 		cur = resolvedColor(tel)
@@ -498,9 +499,7 @@ func (a *App) colorTray(c *mui.Context, m mui.MenuParts, e *overrideEdit, tel Te
 	if cur.depth != defaults.Auto {
 		value = cur.label()
 	}
-	a.tray(c, m, "color", "Color", rowParts{icon: theme.IconColor, value: value}, func() {
-		chips(c, m, "Color", choices)
-	})
+	a.flyout(c, m, "Color", rowParts{icon: theme.IconColor, value: value}, rebuildNote, choices, true)
 }
 
 func resolvedColor(tel Telemetry) colorPair {
@@ -543,19 +542,19 @@ func no444Reason(p *defaults.ResolvedProfile) string {
 	return ""
 }
 
-// bitrateTray is Auto, or a bitrate the slider sets.
-func (a *App) bitrateTray(c *mui.Context, m mui.MenuParts, e *overrideEdit, tel Telemetry) {
+// bitratePanel is Auto, or a bitrate the slider sets.
+func (a *App) bitratePanel(c *mui.Context, m mui.MenuParts, e *overrideEdit, tel Telemetry) {
 	value := fmt.Sprintf("%d Mbps", e.o.BitrateMbps)
 	if e.o.BitrateMbps == 0 {
 		value = "Auto · " + formatMbps(tel.BitrateMbps) + " Mbps"
 	}
-	a.tray(c, m, "bitrate", "Bitrate", rowParts{icon: theme.IconBitrate, value: value}, func() {
+	a.controlPanel(c, m, "Bitrate", rowParts{icon: theme.IconBitrate, value: value}, func() {
 		chips(c, m, "Bitrate", []choice{{label: "Auto", selected: e.o.BitrateMbps == 0, pick: func() { e.o.BitrateMbps = 0 }}})
 		v := float64(e.o.BitrateMbps)
 		if v == 0 {
 			v = min(max(tel.BitrateMbps, minBitrateMbps), maxManualBitrateMbps)
 		}
-		if traySlider(c, "Video bitrate", &v, minBitrateMbps, maxManualBitrateMbps, e.o.BitrateMbps > 0,
+		if panelSlider(c, "Video bitrate", &v, minBitrateMbps, maxManualBitrateMbps, e.o.BitrateMbps > 0,
 			fmt.Sprint(minBitrateMbps), fmt.Sprint(maxManualBitrateMbps)+" Mbps") {
 			e.o.BitrateMbps = max(int(math.Round(v/5)*5), minBitrateMbps)
 		}
@@ -572,9 +571,9 @@ func (a *App) soundGroup(c *mui.Context, m mui.MenuParts, s *Settings, tel Telem
 	if !tel.MicMuted {
 		mic = "mic on"
 	}
-	a.tray(c, m, "sound", "Sound & mic", rowParts{icon: theme.IconSound, value: level + " · " + mic}, func() {
+	a.controlPanel(c, m, "Sound & mic", rowParts{icon: theme.IconSound, value: level + " · " + mic}, func() {
 		v := s.AudioVolume * 100
-		if traySlider(c, "Volume", &v, 0, 100, !s.AudioMuted, "0", "100 %") {
+		if panelSlider(c, "Volume", &v, 0, 100, !s.AudioMuted, "0", "100 %") {
 			s.AudioVolume = math.Round(v) / 100
 		}
 		if switchItem(c, m, "Mute", s.AudioMuted, rowParts{icon: theme.IconSound}, "") {
