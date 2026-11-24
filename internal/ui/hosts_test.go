@@ -261,8 +261,8 @@ func TestSettingsHostName(t *testing.T) {
 	if got := f.Settings(); got.HostName != "living-room" {
 		t.Fatalf("host name = %q", got.HostName)
 	}
-	if got := f.Settings(); got.Codec != newFake().settings.Codec || got.MaxBitrateMbps != 100 {
-		t.Fatalf("other settings changed: %+v", got)
+	if got := f.Settings(); got.AudioEnabled != newFake().settings.AudioEnabled || f.ovSaves != 0 {
+		t.Fatalf("other settings changed: %+v, %d override saves", got, f.ovSaves)
 	}
 }
 

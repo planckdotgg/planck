@@ -77,6 +77,10 @@ type App struct {
 	hostNameDraft   string
 	hostNameFocused bool
 	machineName     string
+	// ovScope is whose stream format Settings edits; drafts are its
+	// text fields.
+	ovScope overrideScope
+	drafts  drafts
 	// hudUntil is when the unpinned pill hides, once nothing holds it;
 	// hudHeld is whether the drawer, the pin or the pointer held it last
 	// frame; hudRects are where the pill and drawer were drawn.
@@ -100,6 +104,7 @@ type App struct {
 	// hudVisible is whether the HUD is on screen, as last drawn or as the
 	// hotkey just made it.
 	hudVisible bool
+	onDrawer   func(open bool)
 }
 
 // NewApp returns the UI driving backend, and subscribes to its changes.
@@ -139,14 +144,30 @@ func (a *App) Notify() {
 // Each step shows the pill for a while, as connecting does; a pill that
 // hid itself first just shows again.
 func (a *App) CycleHUD() {
-	a.mu.Lock()
-	if a.hud != HUDPill || a.hudVisible {
-		a.hud = (a.hud + 1) % 3
-	}
-	a.hudRevealed = true
-	a.hudVisible = a.hud != HUDHidden
-	a.mu.Unlock()
+	a.changeHUD(func() {
+		if a.hud != HUDPill || a.hudVisible {
+			a.hud = (a.hud + 1) % 3
+		}
+		a.hudVisible = a.hud != HUDHidden
+	})
 	a.Notify()
+}
+
+// HUD is the HUD's mode. Safe from any goroutine.
+func (a *App) HUD() HUDMode { return a.hudMode() }
+
+// DrawerOpen reports whether the stream drawer is open. Safe from any
+// goroutine.
+func (a *App) DrawerOpen() bool { return a.hudMode() == HUDDrawer }
+
+// OnDrawerChange registers fn to hear each time the stream drawer opens or
+// closes, so that a video path the window's UI cannot draw over makes way
+// for it. fn runs on the goroutine that moved the HUD, often the main
+// thread inside a frame, and must not block.
+func (a *App) OnDrawerChange(fn func(open bool)) {
+	a.mu.Lock()
+	a.onDrawer = fn
+	a.mu.Unlock()
 }
 
 func (a *App) hudMode() HUDMode {
@@ -156,10 +177,28 @@ func (a *App) hudMode() HUDMode {
 }
 
 func (a *App) setHUD(m HUDMode) {
+	a.changeHUD(func() { a.hud = m })
+}
+
+// changeHUD runs fn under the lock to move the HUD, revealing the pill and
+// telling OnDrawerChange's callback if the drawer opened or closed.
+func (a *App) changeHUD(fn func()) {
 	a.mu.Lock()
-	a.hud = m
+	was := a.hud == HUDDrawer
+	fn()
 	a.hudRevealed = true
+	open, cb := a.hud == HUDDrawer, a.onDrawer
 	a.mu.Unlock()
+	if open != was && cb != nil {
+		cb(open)
+	}
+}
+
+// openHostSettings shows Settings with a host's own stream format.
+func (a *App) openHostSettings(h HostInfo) {
+	a.ovScope = overrideScope{hostID: h.ID, name: h.Name}
+	a.drafts.err = ""
+	a.screen = ScreenSettings
 }
 
 // View builds one frame of the client.

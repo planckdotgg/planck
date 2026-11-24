@@ -1,0 +1,248 @@
+package ui
+
+import (
+	"errors"
+	"slices"
+	"strings"
+	"testing"
+
+	mui "github.com/egoist/mygo/ui"
+	"github.com/planckdotgg/planck/pkg/defaults"
+	"github.com/planckdotgg/planck/pkg/gpu"
+)
+
+func settingsTester(t *testing.T, f *fakeBackend) (*App, *mui.Tester) {
+	t.Helper()
+	a, tt := newTester(t, f)
+	a.screen = ScreenSettings
+	tt.Frame()
+	return a, tt
+}
+
+// TestOverrideKnobsAllHosts: every knob in Settings starts on Auto and
+// saves its choice to the overrides for every host.
+func TestOverrideKnobsAllHosts(t *testing.T) {
+	f := newFake()
+	_, tt := settingsTester(t, f)
+	for _, k := range []knob{knobCodec, knobChroma, knobBitDepth, knobResolution, knobFPS, knobVDD, knobSlices, knobSplit, knobDirect, knobVSync, knobRoute} {
+		if info, ok := tt.Access(k.title + ": Auto"); !ok || !info.Checked {
+			t.Errorf("%s: Auto not chosen at first (%+v, %v)", k.title, info, ok)
+		}
+	}
+	snapshot(t, tt, "settings-overrides")
+	for _, name := range []string{"Codec: PyroWave", "Chroma: 4:4:4", "Bit depth: 10-bit", "Resolution: 1440p", "Frame rate: 144",
+		"Bitrate: Manual", "Virtual display: On", "Sub-frame slices: 4", "NVENC two-engine split: Off",
+		"Direct to display: On", "VSync: On", "Route: LAN"} {
+		clickScrolled(t, tt, name)
+	}
+	want := defaults.UserOverrides{Codec: "pyrowave", Chroma: "444", BitDepth: "10", Resolution: "1440p", FPS: "144",
+		BitrateMbps: manualBitrateMbps, VirtualDisplay: "on", SubFrameSlices: "4", NVENC2EngineSplit: "off",
+		MetalDirectDisplay: "on", VSyncMode: "on", RoutePolicy: "lan"}.Normalize()
+	if got := f.override(""); got != want {
+		t.Fatalf("overrides\n got %+v\nwant %+v", got, want)
+	}
+	if len(f.overrides) != 1 {
+		t.Fatalf("saved for hosts too: %v", f.overrides)
+	}
+	if info, ok := tt.Access("Codec: PyroWave"); !ok || !info.Checked {
+		t.Fatalf("PyroWave not shown chosen after the save")
+	}
+	clickScrolled(t, tt, "Bitrate: Auto")
+	if got := f.override(""); got.BitrateMbps != 0 {
+		t.Fatalf("bitrate back to auto: %d", got.BitrateMbps)
+	}
+}
+
+// TestOverrideCustomSizeAndGPU: Custom starts at 1080p and takes typed
+// even sizes in range on Enter, keeping the last good one and saying why
+// otherwise; the GPU field saves its text.
+func TestOverrideCustomSizeAndGPU(t *testing.T) {
+	f := newFake()
+	_, tt := settingsTester(t, f)
+	click(t, tt, "Resolution: Custom")
+	if got := f.override(""); got.Resolution != "custom" || got.CustomWidth != customWidth || got.CustomHeight != customHeight {
+		t.Fatalf("custom: %+v", got)
+	}
+	typeInto(t, tt, "Custom width", "2560")
+	if got := f.override(""); got.CustomWidth != 2560 || got.CustomHeight != customHeight {
+		t.Fatalf("custom width: %+v", got)
+	}
+	typeInto(t, tt, "Custom height", "1441")
+	if got := f.override(""); got.CustomHeight != customHeight {
+		t.Fatalf("odd height saved: %+v", got)
+	}
+	if !tt.HasText(`"1441" is not an even size`) {
+		t.Fatalf("no reason for the refused size: %q", tt.Texts())
+	}
+	typeInto(t, tt, "Virtual display GPU", "4080")
+	if got := f.override(""); got.VirtualDisplayGPU != "4080" || got.CustomWidth != 2560 {
+		t.Fatalf("gpu: %+v", got)
+	}
+	clickScrolled(t, tt, "Virtual display: Off")
+	if tt.HasText("Virtual display GPU") {
+		t.Fatal("GPU row shown with the virtual display off")
+	}
+}
+
+// typeInto replaces a text field's text and presses Enter.
+func typeInto(t *testing.T, tt *mui.Tester, field, text string) {
+	t.Helper()
+	info, ok := tt.AccessByRole(mui.RoleTextField, field)
+	if !ok {
+		t.Fatalf("no %s field: %q", field, tt.Texts())
+	}
+	scrollTo(t, tt, field)
+	info, _ = tt.AccessByRole(mui.RoleTextField, field)
+	tt.ClickAt(info.Bounds.X+info.Bounds.W/2, info.Bounds.Y+info.Bounds.H/2)
+	tt.Frame()
+	for range len(info.Value) + 2 {
+		tt.Key(0, mui.KeyBackspace)
+	}
+	tt.Type(text)
+	tt.Key(0, mui.KeyEnter)
+	tt.Frame()
+}
+
+// TestOverrideHostScope: a host's scope saves under its ID only, says
+// what its auto knobs follow, and Reset to Auto clears that host alone.
+func TestOverrideHostScope(t *testing.T) {
+	f := newFake()
+	f.hosts = sampleHosts()
+	f.overrides[""] = defaults.UserOverrides{FPS: "120", BitrateMbps: 300}
+	_, tt := settingsTester(t, f)
+	if tt.HasText("Stream format for: cabin-pc") {
+		t.Fatal("an unpaired host has a scope")
+	}
+	click(t, tt, "Stream format for: bigboi")
+	if !tt.HasText("Auto follows all hosts: 120") || !tt.HasText("Auto follows all hosts: 300 Mbps") {
+		t.Fatalf("inherited values not shown: %q", tt.Texts())
+	}
+	click(t, tt, "Codec: AV1")
+	click(t, tt, "Frame rate: 240")
+	if got := f.override("h-bigboi"); got.Codec != "av1" || got.FPS != "240" || got.Chroma != defaults.Auto {
+		t.Fatalf("bigboi: %+v", got)
+	}
+	if got := f.override(""); got.Codec != defaults.Auto || got.FPS != "120" {
+		t.Fatalf("all hosts changed: %+v", got)
+	}
+	click(t, tt, "Reset to Auto")
+	if got := f.override("h-bigboi"); got != (defaults.UserOverrides{}).Normalize() {
+		t.Fatalf("bigboi after reset: %+v", got)
+	}
+	if got := f.override(""); got.FPS != "120" || got.BitrateMbps != 300 {
+		t.Fatalf("reset touched all hosts: %+v", got)
+	}
+}
+
+func TestOverrideHostCardOpensScope(t *testing.T) {
+	f := newFake()
+	f.hosts = sampleHosts()
+	a, tt := newTester(t, f)
+	if _, ok := tt.Access("Stream settings for cabin-pc"); ok {
+		t.Fatal("an unpaired host's card offers stream settings")
+	}
+	click(t, tt, "Stream settings for studio-mac")
+	if a.screen != ScreenSettings {
+		t.Fatalf("screen %v", a.screen)
+	}
+	if info, ok := tt.Access("Stream format for: studio-mac"); !ok || !info.Checked {
+		t.Fatalf("studio-mac's scope not chosen: %q", tt.Texts())
+	}
+	click(t, tt, "Chroma: 4:2:0")
+	if got := f.override("h-studio"); got.Chroma != "420" {
+		t.Fatalf("studio-mac: %+v", got)
+	}
+}
+
+func TestOverrideSaveError(t *testing.T) {
+	f := newFake()
+	f.ovErr = errors.New("disk full")
+	_, tt := settingsTester(t, f)
+	click(t, tt, "Codec: HEVC")
+	if !tt.HasText("Could not save settings: disk full") {
+		t.Fatalf("save error missing: %q", tt.Texts())
+	}
+}
+
+func sampleProfile() *defaults.ResolvedProfile {
+	return &defaults.ResolvedProfile{Codec: defaults.CodecHEVC, BitDepth: 10, Width: 1920, Height: 1080, FPS: 120,
+		VirtualDisplay: true, DirectDisplay: true, EncodeAdapter: gpu.Adapter{Name: "NVIDIA GeForce RTX 4080"},
+		Warnings: []string{"fps 240: clamped to 120 Hz"}}
+}
+
+// TestDrawerOverrides: the drawer shows the resolved stream and its
+// fallbacks, and its quick picks and Reset to Auto act on this host only.
+func TestDrawerOverrides(t *testing.T) {
+	f := newFake()
+	f.tel = sampleTelemetry()
+	f.tel.Profile = sampleProfile()
+	f.overrides[""] = defaults.UserOverrides{Codec: "hevc"}
+	a, tt := newTester(t, f)
+	a.setHUD(HUDDrawer)
+	tt.Frame()
+	if !tt.HasText("HEVC 10-bit 4:2:0 · 1080p120 · SudoVDA (RTX 4080) · Direct") || !tt.HasText("fps 240: clamped to 120 Hz") {
+		t.Fatalf("resolved stream missing: %q", tt.Texts())
+	}
+	snapshot(t, tt, "hud-drawer-overrides")
+	for _, name := range []string{"Codec: PyroWave", "Frame rate: 240", "Virtual display: Off", "Direct to display: Off", "Bitrate: Auto"} {
+		click(t, tt, name)
+	}
+	if got := f.override("h-bigboi"); got.Codec != "pyrowave" || got.FPS != "240" || got.VirtualDisplay != "off" || got.MetalDirectDisplay != "off" {
+		t.Fatalf("bigboi: %+v", got)
+	}
+	click(t, tt, "Reset to Auto")
+	if got := f.override("h-bigboi"); got != (defaults.UserOverrides{}).Normalize() {
+		t.Fatalf("bigboi after reset: %+v", got)
+	}
+	if got := f.override(""); got.Codec != "hevc" {
+		t.Fatalf("drawer changed all hosts: %+v", got)
+	}
+}
+
+// TestDrawerChange: OnDrawerChange hears each open and close, from the
+// pill's button, the hotkey and disconnecting, and nothing else.
+func TestDrawerChange(t *testing.T) {
+	f := newFake()
+	f.tel = sampleTelemetry()
+	a, tt := newTester(t, f)
+	var got []bool
+	a.OnDrawerChange(func(open bool) { got = append(got, open) })
+	click(t, tt, "Show stream controls")
+	if !a.DrawerOpen() {
+		t.Fatal("drawer not open")
+	}
+	click(t, tt, "Hide stream controls")
+	a.CycleHUD() // pill to drawer
+	a.CycleHUD() // drawer to hidden
+	a.CycleHUD() // hidden to pill: no change
+	a.CycleHUD() // pill to drawer
+	tt.Frame()
+	click(t, tt, "Disconnect")
+	if want := []bool{true, false, true, false, true, false}; !slices.Equal(got, want) {
+		t.Fatalf("drawer changes %v, want %v", got, want)
+	}
+	if a.DrawerOpen() || a.HUD() != HUDPill {
+		t.Fatalf("after disconnect: open %v, mode %v", a.DrawerOpen(), a.HUD())
+	}
+}
+
+func TestProfileLine(t *testing.T) {
+	for _, tc := range []struct {
+		p    *defaults.ResolvedProfile
+		want string
+	}{
+		{nil, ""},
+		{sampleProfile(), "HEVC 10-bit 4:2:0 · 1080p120 · SudoVDA (RTX 4080) · Direct"},
+		{&defaults.ResolvedProfile{Codec: defaults.CodecPyroWave, BitDepth: 8, Chroma444: true, Width: 1728, Height: 1117, FPS: 120,
+			EncodeAdapter: gpu.Adapter{Name: "AMD Radeon RX 6700 XT"}}, "PyroWave 8-bit 4:4:4 · 1728x1117 @ 120 · Radeon RX 6700 XT"},
+		{&defaults.ResolvedProfile{Codec: defaults.CodecAV1, BitDepth: 8, Width: 3840, Height: 2160, FPS: 60, VirtualDisplay: true},
+			"AV1 8-bit 4:2:0 · 2160p60 · SudoVDA"},
+	} {
+		if got := profileLine(tc.p); got != tc.want {
+			t.Errorf("profileLine = %q, want %q", got, tc.want)
+		}
+	}
+	if strings.Contains(profileLine(sampleProfile()), "NVIDIA") {
+		t.Error("brand words kept")
+	}
+}

@@ -168,7 +168,7 @@ func segmented(c *mui.Context, name string, sel *int, labels ...string) bool {
 	track.Children(func() {
 		for i, l := range labels {
 			s := parts.Segment(i).Height(theme.SizeControl - 8).PaddingX(theme.Space3).
-				Radius(theme.RadiusXs).Cursor(mui.CursorPointer).AlignItems(mui.Center)
+				Radius(theme.RadiusXs).Cursor(mui.CursorPointer).AlignItems(mui.Center).Label(name + ": " + l)
 			weight, col := 400, theme.RoleText2
 			if i == *sel {
 				s.Background(theme.RoleHover)

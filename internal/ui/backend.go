@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/encode"
 )
@@ -50,6 +51,12 @@ type HostInfo struct {
 type Telemetry struct {
 	Connected bool
 	HostName  string
+	// HostID keys the host's own overrides; empty for a host reached by
+	// address that sent none.
+	HostID string
+	// Profile is what the host resolved the stream to; nil from a host
+	// that does not resolve streams.
+	Profile   *defaults.ResolvedProfile
 	FPS       float64
 	TargetFPS int
 	// Stage times are p50 over the last second, in milliseconds. TotalMs
@@ -66,22 +73,12 @@ type Telemetry struct {
 	DatagramBytes int
 }
 
-// Settings are the client's stream preferences. SaveSettings applies them
-// to a live stream where the host allows.
+// Settings are the client's preferences other than the stream's format,
+// which the overrides hold. SaveSettings applies them to a live stream.
 type Settings struct {
-	Codec  encode.Codec
-	Chroma encode.Chroma
-	// TargetFPS 0 matches the client's display.
-	TargetFPS      int
-	MaxBitrateMbps int
-	// Slices is how many slices each frame is encoded in; 1 is whole
-	// frames. SubFrame sends each slice as soon as it is encoded.
-	Slices            int
-	SubFrame          bool
 	AudioEnabled      bool
 	SystemKeysCapture bool
 	RelativeMouse     bool
-	PreferLAN         bool
 	// Encoder is the GPU this machine encodes on while hosting, by
 	// EncoderInfo.GPU; empty lets the host choose.
 	Encoder string
@@ -165,6 +162,13 @@ type Backend interface {
 	Encoders() []EncoderInfo
 	Settings() Settings
 	SaveSettings(s Settings) error
+	// Overrides returns the stream overrides kept for hostID, or the ones
+	// for every host when hostID is "". A host's auto knobs follow the
+	// ones for every host.
+	Overrides(hostID string) defaults.UserOverrides
+	// SaveOverrides keeps o for hostID, or for every host when hostID is
+	// "", and restarts a live stream they change.
+	SaveOverrides(hostID string, o defaults.UserOverrides) error
 
 	Pairing() PairState
 	SubmitPIN(ctx context.Context, pin string) error

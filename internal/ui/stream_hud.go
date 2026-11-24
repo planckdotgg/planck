@@ -5,16 +5,6 @@ import (
 
 	mui "github.com/egoist/mygo/ui"
 	"github.com/planckdotgg/planck/internal/ui/theme"
-	"github.com/planckdotgg/planck/pkg/encode"
-)
-
-var (
-	codecChoices  = []encode.Codec{encode.H264, encode.HEVC, encode.AV1}
-	codecLabels   = []string{"H.264", "HEVC", "AV1"}
-	chromaChoices = []encode.Chroma{encode.NV12, encode.P010, encode.YUV444P10}
-	chromaLabels  = []string{"4:2:0 8-bit", "4:2:0 10-bit", "4:4:4 10-bit"}
-	// bitratePresets are the drawer's quick picks, up to the LAN ceiling.
-	bitratePresets = []int{20, 50, 100, lanCapMbps()}
 )
 
 func indexOf[T comparable](list []T, v T) int {
@@ -194,9 +184,16 @@ func hudReading(c *mui.Context, v, unit string) {
 	})
 }
 
+// hudDrawer holds the stream's controls: the stage times, the resolved
+// stream with quick overrides for this host, and the stream's actions.
 func (a *App) hudDrawer(c *mui.Context, t Telemetry) mui.Element {
 	before := a.backend.Settings()
 	s := before
+	scope := overrideScope{hostID: t.HostID, name: t.HostName}
+	if scope.all() {
+		scope.name = "All hosts"
+	}
+	e := a.editOverrides(scope)
 	d := mui.Column(c).Width(600).Padding(theme.Space5).Gap(theme.Space4).Radius(theme.RadiusMd).
 		Background(theme.HUDGlass).Border(1, theme.HUDEdge).Shadow(0, 16, 40, 0, theme.FloatShadow).
 		Label("Stream controls").Children(func() {
@@ -206,11 +203,27 @@ func (a *App) hudDrawer(c *mui.Context, t Telemetry) mui.Element {
 		})
 		stageBar(c, t)
 		divider(c)
-		drawerRow(c, "Codec", func() { pickFrom(c, "Codec", codecChoices, codecLabels, &s.Codec) })
-		drawerRow(c, "Chroma", func() { pickFrom(c, "Chroma", chromaChoices, chromaLabels, &s.Chroma) })
+		if line := profileLine(t.Profile); line != "" {
+			mui.Column(c).FillWidth().Gap(theme.Space1).Children(func() {
+				mono(c, line).FontSize(theme.TextCaption + 1)
+				if t.Profile != nil {
+					for _, w := range t.Profile.Warnings {
+						caption(c, w).TextColor(theme.RoleRelay)
+					}
+				}
+			})
+		}
+		caption(c, "Changes here are for "+e.scope.name+" and restart the stream. Settings has every option.")
+		for _, k := range []knob{knobCodec, knobChroma, knobBitDepth, knobFPS} {
+			drawerRow(c, k.title, func() { e.knobControl(c, k) })
+		}
 		drawerRow(c, "Bitrate", func() {
-			pickFrom(c, "Bitrate", bitratePresets, mbpsLabels(bitratePresets), &s.MaxBitrateMbps)
+			c.Key("knob:" + e.scope.hostID + ":drawerBitrate")
+			pickFrom(c, "Bitrate", drawerBitrates, mbpsLabels(drawerBitrates), &e.o.BitrateMbps)
 		})
+		for _, k := range []knob{knobVDD, knobDirect} {
+			drawerRow(c, k.title, func() { e.knobControl(c, k) })
+		}
 		mui.Row(c).FillWidth().Gap(theme.Space6).Children(func() {
 			mui.Box(c).Grow(1).Basis(0).Children(func() { switchRow(c, "Audio", "", &s.AudioEnabled, false) })
 			mui.Box(c).Grow(1).Basis(0).Children(func() { switchRow(c, "System keys", "", &s.SystemKeysCapture, false) })
@@ -219,6 +232,9 @@ func (a *App) hudDrawer(c *mui.Context, t Telemetry) mui.Element {
 		divider(c)
 		mui.Row(c).FillWidth().AlignItems(mui.Center).Gap(theme.Space2).Children(func() {
 			caption(c, "Cycle HUD: Ctrl Alt H").Grow(1)
+			if button(c, buttonGhost, "Reset to Auto", false).Clicked() {
+				e.resetToAuto()
+			}
 			if button(c, buttonSecondary, "Force keyframe", false).Clicked() {
 				a.backend.RequestKeyframe()
 			}
@@ -228,6 +244,7 @@ func (a *App) hudDrawer(c *mui.Context, t Telemetry) mui.Element {
 		})
 	})
 	a.saveSettings(before, s)
+	a.saveOverrides(e)
 	return d
 }
 
@@ -238,10 +255,14 @@ func drawerRow(c *mui.Context, name string, control func()) {
 	})
 }
 
+// mbpsLabels names bitrates, 0 being auto.
 func mbpsLabels(v []int) []string {
 	out := make([]string, len(v))
 	for i, m := range v {
 		out[i] = fmt.Sprintf("%d Mbps", m)
+		if m == 0 {
+			out[i] = "Auto"
+		}
 	}
 	return out
 }

@@ -8,6 +8,7 @@ import (
 
 	mui "github.com/egoist/mygo/ui"
 	"github.com/planckdotgg/planck/internal/ui/theme"
+	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/encode"
 )
@@ -39,13 +40,16 @@ type fakeBackend struct {
 	refreshes     int
 	renames       [][2]string
 	renameErr     error
+	overrides     map[string]defaults.UserOverrides
+	ovSaves       int
+	ovErr         error
 }
 
 func newFake() *fakeBackend {
 	return &fakeBackend{
 		connectResult: make(chan error, 1),
-		settings: Settings{Codec: encode.HEVC, Chroma: encode.P010, TargetFPS: 120, MaxBitrateMbps: 100,
-			Slices: 4, AudioEnabled: true, PreferLAN: true},
+		settings:      Settings{AudioEnabled: true},
+		overrides:     map[string]defaults.UserOverrides{},
 	}
 }
 
@@ -108,6 +112,29 @@ func (f *fakeBackend) SaveSettings(s Settings) error {
 	return nil
 }
 
+func (f *fakeBackend) Overrides(hostID string) defaults.UserOverrides {
+	defer f.lock()()
+	return f.overrides[hostID]
+}
+
+func (f *fakeBackend) SaveOverrides(hostID string, o defaults.UserOverrides) error {
+	defer f.lock()()
+	if f.ovErr != nil {
+		return f.ovErr
+	}
+	if err := o.Validate(); err != nil {
+		return err
+	}
+	f.ovSaves++
+	f.overrides[hostID] = o
+	return nil
+}
+
+// override is the stored overrides of hostID, all auto when none.
+func (f *fakeBackend) override(hostID string) defaults.UserOverrides {
+	return f.Overrides(hostID).Normalize()
+}
+
 func (f *fakeBackend) SubmitPIN(ctx context.Context, pin string) error {
 	defer f.lock()()
 	f.pins = append(f.pins, pin)
@@ -140,7 +167,7 @@ func sampleHosts() []HostInfo {
 }
 
 func sampleTelemetry() Telemetry {
-	return Telemetry{Connected: true, HostName: "bigboi", FPS: 240, TargetFPS: 240,
+	return Telemetry{Connected: true, HostName: "bigboi", HostID: "h-bigboi", FPS: 240, TargetFPS: 240,
 		EncodeMs: 1.5, NetMs: 0.7, DecodeMs: 1.0, PresentMs: 2.5, TotalMs: 8.4,
 		BitrateMbps: 80, FECPct: 5, PathKind: discovery.PathLANDirect,
 		Codec: encode.HEVC, Chroma: encode.P010, Width: 1920, Height: 1080}
@@ -152,8 +179,10 @@ func newTester(t *testing.T, f *fakeBackend) (*App, *mui.Tester) {
 		t.Fatal(err)
 	}
 	a := NewApp(f)
-	return a, mui.NewTester(a.View, 1440, 900)
+	return a, mui.NewTester(a.View, testWidth, testHeight)
 }
+
+const testWidth, testHeight = 1440, 900
 
 // eventually runs frames until cond holds, for work the app does off the
 // main thread.
@@ -175,4 +204,31 @@ func click(t *testing.T, tt *mui.Tester, name string) {
 		t.Fatalf("click %q: %v (texts: %q)", name, err, tt.Texts())
 	}
 	tt.Frame()
+}
+
+// clickScrolled scrolls the page until name is in the window, then
+// clicks it.
+func clickScrolled(t *testing.T, tt *mui.Tester, name string) {
+	t.Helper()
+	scrollTo(t, tt, name)
+	click(t, tt, name)
+}
+
+// scrollTo scrolls the page under the pointer until the element named
+// name is wholly in the window.
+func scrollTo(t *testing.T, tt *mui.Tester, name string) {
+	t.Helper()
+	for range 20 {
+		info, ok := tt.Access(name)
+		if !ok {
+			t.Fatalf("no element named %q: %q", name, tt.Texts())
+		}
+		r := info.Bounds
+		if !info.Offscreen && r.Y >= 0 && r.Y+r.H <= testHeight {
+			return
+		}
+		tt.Scroll(testWidth/2, testHeight/2, 0, r.Y-testHeight/2)
+		tt.Frame()
+	}
+	t.Fatalf("%q did not scroll into the window", name)
 }

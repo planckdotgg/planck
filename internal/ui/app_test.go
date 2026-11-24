@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	mui "github.com/egoist/mygo/ui"
-	"github.com/planckdotgg/planck/pkg/encode"
+	"github.com/planckdotgg/planck/pkg/defaults"
 )
 
 // snapshot writes the tester's frame as a PNG when PLANCK_UI_SNAPSHOT_DIR
@@ -222,7 +222,7 @@ func TestRailNavigation(t *testing.T) {
 	f := newFake()
 	_, tt := newTester(t, f)
 	click(t, tt, "Settings")
-	if !tt.HasText("Maximum bitrate") || !tt.HasText("Encoder and GPU") {
+	if !tt.HasText("Bit depth") || !tt.HasText("Encoder and GPU") {
 		t.Fatalf("settings not shown: %q", tt.Texts())
 	}
 	click(t, tt, "Hosts")
@@ -244,18 +244,18 @@ func TestSettingsSave(t *testing.T) {
 	snapshot(t, tt, "settings")
 
 	click(t, tt, "AV1")
-	click(t, tt, "Stream audio")
-	click(t, tt, "GeForce RTX 4080")
+	clickScrolled(t, tt, "Stream audio")
+	clickScrolled(t, tt, "GeForce RTX 4080")
 	got := f.Settings()
-	if got.Codec != encode.AV1 || got.AudioEnabled || got.Encoder != "GeForce RTX 4080" {
-		t.Fatalf("settings = %+v", got)
+	if ov := f.override(""); ov.Codec != "av1" || got.AudioEnabled || got.Encoder != "GeForce RTX 4080" {
+		t.Fatalf("settings = %+v, overrides %+v", got, ov)
 	}
-	if got.Chroma != encode.P010 || got.MaxBitrateMbps != 100 {
-		t.Fatalf("untouched settings changed: %+v", got)
+	if ov := f.override(""); ov.Chroma != defaults.Auto || ov.BitrateMbps != 0 {
+		t.Fatalf("untouched overrides changed: %+v", ov)
 	}
 
 	f.set(func(f *fakeBackend) { f.saveErr = errors.New("disk full") })
-	click(t, tt, "Send system keys to the host")
+	clickScrolled(t, tt, "Send system keys to the host")
 	if !tt.HasText("Could not save settings: disk full") {
 		t.Fatalf("save error missing: %q", tt.Texts())
 	}
@@ -295,12 +295,13 @@ func TestHUDDrawerActions(t *testing.T) {
 	snapshot(t, tt, "hud-drawer")
 
 	click(t, tt, "Force keyframe")
-	click(t, tt, "4:4:4 10-bit")
+	click(t, tt, "4:4:4")
+	click(t, tt, "10-bit")
 	click(t, tt, "150 Mbps")
 	click(t, tt, "System keys")
-	got := f.Settings()
-	if got.Chroma != encode.YUV444P10 || got.MaxBitrateMbps != 150 || !got.SystemKeysCapture {
-		t.Fatalf("drawer settings = %+v", got)
+	got, ov := f.Settings(), f.override("h-bigboi")
+	if ov.Chroma != "444" || ov.BitDepth != "10" || ov.BitrateMbps != 150 || !got.SystemKeysCapture {
+		t.Fatalf("drawer settings = %+v, overrides %+v", got, ov)
 	}
 	if f.keyframes != 1 {
 		t.Fatalf("keyframes = %d", f.keyframes)

@@ -13,6 +13,7 @@ import (
 	"github.com/planckdotgg/planck/pkg/audio"
 	"github.com/planckdotgg/planck/pkg/config"
 	"github.com/planckdotgg/planck/pkg/decode"
+	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/encode"
 	"github.com/planckdotgg/planck/pkg/input"
@@ -138,7 +139,7 @@ func TestBackendSettingsAndHosting(t *testing.T) {
 	dir := t.TempDir()
 	b, _ := newTestBackend(t, dir, nil)
 	s := b.Settings()
-	s.Codec, s.Chroma, s.TargetFPS, s.MaxBitrateMbps, s.AudioEnabled, s.Encoder = encode.AV1, encode.P010, 240, 80, false, "Test GPU"
+	s.AudioEnabled, s.Encoder = false, "Test GPU"
 	if err := b.SaveSettings(s); err != nil {
 		t.Fatal(err)
 	}
@@ -146,10 +147,10 @@ func TestBackendSettingsAndHosting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.PreferredCodec != "av1" || stored.PreferredChroma != "p010" || stored.TargetFPS != 240 || stored.MaxBitrateKbps != 80_000 || stored.AudioEnabled {
+	if stored.AudioEnabled {
 		t.Fatalf("stored: %+v", stored)
 	}
-	if got := settingsFrom(stored); got.Codec != encode.AV1 || got.Chroma != encode.P010 || got.MaxBitrateMbps != 80 {
+	if got := settingsFrom(stored); got.AudioEnabled {
 		t.Fatalf("settings read back: %+v", got)
 	}
 
@@ -205,4 +206,142 @@ func TestBackendSinkFailsAfterPairing(t *testing.T) {
 		t.Fatalf("connect to the paired host: %v", err)
 	}
 	waitUntil(t, "the stream", func() bool { return b.Telemetry().Connected })
+}
+
+// TestBackendOverridesPersist: overrides for every host and for one host
+// survive a restart, a host's knobs win over every host's and the command
+// line's over both, all-auto host overrides leave client.json, and an
+// invalid knob is refused.
+func TestBackendOverridesPersist(t *testing.T) {
+	dir := t.TempDir()
+	b, _ := newTestBackend(t, dir, nil)
+	all := defaults.UserOverrides{Codec: "hevc", FPS: "120", BitrateMbps: 200}
+	host := defaults.UserOverrides{Codec: "av1", Chroma: "444", Resolution: "custom", CustomWidth: 2560, CustomHeight: 1600}
+	if err := b.SaveOverrides("", all); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.SaveOverrides("h1", host); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.SaveOverrides("h1", defaults.UserOverrides{Codec: "vp9"}); err == nil {
+		t.Fatal("codec vp9 accepted")
+	}
+
+	b2, _ := newTestBackend(t, dir, nil)
+	if got := b2.Overrides(""); got != all.Normalize() {
+		t.Fatalf("all hosts after a restart: %+v", got)
+	}
+	if got := b2.Overrides("h1"); got != host.Normalize() {
+		t.Fatalf("h1 after a restart: %+v", got)
+	}
+	if got := b2.Overrides("h2"); got != (defaults.UserOverrides{}) {
+		t.Fatalf("h2 has overrides: %+v", got)
+	}
+	got := b2.overridesFor("h1")
+	if got.Codec != "av1" || got.Chroma != "444" || got.FPS != "120" || got.BitrateMbps != 200 || got.CustomWidth != 2560 {
+		t.Fatalf("h1 merged: %+v", got)
+	}
+	if got := b2.overridesFor("h2"); got.Codec != "hevc" || got.Chroma != defaults.Auto {
+		t.Fatalf("h2 merged: %+v", got)
+	}
+	b2.overrides = defaults.UserOverrides{Codec: "h264"}
+	if got := b2.overridesFor("h1"); got.Codec != "h264" || got.Chroma != "444" {
+		t.Fatalf("command line over h1: %+v", got)
+	}
+
+	if err := b2.SaveOverrides("h1", defaults.UserOverrides{}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := config.LoadClientConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := stored.HostOverrides["h1"]; ok || stored.Overrides != all.Normalize() {
+		t.Fatalf("after resetting h1: %+v, all %+v", stored.HostOverrides, stored.Overrides)
+	}
+}
+
+// TestBackendOverridesRestartStream: changing the streaming host's
+// overrides reconnects with them; another host's leave the stream alone.
+func TestBackendOverridesRestartStream(t *testing.T) {
+	h := startFakeHost(t, "off")
+	b, _ := newTestBackend(t, t.TempDir(), nil)
+	ctx := context.Background()
+	if err := b.Connect(ctx, h.Addr().String()); !errors.Is(err, ui.ErrPairingRequired) {
+		t.Fatalf("connect unpaired: %v", err)
+	}
+	if err := b.SubmitPIN(ctx, "246810"); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "the stream", func() bool { return b.Telemetry().Connected })
+	tel := b.Telemetry()
+	if tel.HostID != "addr:"+h.Addr().String() {
+		t.Fatalf("telemetry host ID %q, want the pin key", tel.HostID)
+	}
+	first := b.current()
+	if err := b.SaveOverrides("someone-else", defaults.UserOverrides{FPS: "60"}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if b.current() != first {
+		t.Fatal("another host's overrides restarted the stream")
+	}
+	if err := b.SaveOverrides(tel.HostID, defaults.UserOverrides{FPS: "60"}); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "a new stream", func() bool {
+		c := b.current()
+		return c != nil && c != first && c.Stats().Connected
+	})
+}
+
+func TestTelemetryProfile(t *testing.T) {
+	p := &defaults.ResolvedProfile{Codec: defaults.CodecHEVC, BitDepth: 10, Width: 1920, Height: 1080, FPS: 120}
+	tel := telemetry(session.ClientStats{Connected: true, HostID: "h1", Profile: p})
+	if tel.HostID != "h1" || tel.Profile != p {
+		t.Fatalf("%+v", tel)
+	}
+	if tel := telemetry(session.ClientStats{Addr: "10.0.0.2:47700"}); tel.HostID != "addr:10.0.0.2:47700" {
+		t.Fatalf("host without an ID: %q", tel.HostID)
+	}
+}
+
+func TestLegacyQuality(t *testing.T) {
+	for _, tc := range []struct {
+		o    defaults.UserOverrides
+		want session.Quality
+	}{
+		{defaults.UserOverrides{}.Normalize(), session.Quality{}},
+		{defaults.UserOverrides{Codec: "pyrowave", Chroma: "444"}, session.Quality{Chroma: encode.YUV444}},
+		{defaults.UserOverrides{Codec: "av1", BitDepth: "10", FPS: "144", SubFrameSlices: "4", BitrateMbps: 80},
+			session.Quality{Codec: encode.AV1, Chroma: encode.P010, FPS: 144, Slices: 4, BitrateKbps: 80_000}},
+		{defaults.UserOverrides{Codec: "h264", Chroma: "444", BitDepth: "10"}, session.Quality{Codec: encode.H264, Chroma: encode.YUV444P10}},
+		{defaults.UserOverrides{Chroma: "420"}, session.Quality{Chroma: encode.NV12}},
+	} {
+		if got := legacyQuality(tc.o); got != tc.want {
+			t.Errorf("%+v: %+v, want %+v", tc.o, got, tc.want)
+		}
+	}
+}
+
+func TestRouteAllowed(t *testing.T) {
+	lan := discovery.Candidate{Kind: discovery.PathLANDirect, Addr: netip.MustParseAddrPort("192.168.1.20:47700")}
+	ts := discovery.Candidate{Kind: discovery.PathTailscaleDirect, Addr: netip.MustParseAddrPort("100.64.0.7:47700")}
+	t0 := session.Target{Candidates: []discovery.Candidate{lan, ts}, Addr: "100.64.0.7:47701"}
+	got, err := routeAllowed(t0, "lan")
+	if err != nil || len(got.Candidates) != 1 || got.Candidates[0] != lan || got.Addr != "" {
+		t.Fatalf("lan: %+v, %v", got, err)
+	}
+	if len(t0.Candidates) != 2 {
+		t.Fatalf("routeAllowed changed its argument: %+v", t0)
+	}
+	if got, err := routeAllowed(t0, "tailscale"); err != nil || len(got.Candidates) != 1 || got.Candidates[0] != ts || got.Addr != t0.Addr {
+		t.Fatalf("tailscale: %+v, %v", got, err)
+	}
+	if got, err := routeAllowed(t0, "auto"); err != nil || len(got.Candidates) != 2 {
+		t.Fatalf("auto: %+v, %v", got, err)
+	}
+	if _, err := routeAllowed(session.Target{Candidates: []discovery.Candidate{ts}}, "lan"); err == nil {
+		t.Fatal("lan with only a tailnet route: no error")
+	}
 }

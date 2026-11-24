@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -39,7 +41,7 @@ type backend struct {
 	hostConfig func(s ui.Settings) session.HostConfig
 	encoders   []ui.EncoderInfo
 	logf       func(string, ...any)
-	// routeConfig tunes the route monitor; Settings.PreferLAN sets its
+	// routeConfig tunes the route monitor; the route override sets its
 	// PreferLAN.
 	routeConfig session.RouteConfig
 	// overrides are the command line's, over the stored ones.
@@ -59,6 +61,9 @@ type backend struct {
 	aliases  map[string]string
 	// connected is the pin key of the host streaming now.
 	connected string
+	// stored are client.json's overrides: for every host, and by host ID.
+	storedAll   defaults.UserOverrides
+	storedHosts map[string]defaults.UserOverrides
 }
 
 type backendConfig struct {
@@ -87,7 +92,8 @@ func newBackend(c backendConfig) (*backend, error) {
 		return nil, err
 	}
 	b := &backend{dir: dir, name: c.name, finder: c.finder, ts: c.tailscale, openSink: c.openSink, hostConfig: c.hostConfig,
-		encoders: c.encoders, logf: c.logf, routeConfig: c.route, overrides: c.overrides, settings: settingsFrom(stored), pinned: stored.PinnedHosts, aliases: stored.HostAliases}
+		encoders: c.encoders, logf: c.logf, routeConfig: c.route, overrides: c.overrides, settings: settingsFrom(stored), pinned: stored.PinnedHosts, aliases: stored.HostAliases,
+		storedAll: stored.Overrides, storedHosts: stored.HostOverrides}
 	host, err := config.LoadHostConfig(dir)
 	if err != nil {
 		return nil, err
@@ -103,10 +109,7 @@ func newBackend(c backendConfig) (*backend, error) {
 // settingsFrom reads the stored preferences; the UI's other settings
 // start at their defaults each run.
 func settingsFrom(c config.ClientConfig) ui.Settings {
-	s := ui.Settings{TargetFPS: c.TargetFPS, MaxBitrateMbps: c.MaxBitrateKbps / 1000, Slices: 1, AudioEnabled: c.AudioEnabled, PreferLAN: true}
-	s.Codec, _ = session.ParseCodec(c.PreferredCodec)
-	s.Chroma, _ = session.ParseChroma(c.PreferredChroma)
-	return s
+	return ui.Settings{AudioEnabled: c.AudioEnabled}
 }
 
 func (b *backend) Subscribe(fn func()) {
@@ -352,18 +355,19 @@ func (b *backend) dial(ctx context.Context, t session.Target, pin string) error 
 	if old != nil {
 		old.Disconnect()
 	}
-	ov := b.overrides
-	if stored, err := config.LoadClientConfig(b.dir); err == nil {
-		ov = defaults.Merge(stored.OverridesFor(t.HostID), b.overrides)
+	ov := b.overridesFor(targetKey(t))
+	routes, err := routeAllowed(t, ov.RoutePolicy)
+	if err != nil {
+		return err
 	}
 	c, err := session.NewClient(session.ClientConfig{
-		ConfigDir: b.dir, Name: b.name, PIN: pin, NoAudio: !s.AudioEnabled, Quality: quality(s), Overrides: ov,
-		OpenSink: b.openSink, Tailscale: b.ts, Logf: b.logf, Route: b.route(s),
+		ConfigDir: b.dir, Name: b.name, PIN: pin, NoAudio: !s.AudioEnabled, Quality: legacyQuality(ov), Overrides: ov,
+		OpenSink: b.openSink, Tailscale: b.ts, Logf: b.logf, Route: b.route(ov),
 	})
 	if err != nil {
 		return err
 	}
-	err = c.Connect(ctx, t)
+	err = c.Connect(ctx, routes)
 	// The session pins a host as soon as it accepts this device, before
 	// the stream starts, which may still fail.
 	b.reloadPins()
@@ -373,7 +377,7 @@ func (b *backend) dial(ctx context.Context, t session.Target, pin string) error 
 	st := c.Stats()
 	b.mu.Lock()
 	b.client, b.target = c, t
-	b.connected = cmp.Or(st.HostID, "addr:"+st.Addr)
+	b.connected = hostKey(st)
 	b.tel = telemetry(st)
 	b.mu.Unlock()
 	b.changed()
@@ -403,8 +407,65 @@ func newPin(before, after map[string]config.PinnedHost) bool {
 	return false
 }
 
-func quality(s ui.Settings) session.Quality {
-	return session.Quality{Codec: s.Codec, Chroma: s.Chroma, FPS: s.TargetFPS, BitrateKbps: s.MaxBitrateMbps * 1000, Slices: s.Slices}
+// hostKey is the key a stream's host is pinned, listed and given its own
+// overrides under: its host ID, or its address when it sent none.
+func hostKey(s session.ClientStats) string { return cmp.Or(s.HostID, "addr:"+s.Addr) }
+
+// targetKey is hostKey before the stream starts.
+func targetKey(t session.Target) string { return cmp.Or(t.HostID, "addr:"+t.Addr) }
+
+// legacyQuality is what o asks of a host that does not resolve streams
+// from both ends' capabilities.
+func legacyQuality(o defaults.UserOverrides) session.Quality {
+	var q session.Quality
+	if o.Codec != "" && o.Codec != defaults.Auto && o.Codec != "pyrowave" {
+		q.Codec, _ = session.ParseCodec(string(o.Codec))
+	}
+	switch {
+	case o.Chroma == "444" && o.BitDepth == "10":
+		q.Chroma = encode.YUV444P10
+	case o.Chroma == "444":
+		q.Chroma = encode.YUV444
+	case o.BitDepth == "10":
+		q.Chroma = encode.P010
+	case o.Chroma == "420" || o.BitDepth == "8":
+		q.Chroma = encode.NV12
+	}
+	q.FPS, _ = strconv.Atoi(string(o.FPS))
+	q.Slices, _ = strconv.Atoi(string(o.SubFrameSlices))
+	q.BitrateKbps = o.BitrateMbps * 1000
+	return q
+}
+
+// overridesFor is what a stream from hostID asks for: the stored
+// overrides, the host's over every host's, with the command line's on top.
+func (b *backend) overridesFor(hostID string) defaults.UserOverrides {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return defaults.Merge(defaults.Merge(b.storedAll, b.storedHosts[hostID]), b.overrides)
+}
+
+// routeAllowed keeps t's routes the route override allows.
+func routeAllowed(t session.Target, policy defaults.RoutePref) (session.Target, error) {
+	if policy != "lan" && policy != "tailscale" {
+		return t, nil
+	}
+	allowed := func(ip netip.Addr) bool { return (kindOf(ip) == discovery.PathLANDirect) == (policy == "lan") }
+	t.Candidates = slices.DeleteFunc(slices.Clone(t.Candidates), func(c discovery.Candidate) bool { return !allowed(c.Addr.Addr()) })
+	if ap, err := netip.ParseAddrPort(t.Addr); err == nil && !allowed(ap.Addr()) {
+		t.Addr = ""
+	}
+	if len(t.Candidates) == 0 && t.Addr == "" {
+		return t, fmt.Errorf("the route setting is %s, and the host has no %s route", policy, routeName(policy))
+	}
+	return t, nil
+}
+
+func routeName(p defaults.RoutePref) string {
+	if p == "lan" {
+		return "LAN"
+	}
+	return "Tailscale"
 }
 
 // follow samples c's stats for the HUD until its session ends or another
@@ -441,7 +502,7 @@ func (b *backend) follow(c *session.Client) {
 
 func telemetry(s session.ClientStats) ui.Telemetry {
 	t := ui.Telemetry{
-		Connected: s.Connected, HostName: s.HostName, FPS: s.FPS, Width: s.Width, Height: s.Height,
+		Connected: s.Connected, HostName: s.HostName, HostID: hostKey(s), Profile: s.Profile, FPS: s.FPS, Width: s.Width, Height: s.Height,
 		EncodeMs: s.Encode.P50, NetMs: s.Network.P50, DecodeMs: s.Decode.P50, PresentMs: s.Present.P50, TotalMs: s.E2E.P50,
 		BitrateMbps: s.Kbps / 1000, FECPct: s.FECParityPct, LossPct: s.LossPct, AudioBufMs: s.AudioBufferMs,
 		DatagramBytes: s.DatagramBytes,
@@ -577,13 +638,7 @@ func (b *backend) SaveSettings(s ui.Settings) error {
 		}
 	}
 	err := config.UpdateClientConfig(b.dir, func(stored *config.ClientConfig) error {
-		if s.Codec != 0 {
-			stored.PreferredCodec = configName(s.Codec)
-		}
-		if s.Chroma != 0 {
-			stored.PreferredChroma = configName(s.Chroma)
-		}
-		stored.TargetFPS, stored.MaxBitrateKbps, stored.AudioEnabled = s.TargetFPS, s.MaxBitrateMbps*1000, s.AudioEnabled
+		stored.AudioEnabled = s.AudioEnabled
 		return nil
 	})
 	if err != nil {
@@ -592,19 +647,75 @@ func (b *backend) SaveSettings(s ui.Settings) error {
 	b.mu.Lock()
 	before = b.settings
 	b.settings = s
+	b.mu.Unlock()
+	if before.AudioEnabled != s.AudioEnabled {
+		b.redial()
+	}
+	return nil
+}
+
+// redial restarts a live stream in the background, as protocol v1 fixes
+// its format at the handshake.
+func (b *backend) redial() {
+	b.mu.Lock()
 	live, t := b.client != nil, b.target
 	b.mu.Unlock()
-	if c := b.current(); c != nil && before.PreferLAN != s.PreferLAN {
-		c.SetPreferLAN(s.PreferLAN)
+	if !live {
+		return
 	}
-	if live && (quality(before) != quality(s) || before.AudioEnabled != s.AudioEnabled) {
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel()
-			if err := b.dial(ctx, t, ""); err != nil {
-				b.logf("planck: reconnect with the new settings: %v", err)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := b.dial(ctx, t, ""); err != nil {
+			b.logf("planck: reconnect with the new settings: %v", err)
+		}
+	}()
+}
+
+func (b *backend) Overrides(hostID string) defaults.UserOverrides {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if hostID == "" {
+		return b.storedAll
+	}
+	return b.storedHosts[hostID]
+}
+
+// SaveOverrides stores o, and restarts a live stream whose overrides it
+// changes. A host's all-auto overrides are dropped from client.json.
+func (b *backend) SaveOverrides(hostID string, o defaults.UserOverrides) error {
+	o = o.Normalize()
+	if err := o.Validate(); err != nil {
+		return err
+	}
+	b.mu.Lock()
+	streaming := targetKey(b.target)
+	b.mu.Unlock()
+	before := b.overridesFor(streaming)
+	auto := o == defaults.UserOverrides{}.Normalize()
+	err := config.UpdateClientConfig(b.dir, func(stored *config.ClientConfig) error {
+		switch {
+		case hostID == "":
+			stored.Overrides = o
+		case auto:
+			delete(stored.HostOverrides, hostID)
+		default:
+			if stored.HostOverrides == nil {
+				stored.HostOverrides = map[string]defaults.UserOverrides{}
 			}
-		}()
+			stored.HostOverrides[hostID] = o
+		}
+		b.mu.Lock()
+		b.storedAll, b.storedHosts = stored.Overrides, maps.Clone(stored.HostOverrides)
+		b.mu.Unlock()
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	b.changed()
+	if after := b.overridesFor(streaming); after.Normalize() != before.Normalize() {
+		b.redial()
 	}
 	return nil
 }
@@ -624,33 +735,12 @@ func (b *backend) renameLocalHost(h *session.Host, name string) error {
 	})
 }
 
-// route is how the stream follows the host between routes.
-func (b *backend) route(s ui.Settings) session.RouteConfig {
+// route is how the stream follows the host between routes: to the LAN
+// unless the route override keeps it on Tailscale.
+func (b *backend) route(o defaults.UserOverrides) session.RouteConfig {
 	r := b.routeConfig
-	r.PreferLAN = s.PreferLAN
+	r.PreferLAN = o.RoutePolicy != "tailscale"
 	return r
-}
-
-// configName is the lower-case name pkg/config stores a codec or chroma
-// under.
-func configName(v fmt.Stringer) string {
-	switch v {
-	case encode.H264:
-		return "h264"
-	case encode.HEVC:
-		return "hevc"
-	case encode.AV1:
-		return "av1"
-	case encode.NV12:
-		return "nv12"
-	case encode.P010:
-		return "p010"
-	case encode.YUV444:
-		return "yuv444"
-	case encode.YUV444P10:
-		return "yuv444p10"
-	}
-	return strings.ToLower(v.String())
 }
 
 func (b *backend) Pairing() ui.PairState {

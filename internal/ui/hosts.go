@@ -237,6 +237,9 @@ func (a *App) slicePlate(c *mui.Context, h HostInfo, st cardState, hover bool) {
 			}
 			caption(c, text).TextColor(col).FontWeight(weight).SingleLine()
 			mui.Spacer(c)
+			if h.Paired {
+				a.streamSettingsButton(c, h, hover)
+			}
 			a.pencil(c, h, hover)
 		})
 		sliceStack(c, cardInner, plateSlices(h, st))
@@ -278,6 +281,22 @@ func (a *App) pencil(c *mui.Context, h HostInfo, hover bool) {
 		} else {
 			a.renaming, a.renameText, a.renameOpen, a.renameErr = h.ID, h.Name, true, ""
 		}
+	}
+}
+
+// streamSettingsButton opens Settings on the host's own stream format.
+func (a *App) streamSettingsButton(c *mui.Context, h HostInfo, hover bool) {
+	b := mui.ButtonBase(c).Size(theme.SizeTargetMin, theme.SizeTargetMin).Margin(-4).Shrink(0).
+		Radius(theme.RadiusXs).Label("Stream settings for " + h.Name).Cursor(mui.CursorPointer)
+	fg := theme.RoleText3
+	if hover || b.Hovered() {
+		fg = theme.RoleText
+	}
+	b.Children(func() {
+		mui.Icon(c, theme.IconSetting).Size(theme.SizeIcon, theme.SizeIcon).TextColor(fg)
+	})
+	if b.Clicked() {
+		a.openHostSettings(h)
 	}
 }
 

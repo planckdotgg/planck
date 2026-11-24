@@ -8,22 +8,19 @@ import (
 	"github.com/planckdotgg/planck/internal/ui/theme"
 )
 
-var (
-	fpsChoices = []int{0, 60, 120, 240}
-	fpsLabels  = []string{"Match display", "60", "120", "240"}
-	// sliceChoices: 1 encodes whole frames.
-	sliceChoices = []int{1, 2, 4, 8}
-	sliceLabels  = []string{"Off", "2", "4", "8"}
-)
-
 const minBitrateMbps = 5
 
 func (a *App) settingsScreen(c *mui.Context) {
 	before := a.backend.Settings()
 	s := before
+	scope := a.settingsScope()
+	e := a.editOverrides(scope)
 	a.mu.Lock()
 	saveErr := a.settingsErr
 	a.mu.Unlock()
+	if a.drafts.err != "" {
+		saveErr = a.drafts.err
+	}
 
 	pageHeader(c, "Settings", "", nil)
 	if saveErr != "" {
@@ -32,39 +29,73 @@ func (a *App) settingsScreen(c *mui.Context) {
 			label(c, "Could not save settings: "+saveErr).TextColor(theme.RoleFault)
 		})
 	}
+	a.scopeBar(c, e)
 	mui.Row(c).FillWidth().Gap(theme.Space5).AlignItems(mui.Start).Wrap().Children(func() {
 		mui.Column(c).Grow(1).Basis(0).MinWidth(440).Gap(theme.Space5).Children(func() {
-			videoPanel(c, &s)
-			audioInputPanel(c, &s)
+			a.videoOverridePanel(c, e)
+			a.hostOverridePanel(c, e)
 		})
 		mui.Column(c).Grow(1).Basis(0).MinWidth(440).Gap(theme.Space5).Children(func() {
+			a.presentOverridePanel(c, e)
 			a.hostingPanel(c, &s)
 			a.encoderPanel(c, &s)
-			a.networkPanel(c, &s)
+			a.networkPanel(c)
+			audioInputPanel(c, &s)
 		})
 	})
 	a.saveSettings(before, s)
+	a.saveOverrides(e)
 }
 
-func videoPanel(c *mui.Context, s *Settings) {
-	panel(c, "Video", "", func() {
-		settingRow(c, "Codec", "", func() { pickFrom(c, "Codec", codecChoices, codecLabels, &s.Codec) })
-		divider(c)
-		settingRow(c, "Chroma", "4:4:4 keeps text and UI sharp. NVENC and oneVPL encode it; AMF and Apple Silicon encode 4:2:0.",
-			func() { pickFrom(c, "Chroma", chromaChoices, chromaLabels, &s.Chroma) })
-		divider(c)
-		settingRow(c, "Frame rate", "", func() { pickFrom(c, "Frame rate", fpsChoices, fpsLabels, &s.TargetFPS) })
-		divider(c)
-		mui.Column(c).FillWidth().Padding(theme.Space4, theme.Space5).Gap(theme.Space3).Children(func() {
-			mui.Row(c).FillWidth().AlignItems(mui.Baseline).Children(func() {
-				label(c, "Maximum bitrate").FontWeight(500).Grow(1)
-				hudReading(c, fmt.Sprint(s.MaxBitrateMbps), "Mbps")
-			})
-			v := float64(s.MaxBitrateMbps)
-			if mui.StepSlider(c, &v, minBitrateMbps, float64(lanCapMbps()), 1).Label("Maximum bitrate").FillWidth().Changed() {
-				s.MaxBitrateMbps = int(v)
+// settingsScope is the scope Settings edits: every host, or a paired host
+// picked in the scope bar or from its card.
+func (a *App) settingsScope() overrideScope {
+	if a.ovScope.all() {
+		return overrideScope{name: "All hosts"}
+	}
+	for _, h := range a.backend.Hosts() {
+		if h.ID == a.ovScope.hostID {
+			a.ovScope.name = h.Name
+		}
+	}
+	return a.ovScope
+}
+
+// scopeBar picks whose stream format Settings edits, and resets it.
+func (a *App) scopeBar(c *mui.Context, e *overrideEdit) {
+	scopes := []overrideScope{{name: "All hosts"}}
+	for _, h := range a.backend.Hosts() {
+		if h.Paired || h.ID == a.ovScope.hostID {
+			scopes = append(scopes, overrideScope{hostID: h.ID, name: h.Name})
+		}
+	}
+	names := make([]string, len(scopes))
+	sel := 0
+	for i, sc := range scopes {
+		names[i] = sc.name
+		if sc.hostID == e.scope.hostID {
+			sel = i
+		}
+	}
+	mui.Row(c).FillWidth().AlignItems(mui.Center).Gap(theme.Space4).Wrap().Children(func() {
+		mui.Column(c).Gap(2).Children(func() {
+			label(c, "Stream format for").FontWeight(500)
+			desc := "Every knob on Auto lets the host and this client choose."
+			if !e.scope.all() {
+				desc = "Auto here follows all hosts."
 			}
+			secondary(c, desc)
 		})
+		c.Key("override-scope")
+		if segmented(c, "Stream format for", &sel, names...) {
+			a.ovScope = scopes[sel]
+			a.drafts.err = ""
+		}
+		mui.Spacer(c)
+		if button(c, buttonSecondary, "Reset to Auto", false).Clicked() {
+			e.resetToAuto()
+			a.drafts.err = ""
+		}
 	})
 }
 
@@ -108,11 +139,6 @@ func (a *App) encoderPanel(c *mui.Context, s *Settings) {
 				caption(c, "Encode times are p50, measured on this machine.")
 			})
 		}
-		divider(c)
-		settingRow(c, "Sub-frame slices", "Encode each frame in parts so the first part leaves sooner.",
-			func() { pickFrom(c, "Sub-frame slices", sliceChoices, sliceLabels, &s.Slices) })
-		divider(c)
-		switchRow(c, "Send slices as they finish", "The client starts decoding before the whole frame arrives.", &s.SubFrame, true)
 	})
 }
 
@@ -144,7 +170,7 @@ func encoderOption(c *mui.Context, s *Settings, value, name, detail, reading str
 	})
 }
 
-func (a *App) networkPanel(c *mui.Context, s *Settings) {
+func (a *App) networkPanel(c *mui.Context) {
 	ts := a.backend.Tailnet()
 	panel(c, "Network and Tailscale", "", func() {
 		settingRow(c, "Tailscale", "Planck reads the local Tailscale client. Nothing else to install.", func() {
@@ -158,8 +184,6 @@ func (a *App) networkPanel(c *mui.Context, s *Settings) {
 				statusPill(c, 0, theme.RoleText3, "Not running")
 			}
 		})
-		divider(c)
-		switchRow(c, "Prefer LAN on the same network", "Use the local network when it reaches the host, even if Tailscale does too.", &s.PreferLAN, true)
 		divider(c)
 		settingRow(c, "Relay bitrate cap", "Over a DERP relay the stream stays under this until a direct path opens.", func() {
 			mui.Row(c).Gap(theme.Space2).AlignItems(mui.Center).Children(func() {
