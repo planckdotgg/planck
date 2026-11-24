@@ -36,6 +36,10 @@ const (
 	MsgRefInvalidate
 	MsgStatsReport
 	MsgGoodbye
+	// MsgCapabilities goes both ways, once, right after AuthOK.
+	MsgCapabilities MsgType = 10
+	// MsgProfile goes host to client, right after SessionReady.
+	MsgProfile MsgType = 11
 )
 
 // Message is a control-stream message. The set is closed: only types in this
@@ -70,6 +74,9 @@ const (
 	// FeatureInputDedup, from a host, says it drops input events whose Seq
 	// it has seen, so the client may send redundant copies.
 	FeatureInputDedup uint32 = 1 << 1
+	// FeatureCapabilities says the peer sends and reads Capabilities and
+	// Profile. Both Hellos must carry it before either message is sent.
+	FeatureCapabilities uint32 = 1 << 2
 )
 
 type AuthMethod uint8
@@ -112,6 +119,8 @@ const (
 	CodecH264 Codec = iota + 1
 	CodecHEVC
 	CodecAV1
+	// CodecPyroWave is only sent when both Hellos carry FeatureCapabilities.
+	CodecPyroWave
 )
 
 type Chroma uint8
@@ -162,6 +171,24 @@ type StatsReport struct {
 	ReceivedKbps    uint32
 }
 
+// MaxCapsJSON bounds the JSON in Capabilities and Profile.
+const MaxCapsJSON = 48 << 10
+
+// Capabilities carries JSON: pkg/defaults HostCapabilities from the host;
+// from the client, {"v":1,"client":ClientCapabilities,"route":RouteInfo,"overrides":UserOverrides}.
+// pkg/wire treats it as opaque, so the JSON schema can grow without a
+// protocol bump.
+type Capabilities struct {
+	Role Role
+	JSON []byte
+}
+
+// Profile carries the host's pkg/defaults ResolvedProfile as JSON, for the
+// client UI and player.
+type Profile struct {
+	JSON []byte
+}
+
 type GoodbyeReason uint8
 
 const (
@@ -185,6 +212,8 @@ func (*PLI) Type() MsgType           { return MsgPLI }
 func (*RefInvalidate) Type() MsgType { return MsgRefInvalidate }
 func (*StatsReport) Type() MsgType   { return MsgStatsReport }
 func (*Goodbye) Type() MsgType       { return MsgGoodbye }
+func (*Capabilities) Type() MsgType  { return MsgCapabilities }
+func (*Profile) Type() MsgType       { return MsgProfile }
 
 func (m *Hello) appendBody(b []byte) []byte {
 	b = binary.BigEndian.AppendUint16(b, m.Version)
@@ -305,9 +334,32 @@ func (m *Goodbye) decodeBody(d *decoder) {
 	m.Message = d.str()
 }
 
+func (m *Capabilities) appendBody(b []byte) []byte {
+	return appendJSON(append(b, byte(m.Role)), m.JSON)
+}
+
+func (m *Capabilities) decodeBody(d *decoder) {
+	m.Role = Role(d.u8())
+	m.JSON = d.json()
+}
+
+func (m *Capabilities) bodyTooLarge() bool { return len(m.JSON) > MaxCapsJSON }
+
+func (m *Profile) appendBody(b []byte) []byte { return appendJSON(b, m.JSON) }
+func (m *Profile) decodeBody(d *decoder)      { m.JSON = d.json() }
+func (m *Profile) bodyTooLarge() bool         { return len(m.JSON) > MaxCapsJSON }
+
+func appendJSON(b, js []byte) []byte {
+	b = binary.BigEndian.AppendUint32(b, uint32(len(js)))
+	return append(b, js...)
+}
+
 // AppendMessage appends m as a control frame: a 32-bit big-endian length,
 // then the type byte and the body.
 func AppendMessage(b []byte, m Message) ([]byte, error) {
+	if l, ok := m.(interface{ bodyTooLarge() bool }); ok && l.bodyTooLarge() {
+		return b, ErrTooLarge
+	}
 	start := len(b)
 	b = append(b, 0, 0, 0, 0, byte(m.Type()))
 	b = m.appendBody(b)
@@ -361,6 +413,9 @@ func DecodeMessage(body []byte) (Message, error) {
 	}
 	d := decoder{b: body[1:]}
 	m.decodeBody(&d)
+	if d.tooLarge {
+		return nil, ErrTooLarge
+	}
 	if d.bad || len(d.b) != 0 {
 		return nil, ErrMalformed
 	}
@@ -387,6 +442,10 @@ func newMessage(t MsgType) Message {
 		return &StatsReport{}
 	case MsgGoodbye:
 		return &Goodbye{}
+	case MsgCapabilities:
+		return &Capabilities{}
+	case MsgProfile:
+		return &Profile{}
 	}
 	return nil
 }
@@ -407,8 +466,9 @@ func appendString(b []byte, s string) []byte {
 }
 
 type decoder struct {
-	b   []byte
-	bad bool
+	b        []byte
+	bad      bool
+	tooLarge bool
 }
 
 func (d *decoder) take(n int) []byte {
@@ -473,4 +533,14 @@ func (d *decoder) str() string {
 		return ""
 	}
 	return string(d.take(n))
+}
+
+// json reads a u32-length JSON blob into a fresh slice (nil when empty).
+func (d *decoder) json() []byte {
+	n := d.u32()
+	if n > MaxCapsJSON {
+		d.bad, d.tooLarge = true, true
+		return nil
+	}
+	return append([]byte(nil), d.take(int(n))...)
 }

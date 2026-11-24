@@ -2,10 +2,18 @@ package wire
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
+	"flag"
+	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/planckdotgg/planck/pkg/defaults"
 )
 
 func allMessages() []Message {
@@ -24,6 +32,8 @@ func allMessages() []Message {
 		&StatsReport{RTTMicros: 300, JitterMicros: 50, LossPermille: 20, FramesReceived: 1000,
 			FramesDropped: 2, FramesRecovered: 15, DecodeMicros: 900, ReceivedKbps: 98000},
 		&Goodbye{Reason: GoodbyeNormal, Message: "bye"},
+		&Capabilities{Role: RoleClient, JSON: []byte(`{"v":1,"client":{"os":"darwin"},"route":{"kind":1},"overrides":{"codec":"pyrowave"}}`)},
+		&Profile{JSON: []byte(`{"route":1,"maxDatagram":1452,"codec":4}`)},
 	}
 }
 
@@ -45,6 +55,100 @@ func TestControlRoundTrip(t *testing.T) {
 	}
 	if _, err := ReadMessage(&stream); err != io.EOF {
 		t.Fatalf("after last message: %v, want EOF", err)
+	}
+}
+
+var update = flag.Bool("update", false, "rewrite testdata/golden")
+
+// TestControlGolden pins the encoding of every control message, so a
+// change that would break an older peer fails here.
+func TestControlGolden(t *testing.T) {
+	for _, m := range allMessages() {
+		name := fmt.Sprintf("%02d_%s", m.Type(), strings.ToLower(strings.TrimPrefix(fmt.Sprintf("%T", m), "*wire.")))
+		t.Run(name, func(t *testing.T) {
+			b, err := AppendMessage(nil, m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join("testdata", "golden", name+".hex")
+			if *update {
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(hex.EncodeToString(b)+"\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			want, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := hex.EncodeToString(b); got != strings.TrimSpace(string(want)) {
+				t.Fatalf("encoding changed:\n got %s\nwant %s", got, want)
+			}
+		})
+	}
+}
+
+func TestCapabilitiesLimits(t *testing.T) {
+	for _, m := range []Message{
+		&Capabilities{Role: RoleHost, JSON: make([]byte, MaxCapsJSON+1)},
+		&Profile{JSON: make([]byte, MaxCapsJSON+1)},
+	} {
+		if _, err := AppendMessage(nil, m); !errors.Is(err, ErrTooLarge) {
+			t.Errorf("encode %T over the limit: %v, want ErrTooLarge", m, err)
+		}
+	}
+	over := []byte{byte(MsgCapabilities), byte(RoleHost), 0, 0, 0xc0, 1}
+	if _, err := DecodeMessage(over); !errors.Is(err, ErrTooLarge) {
+		t.Errorf("decode Capabilities length %d: %v, want ErrTooLarge", MaxCapsJSON+1, err)
+	}
+	if _, err := DecodeMessage([]byte{byte(MsgProfile), 0xff, 0xff, 0xff, 0xff}); !errors.Is(err, ErrTooLarge) {
+		t.Errorf("decode Profile length 4G: %v, want ErrTooLarge", err)
+	}
+	if _, err := DecodeMessage([]byte{byte(MsgProfile), 0, 0, 0, 5, '{', '}'}); !errors.Is(err, ErrMalformed) {
+		t.Errorf("decode short Profile: %v, want ErrMalformed", err)
+	}
+	m, err := DecodeMessage([]byte{byte(MsgProfile), 0, 0, 0, 0})
+	if err != nil || m.(*Profile).JSON != nil {
+		t.Errorf("empty Profile: %#v %v", m, err)
+	}
+	if b, err := AppendMessage(nil, &Capabilities{Role: RoleHost, JSON: make([]byte, MaxCapsJSON)}); err != nil || len(b) != 4+1+1+4+MaxCapsJSON {
+		t.Errorf("Capabilities at the limit: len %d err %v", len(b), err)
+	}
+}
+
+// TestCodecValuesMatchDefaults: the host copies pkg/defaults codecs onto the
+// wire by value.
+func TestCodecValuesMatchDefaults(t *testing.T) {
+	pairs := [][2]uint8{
+		{uint8(CodecH264), uint8(defaults.CodecH264)},
+		{uint8(CodecHEVC), uint8(defaults.CodecHEVC)},
+		{uint8(CodecAV1), uint8(defaults.CodecAV1)},
+		{uint8(CodecPyroWave), uint8(defaults.CodecPyroWave)},
+	}
+	for _, p := range pairs {
+		if p[0] != p[1] {
+			t.Errorf("wire codec %d != defaults codec %d", p[0], p[1])
+		}
+	}
+}
+
+// TestLegacyPeerCompatibility: an old peer ignores the FeatureCapabilities
+// bit, and the messages it knows keep their type numbers and encodings
+// (TestControlGolden pins the bytes).
+func TestLegacyPeerCompatibility(t *testing.T) {
+	if FeatureCapabilities&(FeatureLANDatagram|FeatureInputDedup) != 0 {
+		t.Fatal("FeatureCapabilities reuses an existing bit")
+	}
+	if MsgGoodbye != 9 || MsgCapabilities != 10 || MsgProfile != 11 {
+		t.Fatalf("message numbers moved: goodbye %d capabilities %d profile %d", MsgGoodbye, MsgCapabilities, MsgProfile)
+	}
+	old := &Hello{Version: Version, Role: RoleHost, Name: "old", Features: FeatureLANDatagram | FeatureInputDedup}
+	b, _ := AppendMessage(nil, old)
+	m, err := DecodeMessage(b[4:])
+	if err != nil || m.(*Hello).Features&FeatureCapabilities != 0 {
+		t.Fatalf("old Hello: %+v %v", m, err)
 	}
 }
 
