@@ -198,7 +198,9 @@ type Host struct {
 	whois  WhoIser
 	open   VideoOpener
 	inject input.Injector
-	logf   func(string, ...any)
+	// held is what inject holds down, let go of as each client leaves.
+	held input.Held
+	logf func(string, ...any)
 
 	pinMu sync.Mutex
 	pin   string
@@ -476,6 +478,7 @@ func (h *Host) acceptLoop(ctx context.Context) {
 				h.cur = nil
 			}
 			h.mu.Unlock()
+			h.releaseInput()
 		})
 	}
 }
@@ -613,9 +616,24 @@ func (h *Host) onInput(in wire.Input) {
 	if h.inject != nil {
 		if err := h.inject.Inject(ev); err != nil {
 			h.inputErr.Add(1)
-		} else if ev.Type == input.TypeMouseMoveAbs {
+			return
+		}
+		h.held.Note(ev)
+		if ev.Type == input.TypeMouseMoveAbs {
 			h.absTarget.Store(uint32(ev.MouseAbs.X)<<16 | uint32(ev.MouseAbs.Y))
 			h.absMoves.Add(1)
+		}
+	}
+}
+
+// releaseInput lets go of every key and button the last client left down.
+func (h *Host) releaseInput() {
+	if h.inject == nil {
+		return
+	}
+	for _, ev := range h.held.Release() {
+		if err := h.inject.Inject(ev); err != nil {
+			h.logf("planck: let go of %+v: %v", ev, err)
 		}
 	}
 }

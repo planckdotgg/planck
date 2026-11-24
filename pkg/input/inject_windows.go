@@ -114,7 +114,7 @@ func (s *SendInputInjector) send() error {
 }
 
 func (s *SendInputInjector) mouse(dx, dy int32, data, flags uint32) error {
-	s.in = inputRecord{typ: inputMouse, mi: mouseInput{dx: dx, dy: dy, mouseData: data, flags: flags}}
+	s.in = inputRecord{typ: inputMouse, mi: mouseInput{dx: dx, dy: dy, mouseData: data, flags: flags, extraInfo: InjectMarker}}
 	return s.send()
 }
 
@@ -125,6 +125,7 @@ func (s *SendInputInjector) key(k KeyEvent) error {
 	}
 	s.in = inputRecord{typ: inputKeyboard}
 	ki := (*keybdInput)(unsafe.Pointer(&s.in.mi))
+	ki.extraInfo = InjectMarker
 	if scan != 0 {
 		ki.scan, ki.flags = uint16(scan), keyeventfScanCode
 	} else {

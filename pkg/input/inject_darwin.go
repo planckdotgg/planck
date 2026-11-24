@@ -78,6 +78,8 @@ const (
 	fieldButton     = 3
 	fieldDeltaX     = 4
 	fieldDeltaY     = 5
+	// fieldSourceUserData is kCGEventSourceUserData.
+	fieldSourceUserData = 42
 
 	scrollUnitLine = 1
 )
@@ -227,6 +229,7 @@ func (c *CGEventInjector) Inject(ev Event) error {
 		e := cgEventCreateKeyboardEvent(c.source, code, ev.Key.Pressed)
 		if e != 0 {
 			cgEventSetFlags(e, macFlags(ev.Key.Modifiers))
+			cgEventSetIntegerValueField(e, fieldSourceUserData, InjectMarker)
 		}
 		return c.post(e)
 	case TypeMouseMoveAbs:

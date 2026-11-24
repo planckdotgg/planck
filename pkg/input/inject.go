@@ -13,6 +13,12 @@ type Injector interface {
 	Close() error
 }
 
+// InjectMarker tags the events a host injects (dwExtraInfo on Windows, the
+// event source's user data on macOS), so that a client capturing the
+// system's keys on the same machine leaves them alone rather than sending
+// them back to the host.
+const InjectMarker = 0x504C4E4B // "PLNK"
+
 // ErrUnsupported is returned for events the host cannot inject, such as
 // gamepads with no virtual controller driver or host-bound rumble.
 var ErrUnsupported = errors.New("input: unsupported on this host")

@@ -129,3 +129,70 @@ func TestInjectMouseWhileLocked(t *testing.T) {
 		}
 	}
 }
+
+// TestInjectedEventsCarryTheMarker: a client capturing system keys on the
+// host's own machine tells the host's events by their dwExtraInfo.
+func TestInjectedEventsCarryTheMarker(t *testing.T) {
+	var got []uintptr
+	s := &SendInputInjector{post: func(r *inputRecord) error {
+		if r.typ == inputKeyboard {
+			got = append(got, (*keybdInput)(unsafe.Pointer(&r.mi)).extraInfo)
+		} else {
+			got = append(got, r.mi.extraInfo)
+		}
+		return nil
+	}}
+	for _, ev := range []Event{
+		{Type: TypeKey, Key: KeyEvent{Usage: KeyLeftGUI, Pressed: true, Modifiers: ModLeftGUI, SystemKeyCapture: true}},
+		{Type: TypeMouseButton, Button: MouseButton{Button: ButtonLeft, Pressed: true}},
+	} {
+		if err := s.Inject(ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(got) != 2 || got[0] != InjectMarker || got[1] != InjectMarker {
+		t.Fatalf("dwExtraInfo %#x, want %#x on each", got, InjectMarker)
+	}
+}
+
+// TestInjectSystemKeys: the Windows keys go as their E0-prefixed scan
+// codes, which Windows reads as VK_LWIN and VK_RWIN; Alt and Tab, as
+// Alt-Tab needs, by their plain ones.
+func TestInjectSystemKeys(t *testing.T) {
+	type sent struct {
+		scan  uint16
+		flags uint32
+	}
+	var got []sent
+	s := &SendInputInjector{post: func(r *inputRecord) error {
+		ki := (*keybdInput)(unsafe.Pointer(&r.mi))
+		got = append(got, sent{ki.scan, ki.flags})
+		return nil
+	}}
+	for _, ev := range []Event{
+		{Type: TypeKey, Key: KeyEvent{Usage: KeyLeftGUI, Pressed: true, Modifiers: ModLeftGUI, SystemKeyCapture: true}},
+		{Type: TypeKey, Key: KeyEvent{Usage: KeyLeftGUI, Modifiers: 0, SystemKeyCapture: true}},
+		{Type: TypeKey, Key: KeyEvent{Usage: KeyRightGUI, Pressed: true, Modifiers: ModRightGUI, SystemKeyCapture: true}},
+		{Type: TypeKey, Key: KeyEvent{Usage: KeyLeftAlt, Pressed: true, Modifiers: ModLeftAlt, SystemKeyCapture: true}},
+		{Type: TypeKey, Key: KeyEvent{Usage: KeyTab, Pressed: true, Modifiers: ModLeftAlt, SystemKeyCapture: true}},
+	} {
+		if err := s.Inject(ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []sent{
+		{0x5B, keyeventfScanCode | keyeventfExtendedKey},
+		{0x5B, keyeventfScanCode | keyeventfExtendedKey | keyeventfKeyUp},
+		{0x5C, keyeventfScanCode | keyeventfExtendedKey},
+		{0x38, keyeventfScanCode},
+		{0x0F, keyeventfScanCode},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("sent %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("event %d: scan %#x flags %#x, want scan %#x flags %#x", i, got[i].scan, got[i].flags, want[i].scan, want[i].flags)
+		}
+	}
+}
