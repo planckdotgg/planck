@@ -21,20 +21,23 @@ import (
 // presented handler, which runs on Core Animation's thread.
 
 const (
-	pixelFormatR8Unorm     = 10
-	pixelFormatR16Unorm    = 20
-	pixelFormatRG8Unorm    = 30
-	pixelFormatRG16Unorm   = 60
-	pixelFormatBGRA8Unorm  = 80
-	textureUsageShaderRead = 1
-	loadActionDontCare     = 0
-	storeActionStore       = 1
-	primitiveTriangle      = 3
+	pixelFormatR8Unorm      = 10
+	pixelFormatR16Unorm     = 20
+	pixelFormatRG8Unorm     = 30
+	pixelFormatRG16Unorm    = 60
+	pixelFormatBGRA8Unorm   = 80
+	pixelFormatBGR10A2Unorm = 94
+	textureUsageShaderRead  = 1
+	loadActionDontCare      = 0
+	loadActionClear         = 2
+	storeActionStore        = 1
+	primitiveTriangleStrip  = 4
 
 	// IOSurface pixel formats (CoreVideo's four-character codes).
 	fourccBGRA = 0x42475241 // 'BGRA'
 	fourcc420v = 0x34323076 // '420v', NV12 video range
 	fourccx420 = 0x78343230 // 'x420', P010 video range
+	fourccl10r = 0x6c313072 // 'l10r', 10-bit RGB
 
 	viewWidthSizable   = 2           // NSViewWidthSizable
 	viewHeightSizable  = 16          // NSViewHeightSizable
@@ -86,6 +89,12 @@ var (
 	selRelease          = objc.RegisterName("release")
 	selNewTexture       = objc.RegisterName("newTextureWithDescriptor:iosurface:plane:")
 	selSetUsage         = objc.RegisterName("setUsage:")
+	selWidth            = objc.RegisterName("width")
+	selHeight           = objc.RegisterName("height")
+	selSetLoadAction    = objc.RegisterName("setLoadAction:")
+	selSetVertexBytes   = objc.RegisterName("setVertexBytes:length:atIndex:")
+	selSetVertexBuffer  = objc.RegisterName("setVertexBuffer:offset:atIndex:")
+	selDrawInstanced    = objc.RegisterName("drawPrimitives:vertexStart:vertexCount:instanceCount:")
 )
 
 func load() error {
@@ -199,6 +208,8 @@ type frameTextures struct {
 	tex     [2]uintptr
 	format  Format
 	params  *yuvParams
+	// width and height are the frame's size in pixels.
+	width, height uintptr
 }
 
 // wrapCache bounds the frames held wrapped: a decoder's pool is smaller.
@@ -218,17 +229,42 @@ type pending struct {
 // Surface presents frames into a window.
 type Surface struct {
 	device, queue        uintptr
+	window               uintptr
 	layer                uintptr
-	host                 uintptr // the view holding layer, with Composite
+	host                 uintptr // the view hosting layer, with Composite
 	pass, attachment     uintptr
+	pixelFormat          uintptr
 	rgbPipeline, yuvPipe uintptr
 	cache                [wrapCache]frameTextures
 	nextSlot             int
 	pending              [pendingRing]pending
 	timings              timings
 	onPresented          atomic.Pointer[func(tag, submitted, presented int64)]
-	width, height        int
 	scale                float64
+
+	// size is the drawables' size, width << 32 | height. sizeMu orders
+	// the changes of it and of direct mode; viewW and viewH are the size
+	// Resize last asked for, which direct mode keeps for when it ends.
+	size         atomic.Uint64
+	sizeMu       sync.Mutex
+	viewW, viewH int
+	direct       atomic.Bool
+	hidden       []hiddenLayer // main thread
+
+	// fit places the frame in the drawable, scale x, y then offset x, y in
+	// clip space, for the vertex shader; the presenting thread's.
+	fit [4]float32
+
+	overlay      overlayRects
+	overlayPipe  uintptr
+	overlayBufs  [overlayRing]uintptr
+	overlayMem   [overlayRing]unsafe.Pointer
+	overlayFrame int
+	overlaySize  [2]float32
+	atlasMu      sync.Mutex
+	atlas        uintptr
+	atlasBuf     uintptr
+	atlasAlign   int
 }
 
 var surfaces sync.Map // layer → *Surface, for the presented handler
@@ -237,10 +273,12 @@ const shaderSource = `
 #include <metal_stdlib>
 using namespace metal;
 struct VOut { float4 pos [[position]]; float2 uv; };
-vertex VOut vs(uint vid [[vertex_id]]) {
-	float2 p = float2((vid << 1) & 2, vid & 2);
+// A quad over the drawable, scaled and moved by fit (scale x, y, offset x,
+// y in clip space) to where the frame goes.
+vertex VOut vs(uint vid [[vertex_id]], constant float4 &fit [[buffer(0)]]) {
+	float2 p = float2(vid & 1, vid >> 1);
 	VOut o;
-	o.pos = float4(p * float2(2, -2) + float2(-1, 1), 0, 1);
+	o.pos = float4((p * float2(2, -2) + float2(-1, 1)) * fit.xy + fit.zw, 0, 1);
 	o.uv = p;
 	return o;
 }
@@ -256,7 +294,7 @@ fragment float4 fs_yuv(VOut in [[stage_in]], texture2d<float> y [[texture(0)]], 
 	// BT.709
 	return float4(l + 1.5748 * uv.y, l - 0.1873 * uv.x - 0.4681 * uv.y, l + 1.8556 * uv.x, 1);
 }
-`
+` + overlayShaderSource
 
 // New makes a surface filling opts.Window, an NSWindow*, on the main
 // thread. Present may then be called from one other thread.
@@ -267,7 +305,11 @@ func New(opts Options) (s *Surface, err error) {
 	if opts.Window == 0 {
 		return nil, errors.New("gpusurface: no window")
 	}
-	s = &Surface{}
+	s = &Surface{window: opts.Window, pixelFormat: pixelFormatBGRA8Unorm, fit: [4]float32{1, 1, 0, 0}}
+	if opts.Drawable10Bit {
+		s.pixelFormat = pixelFormatBGR10A2Unorm
+	}
+	s.overlay.init()
 	s.timings.recs = make([]Timing, opts.Timings)
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -286,6 +328,9 @@ func New(opts Options) (s *Surface, err error) {
 	if err = s.makePipelines(); err != nil {
 		return nil, err
 	}
+	if err = s.makeOverlay(); err != nil {
+		return nil, err
+	}
 	s.pass = send(send(class("MTLRenderPassDescriptor"), "renderPassDescriptor"), "retain")
 	s.attachment = send(send(s.pass, "colorAttachments"), "objectAtIndexedSubscript:", uintptr(0))
 	send(s.attachment, "setLoadAction:", uintptr(loadActionDontCare))
@@ -294,26 +339,12 @@ func New(opts Options) (s *Surface, err error) {
 	view := send(opts.Window, "contentView")
 	scale := lib.msgFloat(opts.Window, objc.RegisterName("backingScaleFactor"))
 	bounds := lib.msgRect(view, objc.RegisterName("bounds"))
-	var parent uintptr
-	if opts.Composite {
-		// A view of its own at the back of the content view, as MyGo puts
-		// web views under its surface view: AppKit keeps the sublayers of
-		// a view's layer in its subviews' order, and moves a layer added
-		// beside them.
-		s.host = lib.msgInitRect(send(class("NSView"), "alloc"), objc.RegisterName("initWithFrame:"), bounds)
-		send(s.host, "setAutoresizingMask:", uintptr(viewWidthSizable|viewHeightSizable))
-		send(s.host, "setWantsLayer:", true)
-		send(view, "addSubview:positioned:relativeTo:", s.host, windowBelow, uintptr(0))
-		parent = send(s.host, "layer")
-	} else {
-		send(view, "setWantsLayer:", true)
-		parent = send(view, "layer")
-	}
+	viewBounds := bounds
 	bounds.X, bounds.Y = 0, 0
 
 	layer := send(send(class("CAMetalLayer"), "alloc"), "init")
 	send(layer, "setDevice:", s.device)
-	send(layer, "setPixelFormat:", uintptr(pixelFormatBGRA8Unorm))
+	send(layer, "setPixelFormat:", s.pixelFormat)
 	send(layer, "setFramebufferOnly:", true)
 	// Two drawables: one on screen, one drawn. A third would only queue a
 	// frame behind the one shown, a refresh of latency.
@@ -330,9 +361,23 @@ func New(opts Options) (s *Surface, err error) {
 	lib.msgSetRect(layer, objc.RegisterName("setFrame:"), bounds)
 	lib.msgSetFloat(layer, objc.RegisterName("setContentsScale:"), scale)
 	s.scale = scale
-	s.width, s.height = int(bounds.W*scale), int(bounds.H*scale)
-	lib.msgSetSize(layer, objc.RegisterName("setDrawableSize:"), cgSize{float64(s.width), float64(s.height)})
-	send(parent, "addSublayer:", layer)
+	s.viewW, s.viewH = int(bounds.W*scale), int(bounds.H*scale)
+	s.setDrawableSize(layer, s.viewW, s.viewH)
+	if opts.Composite {
+		// A view of its own at the back of the content view, as MyGo puts
+		// web views under its surface view: AppKit keeps the layers of a
+		// view's subviews in their order. The view hosts the layer itself,
+		// with no layer of its own above it, which direct mode needs to be
+		// the only thing composited.
+		s.host = lib.msgInitRect(send(class("NSView"), "alloc"), objc.RegisterName("initWithFrame:"), viewBounds)
+		send(s.host, "setAutoresizingMask:", uintptr(viewWidthSizable|viewHeightSizable))
+		send(s.host, "setLayer:", layer)
+		send(s.host, "setWantsLayer:", true)
+		send(view, "addSubview:positioned:relativeTo:", s.host, windowBelow, uintptr(0))
+	} else {
+		send(view, "setWantsLayer:", true)
+		send(send(view, "layer"), "addSublayer:", layer)
+	}
 	send(class("CATransaction"), "flush")
 	s.layer = layer
 	surfaces.Store(layer, s)
@@ -348,17 +393,26 @@ func (s *Surface) makePipelines() error {
 		return fmt.Errorf("gpusurface: cannot compile the shaders: %s", describe(errObj))
 	}
 	defer release(&libObj)
-	pipeline := func(fs string) (uintptr, error) {
+	pipeline := func(vs, fs string, blend bool) (uintptr, error) {
 		desc := send(send(class("MTLRenderPipelineDescriptor"), "alloc"), "init")
 		defer release(&desc)
-		vfn := send(libObj, "newFunctionWithName:", nsString("vs"))
+		vfn := send(libObj, "newFunctionWithName:", nsString(vs))
 		ffn := send(libObj, "newFunctionWithName:", nsString(fs))
 		defer release(&vfn)
 		defer release(&ffn)
 		send(desc, "setVertexFunction:", vfn)
 		send(desc, "setFragmentFunction:", ffn)
 		att := send(send(desc, "colorAttachments"), "objectAtIndexedSubscript:", uintptr(0))
-		send(att, "setPixelFormat:", uintptr(pixelFormatBGRA8Unorm))
+		send(att, "setPixelFormat:", s.pixelFormat)
+		if blend {
+			// The fragment shader premultiplies.
+			const one, oneMinusSourceAlpha = 1, 5
+			send(att, "setBlendingEnabled:", true)
+			send(att, "setSourceRGBBlendFactor:", uintptr(one))
+			send(att, "setSourceAlphaBlendFactor:", uintptr(one))
+			send(att, "setDestinationRGBBlendFactor:", uintptr(oneMinusSourceAlpha))
+			send(att, "setDestinationAlphaBlendFactor:", uintptr(oneMinusSourceAlpha))
+		}
 		var e uintptr
 		p := send(s.device, "newRenderPipelineStateWithDescriptor:error:", desc, uintptr(unsafe.Pointer(&e)))
 		if p == 0 {
@@ -367,10 +421,13 @@ func (s *Surface) makePipelines() error {
 		return p, nil
 	}
 	var err error
-	if s.rgbPipeline, err = pipeline("fs_rgb"); err != nil {
+	if s.rgbPipeline, err = pipeline("vs", "fs_rgb", false); err != nil {
 		return err
 	}
-	s.yuvPipe, err = pipeline("fs_yuv")
+	if s.yuvPipe, err = pipeline("vs", "fs_yuv", false); err != nil {
+		return err
+	}
+	s.overlayPipe, err = pipeline("overlay_vs", "overlay_fs", true)
 	return err
 }
 
@@ -392,10 +449,24 @@ func (s *Surface) Device() uintptr { return s.device }
 func (s *Surface) Queue() uintptr  { return s.queue }
 
 // Size returns the size of the drawables in pixels.
-func (s *Surface) Size() (w, h int) { return s.width, s.height }
+func (s *Surface) Size() (w, h int) {
+	v := s.size.Load()
+	return int(v >> 32), int(uint32(v))
+}
+
+// Scale returns the window's backing scale factor when the surface was
+// made: pixels a point.
+func (s *Surface) Scale() float64 { return s.scale }
+
+func (s *Surface) setDrawableSize(layer uintptr, w, h int) {
+	lib.msgSetSize(layer, objc.RegisterName("setDrawableSize:"), cgSize{float64(w), float64(h)})
+	s.size.Store(uint64(w)<<32 | uint64(uint32(h)))
+}
 
 // Resize makes the layer w x h pixels, as after the window's content view
 // changed size. Call it from the thread that presents, between presents.
+// In direct mode the drawables keep the screen's size, and take w x h once
+// it ends.
 func (s *Surface) Resize(w, h int) error {
 	if w <= 0 || h <= 0 {
 		return fmt.Errorf("gpusurface: size %dx%d", w, h)
@@ -404,12 +475,17 @@ func (s *Surface) Resize(w, h int) error {
 	defer runtime.UnlockOSThread()
 	pool, _, _ := purego.SyscallN(lib.poolPush)
 	defer purego.SyscallN(lib.poolPop, pool)
+	s.sizeMu.Lock()
+	defer s.sizeMu.Unlock()
+	s.viewW, s.viewH = w, h
+	if s.direct.Load() {
+		return nil
+	}
 	if s.host == 0 {
 		lib.msgSetRect(s.layer, objc.RegisterName("setFrame:"), cgRect{W: float64(w) / s.scale, H: float64(h) / s.scale})
 	}
-	lib.msgSetSize(s.layer, objc.RegisterName("setDrawableSize:"), cgSize{float64(w), float64(h)})
+	s.setDrawableSize(s.layer, w, h)
 	send(class("CATransaction"), "flush")
-	s.width, s.height = w, h
 	return nil
 }
 
@@ -447,9 +523,21 @@ func (s *Surface) PresentTagged(surface uintptr, tag int64) error {
 		return errNoDrawable
 	}
 	cb := msg(s.queue, selCommandBuffer)
-	msg1(s.attachment, selSetTexture, msg(d, selTexture))
+	target := msg(d, selTexture)
+	dw, dh := msg(target, selWidth), msg(target, selHeight)
+	load := uintptr(loadActionDontCare)
+	if s.direct.Load() {
+		if s.fitFrame(f.width, f.height, dw, dh) {
+			load = loadActionClear
+		}
+	} else {
+		s.fit = [4]float32{1, 1, 0, 0}
+	}
+	msg1(s.attachment, selSetLoadAction, load)
+	msg1(s.attachment, selSetTexture, target)
 	enc := msg1(cb, selRenderEncoder, s.pass)
-	if f.format == FormatBGRA8 {
+	msg3(enc, selSetVertexBytes, uintptr(unsafe.Pointer(&s.fit)), unsafe.Sizeof(s.fit), 0)
+	if f.format == FormatBGRA8 || f.format == FormatBGR10A2 {
 		msg1(enc, selSetPipeline, s.rgbPipeline)
 		msg2(enc, selSetFragmentTex, f.tex[0], 0)
 	} else {
@@ -458,7 +546,10 @@ func (s *Surface) PresentTagged(surface uintptr, tag int64) error {
 		msg2(enc, selSetFragmentTex, f.tex[1], 1)
 		msg3(enc, selSetFragmentBytes, uintptr(unsafe.Pointer(f.params)), unsafe.Sizeof(*f.params), 0)
 	}
-	msg3(enc, selDraw, primitiveTriangle, 0, 3)
+	msg3(enc, selDraw, primitiveTriangleStrip, 0, 4)
+	if rects := s.overlay.latest(); len(rects) > 0 {
+		s.drawOverlay(enc, rects, dw, dh)
+	}
 	msg(enc, selEndEncoding)
 	i := s.timings.start(submitted)
 	if i >= 0 || s.onPresented.Load() != nil {
@@ -521,6 +612,9 @@ func (s *Surface) wrap(surface uintptr) *frameTextures {
 	case fourccBGRA:
 		f.format = FormatBGRA8
 		f.tex[0] = s.planeTexture(surface, -1, pixelFormatBGRA8Unorm)
+	case fourccl10r:
+		f.format = FormatBGR10A2
+		f.tex[0] = s.planeTexture(surface, -1, pixelFormatBGR10A2Unorm)
 	case fourcc420v:
 		f.format, f.params = FormatNV12, &params8
 		f.tex[0] = s.planeTexture(surface, 0, pixelFormatR8Unorm)
@@ -532,12 +626,14 @@ func (s *Surface) wrap(surface uintptr) *frameTextures {
 	default:
 		return nil
 	}
-	if f.tex[0] == 0 || (f.format != FormatBGRA8 && f.tex[1] == 0) {
+	if f.tex[0] == 0 || (f.params != nil && f.tex[1] == 0) {
 		release(&f.tex[0])
 		release(&f.tex[1])
 		return nil
 	}
 	f.surface = surface
+	f.width, _, _ = purego.SyscallN(lib.ioWidth, surface)
+	f.height, _, _ = purego.SyscallN(lib.ioHeight, surface)
 	slot := &s.cache[s.nextSlot]
 	s.nextSlot = (s.nextSlot + 1) % wrapCache
 	// Command buffers in flight retain the textures they read.
@@ -578,6 +674,9 @@ func (s *Surface) Close() {
 	for !s.timings.done() && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
+	if s.direct.Load() {
+		s.SetDirect(false)
+	}
 	if s.layer != 0 {
 		surfaces.Delete(s.layer)
 		send(s.layer, "removeFromSuperlayer")
@@ -589,7 +688,8 @@ func (s *Surface) Close() {
 		release(&s.cache[i].tex[0])
 		release(&s.cache[i].tex[1])
 	}
-	for _, p := range []*uintptr{&s.host, &s.layer, &s.pass, &s.rgbPipeline, &s.yuvPipe, &s.queue, &s.device} {
+	s.closeOverlay()
+	for _, p := range []*uintptr{&s.host, &s.layer, &s.pass, &s.rgbPipeline, &s.yuvPipe, &s.overlayPipe, &s.queue, &s.device} {
 		release(p)
 	}
 }
