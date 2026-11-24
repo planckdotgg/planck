@@ -207,3 +207,27 @@ func TestDecodeAV1(t *testing.T) {
 	}
 	t.Logf("%d AV1 10-bit pictures, decode %s", i, lat.Summarize())
 }
+
+func TestSessionIsRealTime(t *testing.T) {
+	var copyProperty func(s, key, alloc uintptr, out *uintptr) int32
+	apple.Register(&copyProperty, apple.VideoToolbox, "VTSessionCopyProperty")
+	packets := hevcStream(t, false, 2)
+	dec, err := Open(decode.Config{Codec: encode.HEVC, Width: w, Height: h, FPS: 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dec.Close()
+	f, err := dec.Decode(packets[0], 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec.Release(f)
+	var v uintptr
+	if st := copyProperty(dec.session, keyRealTime, 0, &v); st != 0 {
+		t.Fatalf("VTSessionCopyProperty: %d", st)
+	}
+	defer apple.CFRelease(v)
+	if v != apple.KCFBooleanTrue {
+		t.Fatalf("kVTDecompressionPropertyKey_RealTime = %#x, want kCFBooleanTrue", v)
+	}
+}

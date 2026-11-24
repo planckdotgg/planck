@@ -35,13 +35,14 @@ var (
 	vtDecompressionSessionDecodeFrame                   func(s, sbuf uintptr, flags uint32, refcon uintptr, infoOut *uint32) int32
 	vtDecompressionSessionCanAcceptFormatDescription    func(s, format uintptr) bool
 	vtDecompressionSessionInvalidate                    func(s uintptr)
+	vtSessionSetProperty                                func(s, key, value uintptr) int32
 	cvPixelBufferGetIOSurface                           func(pb uintptr) uintptr
 	cvPixelBufferGetPixelFormatType                     func(pb uintptr) uint32
 	cvPixelBufferGetWidth                               func(pb uintptr) uint
 	cvPixelBufferGetHeight                              func(pb uintptr) uint
 	cfDataCreate                                        func(alloc uintptr, p unsafe.Pointer, n int) uintptr
 
-	keyAtoms, keyIOSurface, keyPixelFormat uintptr
+	keyAtoms, keyIOSurface, keyPixelFormat, keyRealTime uintptr
 )
 
 func init() {
@@ -55,6 +56,7 @@ func init() {
 	apple.Register(&vtDecompressionSessionDecodeFrame, vt, "VTDecompressionSessionDecodeFrame")
 	apple.Register(&vtDecompressionSessionCanAcceptFormatDescription, vt, "VTDecompressionSessionCanAcceptFormatDescription")
 	apple.Register(&vtDecompressionSessionInvalidate, vt, "VTDecompressionSessionInvalidate")
+	apple.Register(&vtSessionSetProperty, vt, "VTSessionSetProperty")
 	apple.Register(&cvPixelBufferGetIOSurface, cv, "CVPixelBufferGetIOSurface")
 	apple.Register(&cvPixelBufferGetPixelFormatType, cv, "CVPixelBufferGetPixelFormatType")
 	apple.Register(&cvPixelBufferGetWidth, cv, "CVPixelBufferGetWidth")
@@ -63,6 +65,7 @@ func init() {
 	keyAtoms = apple.Const(cm, "kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms")
 	keyIOSurface = apple.Const(cv, "kCVPixelBufferIOSurfacePropertiesKey")
 	keyPixelFormat = apple.Const(cv, "kCVPixelBufferPixelFormatTypeKey")
+	keyRealTime = apple.Const(vt, "kVTDecompressionPropertyKey_RealTime")
 }
 
 // decoded is the decode callback's result, from VideoToolbox's thread.
@@ -113,6 +116,7 @@ type Decoder struct {
 	av1Seq  []byte
 	tenBit  bool
 	out     chan decoded
+	timeout *time.Timer
 	sample  []byte
 }
 
@@ -122,7 +126,8 @@ func Open(cfg decode.Config) (*Decoder, error) {
 		return nil, fmt.Errorf("%w: %s", decode.ErrUnsupported, cfg.Codec)
 	}
 	cbOnce.Do(func() { callback = purego.NewCallback(onDecoded) })
-	d := &Decoder{cfg: cfg, record: new([2]uintptr), out: make(chan decoded, 4)}
+	d := &Decoder{cfg: cfg, record: new([2]uintptr), out: make(chan decoded, 4), timeout: time.NewTimer(time.Hour)}
+	d.timeout.Stop()
 	decodersMu.Lock()
 	nextRef++
 	d.ref = nextRef
@@ -167,8 +172,10 @@ func (d *Decoder) Decode(au []byte, pts int64) (decode.Frame, error) {
 	if st != 0 {
 		return decode.Frame{}, fmt.Errorf("vt: VTDecompressionSessionDecodeFrame: %d", st)
 	}
+	d.timeout.Reset(time.Second)
 	select {
 	case r := <-d.out:
+		d.timeout.Stop()
 		if r.status != 0 || r.image == 0 {
 			return decode.Frame{}, fmt.Errorf("vt: decode callback status %d", r.status)
 		}
@@ -185,7 +192,7 @@ func (d *Decoder) Decode(au []byte, pts int64) (decode.Frame, error) {
 			f.Format = capture.FormatP010
 		}
 		return f, nil
-	case <-time.After(time.Second):
+	case <-d.timeout.C:
 		return decode.Frame{}, errors.New("vt: no decode callback in 1 s")
 	}
 }
@@ -281,6 +288,9 @@ func (d *Decoder) reopen(format uintptr, tenBit bool) error {
 		d.session = 0
 		return fmt.Errorf("%w: VTDecompressionSessionCreate: %d", decode.ErrUnsupported, st)
 	}
+	// Real time: the decoder runs each frame at once, at a raised
+	// priority, rather than as throughput work.
+	vtSessionSetProperty(d.session, keyRealTime, apple.KCFBooleanTrue)
 	return nil
 }
 
