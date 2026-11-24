@@ -22,7 +22,7 @@ import (
 )
 
 func main() {
-	cfg, statsEvery, err := parseConfig(os.Args[1:], os.Stderr)
+	o, err := parseOptions(os.Args[1:], os.Stderr)
 	if errors.Is(err, flag.ErrHelp) {
 		return
 	}
@@ -30,13 +30,26 @@ func main() {
 		fmt.Fprintln(os.Stderr, "planck-host:", err)
 		os.Exit(2)
 	}
-	if err := run(cfg, statsEvery); err != nil {
+	if err := run(o); err != nil {
 		fmt.Fprintln(os.Stderr, "planck-host:", err)
 		os.Exit(1)
 	}
 }
 
+type options struct {
+	cfg        session.HostConfig
+	statsEvery time.Duration
+	// setName, when set, renames the host in host.json before it starts.
+	setName *string
+}
+
 func parseConfig(args []string, out io.Writer) (session.HostConfig, time.Duration, error) {
+	o, err := parseOptions(args, out)
+	return o.cfg, o.statsEvery, err
+}
+
+func parseOptions(args []string, out io.Writer) (options, error) {
+	var o options
 	cfg := session.DefaultHostConfig()
 	fs := flag.NewFlagSet("planck-host", flag.ContinueOnError)
 	fs.SetOutput(out)
@@ -51,7 +64,8 @@ func parseConfig(args []string, out io.Writer) (session.HostConfig, time.Duratio
 		split         = fs.String("split", "auto", "split-frame encode across the GPU's engines: auto (1440p and up, or 1080p from 200 fps, on LAN, without -slices), on or off")
 	)
 	fs.StringVar(&cfg.ConfigDir, "config", "", "config directory (default: the user config dir /planck)")
-	fs.StringVar(&cfg.Name, "name", "", "host name shown to clients (default: the machine name)")
+	fs.StringVar(&cfg.Name, "name", "", "host name shown to clients for this run only (default: host.json's name, or the machine name)")
+	setName := fs.String("set-name", "", `rename the host for good: keep the name in host.json and start under it ("" goes back to the machine name)`)
 	fs.StringVar(&cfg.Display, "display", "", "display ID to capture (default: the primary display)")
 	fs.StringVar(&cfg.Adapter, "adapter", "", `encoding GPU, by name or vendor ("NVIDIA", "AMD", "Intel"); default: the display's GPU`)
 	fs.IntVar(&cfg.FPS, "fps", 0, "frame rate (default: the display refresh, or 60 with -synth)")
@@ -64,17 +78,25 @@ func parseConfig(args []string, out io.Writer) (session.HostConfig, time.Duratio
 	fs.BoolVar(&cfg.NoAudio, "no-audio", false, "do not capture or stream audio")
 	fs.BoolVar(&cfg.Synth, "synth", false, "stream a generated test pattern at -width x -height and -fps instead of a display")
 	if err := fs.Parse(args); err != nil {
-		return cfg, 0, err
+		return o, err
 	}
 	if fs.NArg() > 0 {
-		return cfg, 0, fmt.Errorf("unexpected argument %q", fs.Arg(0))
+		return o, fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "set-name" {
+			o.setName = setName
+		}
+	})
+	if o.setName != nil && cfg.Name != "" {
+		return o, errors.New("-name and -set-name exclude each other")
 	}
 	var err error
 	if cfg.Codec, err = session.ParseCodec(*codec); err != nil {
-		return cfg, 0, err
+		return o, err
 	}
 	if cfg.Chroma, err = session.ParseChroma(*chroma); err != nil {
-		return cfg, 0, err
+		return o, err
 	}
 	switch *split {
 	case "auto":
@@ -84,7 +106,7 @@ func parseConfig(args []string, out io.Writer) (session.HostConfig, time.Duratio
 	case "off":
 		cfg.Split = encode.SplitOff
 	default:
-		return cfg, 0, fmt.Errorf("-split %q: want auto, on or off", *split)
+		return o, fmt.Errorf("-split %q: want auto, on or off", *split)
 	}
 	cfg.ListenAddr, cfg.MediaPort = *listen, *mediaPort
 	cfg.DiscoveryAddr = "off"
@@ -94,31 +116,38 @@ func parseConfig(args []string, out io.Writer) (session.HostConfig, time.Duratio
 	cfg.InjectInput = !*noInput
 	switch {
 	case cfg.PIN != "" && (len(cfg.PIN) != 6 || strings.Trim(cfg.PIN, "0123456789") != ""):
-		return cfg, 0, fmt.Errorf("-pin %q: want 6 digits", cfg.PIN)
+		return o, fmt.Errorf("-pin %q: want 6 digits", cfg.PIN)
 	case cfg.Slices < 1 || cfg.Slices > 16:
-		return cfg, 0, fmt.Errorf("-slices %d: want 1 to 16", cfg.Slices)
+		return o, fmt.Errorf("-slices %d: want 1 to 16", cfg.Slices)
 	case cfg.SubFrame && cfg.Slices < 2:
-		return cfg, 0, errors.New("-subframe needs -slices 2 or more")
+		return o, errors.New("-subframe needs -slices 2 or more")
 	case cfg.BitrateKbps <= 0 || cfg.FPS < 0:
-		return cfg, 0, errors.New("-bitrate must be positive and -fps not negative")
+		return o, errors.New("-bitrate must be positive and -fps not negative")
 	case cfg.Synth && (cfg.Width <= 0 || cfg.Height <= 0):
-		return cfg, 0, errors.New("-synth needs a positive -width and -height")
+		return o, errors.New("-synth needs a positive -width and -height")
 	case *mediaPort < 0 || *mediaPort > 65535:
-		return cfg, 0, fmt.Errorf("-media-port %d out of range", *mediaPort)
+		return o, fmt.Errorf("-media-port %d out of range", *mediaPort)
 	}
 	if cfg.Synth && cfg.FPS == 0 {
 		cfg.FPS = 60
 	}
-	return cfg, *stats, nil
+	o.cfg, o.statsEvery = cfg, *stats
+	return o, nil
 }
 
-func run(cfg session.HostConfig, statsEvery time.Duration) error {
+func run(o options) error {
+	cfg, statsEvery := o.cfg, o.statsEvery
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	cfg.Logf = log.Printf
 	h, err := session.NewHost(cfg)
 	if err != nil {
 		return err
+	}
+	if o.setName != nil {
+		if err := h.SetName(*o.setName); err != nil {
+			return err
+		}
 	}
 	if err := h.Start(ctx); err != nil {
 		return err

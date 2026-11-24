@@ -53,3 +53,21 @@ func TestParseConfigRejects(t *testing.T) {
 		}
 	}
 }
+
+// TestParseSetName: -set-name renames for good, even to "", -name for the
+// run only, and not both.
+func TestParseSetName(t *testing.T) {
+	o, err := parseOptions([]string{"-set-name", "Den PC"}, io.Discard)
+	if err != nil || o.setName == nil || *o.setName != "Den PC" || o.cfg.Name != "" {
+		t.Fatalf("-set-name: %+v, %v", o, err)
+	}
+	if o, err := parseOptions([]string{"-set-name", ""}, io.Discard); err != nil || o.setName == nil || *o.setName != "" {
+		t.Fatalf(`-set-name "": %+v, %v`, o, err)
+	}
+	if o, err := parseOptions([]string{"-name", "Den PC"}, io.Discard); err != nil || o.setName != nil || o.cfg.Name != "Den PC" {
+		t.Fatalf("-name: %+v, %v", o, err)
+	}
+	if _, err := parseOptions([]string{"-name", "a", "-set-name", "b"}, io.Discard); err == nil {
+		t.Fatal("-name with -set-name accepted")
+	}
+}
