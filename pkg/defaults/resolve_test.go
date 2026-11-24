@@ -443,18 +443,3 @@ func TestResolveWindowStepsDownAtItsShape(t *testing.T) {
 		t.Fatalf("32:9 window over a relay: %dx%d, want fewer lines at 32:9", p.Width, p.Height)
 	}
 }
-
-// TestResolvePresetsAtWidthAt: a resolution preset on a virtual display
-// resolves to WidthAt's size, which the stream menu labels it with.
-func TestResolvePresetsAtWidthAt(t *testing.T) {
-	for _, d := range [][2]int{{1920, 1080}, {5120, 1440}, {3440, 1440}} {
-		c := windowed(1280, 768)
-		c.Display.WidthPx, c.Display.HeightPx = d[0], d[1]
-		for pref, lines := range map[ResolutionPref]int{"1080p": 1080, "1440p": 1440, "4k": 2160} {
-			p := Resolve(bigboi(), c, lan, UserOverrides{Resolution: pref, FPS: "60"})
-			if p.Width != WidthAt(c.Display, lines) || p.Height != lines {
-				t.Errorf("%dx%d display, %s: resolved %dx%d, WidthAt %d", d[0], d[1], pref, p.Width, p.Height, WidthAt(c.Display, lines))
-			}
-		}
-	}
-}

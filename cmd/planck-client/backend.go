@@ -560,7 +560,7 @@ func (b *backend) follow(c *session.Client) {
 
 func telemetry(s session.ClientStats) ui.Telemetry {
 	t := ui.Telemetry{
-		Connected: s.Connected, HostName: s.HostName, HostID: hostKey(s), Profile: s.Profile, Display: s.Display, FPS: s.FPS, Width: s.Width, Height: s.Height,
+		Connected: s.Connected, HostName: s.HostName, HostID: hostKey(s), Profile: s.Profile, FPS: s.FPS, Width: s.Width, Height: s.Height,
 		EncodeMs: s.Encode.P50, NetMs: s.Network.P50, DecodeMs: s.Decode.P50, PresentMs: s.Present.P50, TotalMs: s.E2E.P50,
 		BitrateMbps: s.Kbps / 1000, FECPct: s.FECParityPct, LossPct: s.LossPct, AudioBufMs: s.AudioBufferMs,
 		DatagramBytes: s.DatagramBytes, MicMuted: s.Mic.Muted, MicDevice: s.Mic.Device, MicHint: s.Mic.Hint,

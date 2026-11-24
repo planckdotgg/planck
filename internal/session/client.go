@@ -161,8 +161,6 @@ type ClientStats struct {
 	// Profile is what the host resolved the stream to, nil from an older
 	// host.
 	Profile *defaults.ResolvedProfile
-	// Display is the client display the host resolved it for.
-	Display defaults.ClientDisplay
 	Width   int
 	Height  int
 	FPS     float64
@@ -269,8 +267,6 @@ type conn struct {
 	profile atomic.Pointer[defaults.ResolvedProfile]
 	// openSink makes the sink of each stream.
 	openSink SinkOpener
-	// display is the display this client offered the host last.
-	display atomic.Pointer[defaults.ClientDisplay]
 	// asked is the window size last offered the host, in pixels, width
 	// in the high half.
 	asked atomic.Uint64
@@ -541,11 +537,10 @@ func (c *Client) dialRoute(ctx context.Context, cc *conn, r resolved) (*route, e
 		req.AudioSampleRate, req.AudioChannels = audio.SampleRate, audio.Channels
 	}
 
-	capsJSON, display, err := c.capabilities(cfg, r.addr, r.kind)
+	capsJSON, err := c.capabilities(cfg, r.addr, r.kind)
 	if err != nil {
 		return nil, err
 	}
-	cc.display.Store(&display)
 
 	rt := &route{kind: r.kind, addr: r.addr}
 	sess, err := transport.Dial(ctx, r.addr, transport.ClientConfig{
@@ -683,7 +678,7 @@ func (c *Client) streamConfig(sess *transport.Session) (decode.Config, *defaults
 
 // capabilities is the JSON this client offers a host: its display,
 // decoders and link, the route it found, and the user's overrides.
-func (c *Client) capabilities(cfg ClientConfig, addr string, path discovery.PathKind) ([]byte, defaults.ClientDisplay, error) {
+func (c *Client) capabilities(cfg ClientConfig, addr string, path discovery.PathKind) ([]byte, error) {
 	probe := cfg.Capabilities
 	if probe == nil {
 		probe = ProbeClientCapabilities
@@ -699,10 +694,9 @@ func (c *Client) capabilities(cfg ClientConfig, addr string, path discovery.Path
 		}
 	}
 	if err := cfg.Overrides.Validate(); err != nil {
-		return nil, caps.Display, err
+		return nil, err
 	}
-	js, err := json.Marshal(clientCaps{V: clientCapsVersion, Client: caps, Route: defaults.RouteInfo{Kind: routeKind(path)}, Overrides: cfg.Overrides})
-	return js, caps.Display, err
+	return json.Marshal(clientCaps{V: clientCapsVersion, Client: caps, Route: defaults.RouteInfo{Kind: routeKind(path)}, Overrides: cfg.Overrides})
 }
 
 // ProbeClientCapabilities reads this device's main display and hardware
@@ -1183,9 +1177,6 @@ func (cc *conn) stats() ClientStats {
 		RTTMs:          ms(int64(sess.RTT())),
 		FramesReceived: ss.FramesComplete, FramesLost: ss.FramesLost, SlicesRecovered: ss.SlicesRecovered,
 		FramesDropped: cc.dropped.Load(), FramesPartial: ss.FramesPartial, Profile: cc.profile.Load(), SinkErrors: cc.sinkErr.Load(), AudioPackets: cc.audioPkts.Load(), InputSent: cc.inputs.Load(),
-	}
-	if d := cc.display.Load(); d != nil {
-		s.Display = *d
 	}
 	s.Chroma = "4:2:0"
 	if acc.Chroma == wire.Chroma444 {
