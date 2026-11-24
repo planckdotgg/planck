@@ -47,6 +47,10 @@ type App struct {
 	// built, for the overlay's key handlers.
 	ovl      overlay
 	frameNow time.Time
+	// streamFull is set while the window is full screen because the
+	// stream's controls made it so, which the stream's end undoes;
+	// streamFullSeen once the window was seen full screen since.
+	streamFull, streamFullSeen bool
 	// renaming is the HostID whose card shows the rename body; renameOpen
 	// selects its text on the frame it opens.
 	renaming   string
@@ -159,10 +163,15 @@ func (a *App) View(c *mui.Context) {
 	if a.streaming && !tel.Connected {
 		toHosts = true
 		a.noteOverlay(false)
+		a.leaveStreamFullscreen()
 	}
 	if !a.streaming && tel.Connected {
 		w, h := c.Size()
 		a.ovl.begin(a.backend.OverlayLayout(), c.Now(), w, h)
+		a.streamFull, a.streamFullSeen = false, false
+	}
+	if tel.Connected {
+		a.watchStreamFullscreen()
 	}
 	a.streaming = tel.Connected
 	if toHosts {
@@ -229,6 +238,41 @@ func (a *App) cancelConnect() {
 	a.mu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+}
+
+// setStreamFullscreen turns full screen on or off from the stream's
+// controls.
+func (a *App) setStreamFullscreen(on bool) {
+	if a.window == nil {
+		return
+	}
+	a.window.SetFullscreen(on)
+	a.streamFull, a.streamFullSeen = on, false
+}
+
+// watchStreamFullscreen forgets full screen the stream turned on once the
+// user left it some other way. The window may take a while to get there,
+// so leaving counts only after it was seen full screen.
+func (a *App) watchStreamFullscreen() {
+	if !a.streamFull || a.window == nil {
+		return
+	}
+	switch full := a.window.Fullscreen(); {
+	case full:
+		a.streamFullSeen = true
+	case a.streamFullSeen:
+		a.streamFull, a.streamFullSeen = false, false
+	}
+}
+
+// leaveStreamFullscreen undoes, as the stream ends, full screen its
+// controls turned on.
+func (a *App) leaveStreamFullscreen() {
+	on := a.streamFull
+	a.streamFull, a.streamFullSeen = false, false
+	if on && a.window != nil && a.window.Fullscreen() {
+		a.window.SetFullscreen(false)
 	}
 }
 

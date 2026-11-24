@@ -734,7 +734,7 @@ func (a *App) toggleHidden() {
 
 func (a *App) toggleFullscreen() {
 	if a.window != nil {
-		a.window.SetFullscreen(!a.window.Fullscreen())
+		a.setStreamFullscreen(!a.window.Fullscreen())
 	}
 }
 

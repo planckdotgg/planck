@@ -358,7 +358,7 @@ func (a *App) modeGroup(c *mui.Context, m mui.MenuParts, e *overrideEdit, s *Set
 	groupLabel(c, "Mode & window", true)
 	if w := a.window; w != nil {
 		if switchItem(c, m, "Fullscreen", w.Fullscreen(), rowParts{icon: theme.IconFullscreen}, a.shortcut(false, "F")) {
-			w.SetFullscreen(!w.Fullscreen())
+			a.setStreamFullscreen(!w.Fullscreen())
 		}
 	}
 	if switchItem(c, m, "Immersive mode", s.SystemKeysCapture, rowParts{icon: theme.IconImmersive}, a.shortcut(false, "I")) {
