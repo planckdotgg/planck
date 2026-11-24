@@ -86,3 +86,46 @@ func TestButtonsDoNotMoveThePointer(t *testing.T) {
 		}
 	}
 }
+
+// TestInjectMouseWhileLocked: a locked client's relative moves go as plain
+// MOUSEEVENTF_MOVE with signed deltas, never absolute, and its buttons and
+// wheel go as they do unlocked.
+func TestInjectMouseWhileLocked(t *testing.T) {
+	var got []mouseInput
+	s := &SendInputInjector{post: func(r *inputRecord) error {
+		if r.typ != inputMouse {
+			t.Fatalf("record type %d, want mouse", r.typ)
+		}
+		got = append(got, r.mi)
+		return nil
+	}}
+	s.SetTarget(Rect{1920, 0, 2560, 1440}, Rect{0, 0, 4480, 1440})
+	for _, ev := range []Event{
+		{Type: TypeMouseMoveRel, MouseRel: MouseMoveRel{DX: -37, DY: 12}},
+		{Type: TypeMouseMoveRel, MouseRel: MouseMoveRel{DX: 32767, DY: -32768}},
+		{Type: TypeMouseButton, Button: MouseButton{Button: ButtonLeft, Pressed: true}},
+		{Type: TypeMouseButton, Button: MouseButton{Button: ButtonLeft}},
+		{Type: TypeMouseWheel, Wheel: MouseWheel{DY: -WheelNotch, DX: 40}},
+	} {
+		if err := s.Inject(ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	neg := func(v int32) uint32 { return uint32(v) }
+	want := []mouseInput{
+		{dx: -37, dy: 12, flags: mouseeventfMove},
+		{dx: 32767, dy: -32768, flags: mouseeventfMove},
+		{flags: mouseeventfLeftDown},
+		{flags: mouseeventfLeftUp},
+		{mouseData: neg(-WheelNotch), flags: mouseeventfWheel},
+		{mouseData: 40, flags: mouseeventfHWheel},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d records, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("record %d: %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}

@@ -66,6 +66,8 @@ type inputRecord struct {
 // wired in yet, so they return ErrUnsupported.
 type SendInputInjector struct {
 	in inputRecord
+	// post replaces SendInput in tests, which must never move the cursor.
+	post func(*inputRecord) error
 
 	mu               sync.Mutex
 	display, desktop Rect
@@ -101,6 +103,9 @@ func NewInjector() (*SendInputInjector, error) {
 }
 
 func (s *SendInputInjector) send() error {
+	if s.post != nil {
+		return s.post(&s.in)
+	}
 	r, _, errno := syscall.SyscallN(procSendInput.Addr(), 1, uintptr(unsafe.Pointer(&s.in)), unsafe.Sizeof(s.in))
 	if r != 1 {
 		return fmt.Errorf("input: SendInput: %w", errno)
