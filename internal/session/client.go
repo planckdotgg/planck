@@ -200,12 +200,16 @@ type conn struct {
 	// queue may grow to warmupQueue. needKey discards frames until the next
 	// keyframe, after one was lost.
 	decoding, needKey atomic.Bool
+
+	trace *tracer[clientTraceRow]
 }
 
 type frameBuf struct {
-	info    wire.VideoInfo
-	data    []byte
-	arrival int64
+	info     wire.VideoInfo
+	data     []byte
+	arrival  int64
+	firstPkt int64
+	queued   int
 }
 
 const (
@@ -301,6 +305,7 @@ func (c *Client) connect(ctx context.Context, t Target) (*conn, error) {
 		cc.free <- &frameBuf{}
 	}
 	cc.needKey.Store(true)
+	cc.trace = newTracer[clientTraceRow](traceClientEnv)
 	if !cfg.NoAudio {
 		cc.jb = audio.NewJitterBuffer(audio.JitterConfig{})
 	}
@@ -443,6 +448,7 @@ func (cc *conn) onFrame(info wire.VideoInfo, frame []byte) {
 		return
 	}
 	fb.info, fb.arrival = info, now
+	fb.firstPkt, fb.queued = sess.FirstArrival(info.FrameID), len(cc.frames)
 	fb.data = append(fb.data[:0], frame...)
 	shard := sess.ShardSize()
 	slices := max(1, int(sess.Config().Slices))
@@ -490,9 +496,17 @@ func (cc *conn) decodeLoop(sink Sink, logf func(string, ...any)) {
 			return
 		case fb = <-cc.frames:
 		}
+		dequeued := transport.Mono()
 		t, err := sink.Submit(fb.data, int64(fb.info.FrameID))
 		shown := transport.Mono()
 		info, arrival := fb.info, fb.arrival
+		if cc.trace != nil {
+			off := clock.Offset()
+			cc.trace.add(clientTraceRow{Frame: info.FrameID, Key: info.Keyframe, Bytes: len(fb.data),
+				Present: info.CaptureTS - off, EncEnd: info.EncodeTS - off, FirstPkt: fb.firstPkt, Complete: arrival,
+				QueueLen: fb.queued, Dequeue: dequeued, DecodeNs: int64(t.Decode), PresentNs: int64(t.Present), Done: shown,
+				OffsetNs: off, RTTNs: int64(clock.RTT()), Err: err != nil})
+		}
 		cc.free <- fb
 		if err != nil && !errors.Is(err, decode.ErrNoFrame) {
 			if cc.sinkErr.Add(1) == 1 {
@@ -620,6 +634,9 @@ func (cc *conn) close() {
 	cc.sess.Close()
 	cc.cancel()
 	cc.wg.Wait()
+	if err := cc.trace.flush(); err != nil {
+		log.Printf("planck: trace: %v", err)
+	}
 }
 
 // Stats is a snapshot of the current session; Connected is false without

@@ -127,6 +127,11 @@ type Session struct {
 	sentPLI   bool
 	pendingFB bool
 
+	firstSeen [sentRingSize]struct {
+		id uint32
+		at int64
+	}
+
 	clock        ClockEstimator
 	pingInterval time.Duration
 
@@ -348,6 +353,15 @@ func (s *Session) recordSent(id uint32, n int) {
 	s.ringMu.Unlock()
 }
 
+// FirstArrival is when the first datagram of a recent frame was read
+// (client only). Call it from a media handler.
+func (s *Session) FirstArrival(id uint32) int64 {
+	if fs := s.firstSeen[id%sentRingSize]; fs.id == id {
+		return fs.at
+	}
+	return 0
+}
+
 func (s *Session) lookupSent(id uint32) (sentFrame, bool) {
 	s.ringMu.Lock()
 	f := s.sent[id%sentRingSize]
@@ -530,6 +544,9 @@ func (s *Session) handleVideo(plain []byte, now int64) {
 	res, err := s.dec.Push(plain)
 	if err != nil {
 		return
+	}
+	if fs := &s.firstSeen[res.Info.FrameID%sentRingSize]; fs.id != res.Info.FrameID || fs.at == 0 {
+		fs.id, fs.at = res.Info.FrameID, now
 	}
 	if res.SliceReady && s.h.VideoSlice != nil {
 		s.h.VideoSlice(VideoSlice{

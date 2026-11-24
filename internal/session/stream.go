@@ -51,6 +51,8 @@ type stream struct {
 	parityPct float64
 
 	frames, keyframes, dropped, audioPkts atomic.Uint64
+
+	trace *tracer[hostTraceRow]
 }
 
 func newStream(h *Host, sess *transport.Session) *stream {
@@ -118,9 +120,13 @@ func (st *stream) videoLoop() {
 		defer revert()
 	}
 	var pipe VideoPipe
+	st.trace = newTracer[hostTraceRow](traceHostEnv)
 	defer func() {
 		if pipe != nil {
 			pipe.Close()
+		}
+		if err := st.trace.flush(); err != nil {
+			st.h.logf("planck: trace: %v", err)
 		}
 	}()
 	buf := make([]byte, 0, 2<<20)
@@ -200,6 +206,14 @@ func (st *stream) videoLoop() {
 			continue
 		}
 		st.frames.Add(1)
+		if st.trace != nil {
+			row := hostTraceRow{Frame: info.FrameID, Key: pkt.Keyframe, Bytes: len(pkt.Data), Present: captureTS, SendEnd: transport.Mono()}
+			if sp, ok := pipe.(interface{ stages() pipeStages }); ok {
+				g := sp.stages()
+				row.WaitStart, row.Acquired, row.EncStart, row.EncEnd, row.FirstSlice, row.Accum = g.WaitStart, g.Acquired, g.EncStart, g.EncEnd, g.FirstSlice, g.Accum
+			}
+			st.trace.add(row)
+		}
 		mirror.SetLoss(st.sess.FECLoss())
 		data := 0
 		for s := 0; s < slices; s++ {

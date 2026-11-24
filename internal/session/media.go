@@ -76,17 +76,23 @@ type sourcePipe struct {
 	w, h    int
 	power   *gpu.PowerGuard
 	closers []func()
+	st      pipeStages
 }
 
 func (p *sourcePipe) Next(timeout time.Duration, forceKey bool, dst []byte) (encode.Packet, int64, error) {
+	p.st = pipeStages{WaitStart: transport.Mono()}
 	f, err := p.src.Next(timeout)
 	if err != nil {
 		return encode.Packet{}, 0, err
 	}
 	defer p.src.Release()
 	captureTS := transport.Mono()
+	p.st.Acquired = captureTS
 	if f.Presented > 0 && f.Acquired >= f.Presented && f.Acquired-f.Presented < time.Second {
 		captureTS -= int64(f.Acquired - f.Presented)
+	}
+	if a, ok := p.src.(interface{ AccumulatedFrames() int }); ok {
+		p.st.Accum = a.AccumulatedFrames()
 	}
 	if p.enc == nil || f.Format != p.srcFmt || f.Width != p.w || f.Height != p.h {
 		if err := p.openEncoder(f); err != nil {
@@ -94,9 +100,22 @@ func (p *sourcePipe) Next(timeout time.Duration, forceKey bool, dst []byte) (enc
 		}
 		forceKey = true
 	}
+	p.st.EncStart = transport.Mono()
 	pkt, err := p.enc.Encode(f, forceKey, dst)
+	p.st.EncEnd = transport.Mono()
+	if fs, ok := p.enc.(interface{ FirstSlice() time.Duration }); ok && fs.FirstSlice() > 0 {
+		p.st.FirstSlice = p.st.EncStart + int64(fs.FirstSlice())
+	}
 	return pkt, captureTS, err
 }
+
+// pipeStages are the transport.Mono times of the last Next.
+type pipeStages struct {
+	WaitStart, Acquired, EncStart, EncEnd, FirstSlice int64
+	Accum                                             int
+}
+
+func (p *sourcePipe) stages() pipeStages { return p.st }
 
 func (p *sourcePipe) openEncoder(f capture.Frame) error {
 	if p.enc != nil {
