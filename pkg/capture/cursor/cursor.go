@@ -13,8 +13,10 @@ type Rect struct{ X, Y, W, H int }
 // State is the system cursor.
 type State struct {
 	Visible bool
-	// Captured is set while an app holds the mouse, as a game does: the
-	// cursor is hidden, or confined to less than the whole desktop.
+	// Captured is set while an app confines the cursor to less than the
+	// whole desktop, as a game holding the mouse does. A hidden cursor
+	// alone is not captured: a page's cursor: none, a video player and
+	// Windows hiding the pointer while typing all hide it.
 	Captured bool
 	// X and Y are the cursor's place on the desktop, in physical pixels.
 	X, Y int
@@ -28,7 +30,7 @@ func Read() (State, error) { return read() }
 func classify(showing bool, clip, desktop Rect) State {
 	confined := clip.W > 0 && clip.H > 0 && desktop.W > 0 && desktop.H > 0 &&
 		(clip.X > desktop.X || clip.Y > desktop.Y || clip.X+clip.W < desktop.X+desktop.W || clip.Y+clip.H < desktop.Y+desktop.H)
-	return State{Visible: showing, Captured: !showing || confined}
+	return State{Visible: showing, Captured: confined}
 }
 
 // Normalize maps a desktop point onto 0..65535 across display, as absolute

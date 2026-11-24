@@ -11,9 +11,10 @@ func TestClassify(t *testing.T) {
 		want    State
 	}{
 		{"desktop, free", true, desk, State{Visible: true}},
-		{"hidden, free: mouselook that recentres", false, desk, State{Captured: true}},
+		{"hidden, free: a page's cursor: none, a video player, typing", false, desk, State{}},
 		{"shown, confined to a window: an RTS", true, Rect{0, 0, 1920, 1080}, State{Visible: true, Captured: true}},
-		{"hidden and confined", false, Rect{100, 100, 1, 1}, State{Captured: true}},
+		{"hidden and confined: mouselook", false, Rect{100, 100, 1, 1}, State{Captured: true}},
+		{"hidden, no clip reported", false, Rect{}, State{}},
 		{"confined on one edge only", true, Rect{-1920, 0, 7040, 1439}, State{Visible: true, Captured: true}},
 		{"no clip reported", true, Rect{}, State{Visible: true}},
 	} {
