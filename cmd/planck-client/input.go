@@ -12,6 +12,10 @@ import (
 // build, on the main thread.
 type inputForwarder struct {
 	send func(input.Event)
+	// onHUD, if set, hears each press of the HUD hotkey (hotkey true) and
+	// each button press, with its distance from the top in points.
+	onHUD func(hotkey bool, y float32)
+	hud   bool
 
 	keys    []mui.Key
 	mods    uint8
@@ -42,6 +46,9 @@ func (f *inputForwarder) view(c *mui.Context) {
 	}
 	if pressed && (!f.pressed || btn != f.button) {
 		f.sendButton(btn, true)
+		if f.onHUD != nil {
+			f.onHUD(false, y)
+		}
 	}
 	f.button, f.pressed = btn, pressed
 }
@@ -78,6 +85,11 @@ const hudChord = mui.Ctrl | mui.Alt
 // keyboard sends the modifiers and keys that changed since the last
 // frame, modifiers first going down and last coming up.
 func (f *inputForwarder) keyboard(held []mui.Key, m mui.Modifiers) {
+	hud := m&hudChord == hudChord && slices.Contains(held, mui.KeyH)
+	if hud && !f.hud && f.onHUD != nil {
+		f.onHUD(true, 0)
+	}
+	f.hud = hud
 	mods := hidModifiers(m)
 	for _, mk := range modifierKeys {
 		if mods&mk.bit != 0 && f.mods&mk.bit == 0 {

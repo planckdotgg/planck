@@ -53,3 +53,28 @@ func TestParseConfigRejects(t *testing.T) {
 		}
 	}
 }
+
+func TestParseConfigPolicy(t *testing.T) {
+	cfg, _, err := parseConfig(nil, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := policyLine(cfg.Policy); got != "auto" {
+		t.Errorf("default flags bind %q, want nothing", got)
+	}
+	cfg, _, err = parseConfig([]string{"-codec", "pyrowave", "-res", "1080p", "-fps", "120", "-vdd", "on", "-vdd-gpu", "4080",
+		"-bitrate", "400000", "-split", "off", "-vdd-primary"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := cfg.Policy
+	if p.Codec != "pyrowave" || p.Resolution != "1080p" || p.FPS != "120" || p.VirtualDisplay != "on" || p.VirtualDisplayGPU != "4080" ||
+		p.BitrateMbps != 400 || p.NVENC2EngineSplit != "off" || !cfg.VDDPrimary || cfg.Codec != 0 {
+		t.Errorf("policy %+v, legacy codec %v", p, cfg.Codec)
+	}
+	for _, args := range [][]string{{"-vdd", "maybe"}, {"-res", "wide"}, {"-bit-depth", "12"}, {"-subframe-slices", "3"}} {
+		if _, _, err := parseConfig(args, io.Discard); err == nil {
+			t.Errorf("%v: accepted", args)
+		}
+	}
+}

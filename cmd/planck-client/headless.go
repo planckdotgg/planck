@@ -17,6 +17,7 @@ import (
 	"github.com/planckdotgg/planck/internal/session"
 	"github.com/planckdotgg/planck/pkg/audio"
 	"github.com/planckdotgg/planck/pkg/decode"
+	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/input"
 	"github.com/planckdotgg/planck/pkg/player"
@@ -43,6 +44,20 @@ type Summary struct {
 	Height   int     `json:"height"`
 	Seconds  float64 `json:"duration_s"`
 
+	// The rest of the stream's identity comes from the host's resolved
+	// profile, and is empty from an older host. VirtualDisplay is what
+	// the profile chose; the host falls back to its physical display if
+	// it cannot make one, and logs it. A headless run shows nothing, so
+	// direct display is only ever allowed, not active.
+	Encoder              string                    `json:"encoder,omitempty"`
+	BitDepth             int                       `json:"bit_depth,omitempty"`
+	TargetFPS            int                       `json:"target_fps,omitempty"`
+	VirtualDisplay       bool                      `json:"virtual_display"`
+	DirectDisplayAllowed bool                      `json:"direct_display_allowed"`
+	DirectDisplayActive  bool                      `json:"direct_display_active"`
+	Warnings             []string                  `json:"warnings,omitempty"`
+	Profile              *defaults.ResolvedProfile `json:"profile,omitempty"`
+
 	FramesDecoded uint64  `json:"frames_decoded"`
 	FramesLost    uint64  `json:"frames_lost"`
 	FramesDropped uint64  `json:"frames_dropped"`
@@ -51,6 +66,8 @@ type Summary struct {
 	BitrateMbps   float64 `json:"bitrate_mbps"`
 	FECPct        float64 `json:"fec_pct"`
 	LossPct       float64 `json:"loss_pct"`
+	// FramesPartial counts PyroWave frames shown with chunks missing.
+	FramesPartial uint64 `json:"frames_partial"`
 
 	AudioPackets uint64  `json:"audio_packets"`
 	AudioBufMs   float64 `json:"audio_buf_ms"`
@@ -145,6 +162,7 @@ func headless(ctx context.Context, o options, d headlessDeps) (Summary, error) {
 		ConfigDir: o.configDir, Name: o.name, PIN: o.pin, NoAudio: o.noAudio, Tailscale: ts, Logf: logf,
 		HandshakeTimeout: o.timeout,
 		Quality:          session.Quality{Codec: o.codec, Chroma: o.chroma, FPS: o.fps, BitrateKbps: o.bitrateKbps, Slices: o.slices},
+		Overrides:        o.overrides,
 		OpenSink: func(c decode.Config) (session.Sink, error) {
 			inner, err := open(c)
 			if err != nil {
@@ -272,11 +290,21 @@ func headlessTarget(ctx context.Context, o options, ts tailnet, logf func(string
 }
 
 func summarize(st session.ClientStats, elapsed time.Duration, rtts, audioBuf []float64) Summary {
+	s := summarizeStats(st, elapsed, rtts, audioBuf)
+	if p := st.Profile; p != nil {
+		s.Encoder = fmt.Sprintf("%s on %s", p.EncoderAPI, p.EncodeAdapter.Name)
+		s.BitDepth, s.TargetFPS, s.VirtualDisplay, s.DirectDisplayAllowed = p.BitDepth, p.FPS, p.VirtualDisplay, p.DirectDisplay
+		s.Warnings, s.Profile = p.Warnings, p
+	}
+	return s
+}
+
+func summarizeStats(st session.ClientStats, elapsed time.Duration, rtts, audioBuf []float64) Summary {
 	return Summary{
 		Host: st.HostName, HostID: st.HostID, Addr: st.Addr, PathKind: st.Path, Codec: st.Codec, Chroma: st.Chroma,
 		Width: st.Width, Height: st.Height, Seconds: elapsed.Seconds(),
 		FramesLost: st.FramesLost, FramesDropped: st.FramesDropped, SinkErrors: st.SinkErrors,
-		FECPct: st.FECParityPct, LossPct: st.LossPct,
+		FECPct: st.FECParityPct, LossPct: st.LossPct, FramesPartial: st.FramesPartial,
 		AudioPackets: st.AudioPackets, AudioBufMs: percentiles(audioBuf).P50, InputSent: st.InputSent,
 		EncodeMs: fromLatency(st.Encode), NetRTTMs: percentiles(rtts), NetOneWayMs: fromLatency(st.Network),
 		DecodeMs: fromLatency(st.Decode), PresentMs: fromLatency(st.Present), E2EMs: fromLatency(st.E2E),
@@ -299,7 +327,13 @@ func printSummary(w io.Writer, s Summary) {
 	pc := func(p Percentiles) string { return fmt.Sprintf("%6.2f %6.2f %6.2f", p.P50, p.P95, p.P99) }
 	fmt.Fprintf(w, "host       %s (%s) at %s over %s\n", s.Host, s.HostID, s.Addr, s.PathKind)
 	fmt.Fprintf(w, "stream     %s %s %dx%d, %.1f s\n", s.Codec, s.Chroma, s.Width, s.Height, s.Seconds)
-	fmt.Fprintf(w, "frames     %d decoded, %d lost, %d dropped, %d sink errors, %.1f fps\n", s.FramesDecoded, s.FramesLost, s.FramesDropped, s.SinkErrors, s.FPS)
+	if s.Profile != nil {
+		fmt.Fprintf(w, "profile    %d-bit %d fps, %s, virtual display %v, direct display allowed %v\n", s.BitDepth, s.TargetFPS, s.Encoder, s.VirtualDisplay, s.DirectDisplayAllowed)
+		for _, warn := range s.Warnings {
+			fmt.Fprintf(w, "warning    %s\n", warn)
+		}
+	}
+	fmt.Fprintf(w, "frames     %d decoded, %d lost, %d partial, %d dropped, %d sink errors, %.1f fps\n", s.FramesDecoded, s.FramesLost, s.FramesPartial, s.FramesDropped, s.SinkErrors, s.FPS)
 	fmt.Fprintf(w, "network    %.1f Mbps, FEC parity %.1f%%, loss %.2f%%\n", s.BitrateMbps, s.FECPct, s.LossPct)
 	fmt.Fprintf(w, "audio      %d packets, %.1f ms buffered; input %d sent\n", s.AudioPackets, s.AudioBufMs, s.InputSent)
 	fmt.Fprintf(w, "ms           p50    p95    p99\n")

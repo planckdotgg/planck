@@ -13,11 +13,13 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/planckdotgg/planck/internal/session"
 	"github.com/planckdotgg/planck/pkg/config"
+	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/encode"
 )
 
@@ -50,13 +52,16 @@ type options struct {
 	fps            int
 	bitrateKbps    int
 	slices         int
-	noAudio        bool
-	silentAudio    bool
-	inputProbe     bool
-	inputEvery     time.Duration
-	json           bool
-	pathMode       pathMode
-	timeout        time.Duration
+	// overrides go to hosts that resolve the stream from both ends'
+	// capabilities; the fields above go to older hosts.
+	overrides   defaults.UserOverrides
+	noAudio     bool
+	silentAudio bool
+	inputProbe  bool
+	inputEvery  time.Duration
+	json        bool
+	pathMode    pathMode
+	timeout     time.Duration
 }
 
 func main() {
@@ -83,7 +88,8 @@ func parseOptions(args []string, out io.Writer) (options, error) {
 	var o options
 	fs := flag.NewFlagSet("planck-client", flag.ContinueOnError)
 	fs.SetOutput(out)
-	var codec, chroma, mode, probe string
+	var codec, chroma, mode, probe, fps, slices string
+	var k session.Knobs
 	fs.StringVar(&o.configDir, "config", "", "config directory (default: the user config dir /planck)")
 	fs.StringVar(&o.name, "name", "", "device name hosts pair this client under (default: the machine name)")
 	fs.BoolVar(&o.headless, "headless", false, "connect without a window, decode for -duration and print a summary")
@@ -93,17 +99,25 @@ func parseOptions(args []string, out io.Writer) (options, error) {
 	fs.StringVar(&o.pin, "pin", "", "the host's 6-digit pairing PIN, needed the first time unless both devices are one Tailscale user's")
 	fs.DurationVar(&o.duration, "duration", 10*time.Second, "headless: how long to stream")
 	fs.DurationVar(&o.timeout, "timeout", 15*time.Second, "headless: how long discovery and the handshake may take")
-	fs.StringVar(&codec, "codec", "", "headless: video codec to ask for: hevc, av1 or h264 (default: the host's choice)")
-	fs.StringVar(&chroma, "chroma", "", "headless: chroma to ask for: nv12, p010, yuv444 or yuv444p10 (default: the host's choice)")
-	fs.IntVar(&o.fps, "fps", 0, "headless: frame rate to ask for (default: the host's)")
-	fs.IntVar(&o.bitrateKbps, "bitrate", 0, "headless: maximum video bitrate in kbps (default: the path's ceiling)")
-	fs.IntVar(&o.slices, "slices", 0, "headless: FEC slices per frame to ask for (default: the host's)")
+	fs.StringVar(&codec, "codec", "auto", "video codec: auto, pyrowave, hevc, av1 or h264")
+	fs.StringVar(&chroma, "chroma", "auto", "chroma: auto, 420 or 444 (or nv12, p010, yuv444, yuv444p10)")
+	fs.StringVar(&k.BitDepth, "bit-depth", "auto", "bit depth: auto, 8 or 10")
+	fs.StringVar(&k.Resolution, "res", "auto", "stream size: auto (this screen's), 1080p, 1440p, 4k or WxH; needs the host's virtual display")
+	fs.StringVar(&fps, "fps", "auto", "frame rate: auto, 60, 120, 144 or 240")
+	fs.IntVar(&o.bitrateKbps, "bitrate", 0, "maximum video bitrate in kbps, for hosts that do not resolve the stream (default: the path's ceiling)")
+	fs.IntVar(&k.BitrateMbps, "bitrate-mbps", 0, "video bitrate in Mbps (0: auto)")
+	fs.StringVar(&slices, "slices", "auto", "codec slices sent as they finish: auto, 1, 4 or 8")
+	fs.StringVar(&k.VDD, "vdd", "auto", "host virtual display at this screen's size: auto, on or off")
+	fs.StringVar(&k.VDDGPU, "vdd-gpu", "", `host GPU that renders the virtual display and encodes, by name ("4080", "Radeon")`)
+	fs.StringVar(&k.Split, "nvenc-split", "auto", "NVENC two-engine split-frame encode: auto, on or off")
+	fs.StringVar(&k.Direct, "direct-display", "auto", "macOS full-screen direct-to-display: auto, on or off")
+	fs.StringVar(&k.VSync, "vsync", "auto", "present in step with the display: auto (off), on or off")
 	fs.BoolVar(&o.noAudio, "no-audio", false, "headless: do not ask for audio")
 	fs.BoolVar(&o.silentAudio, "silent-audio", false, "headless: receive and decode audio but play none of it")
 	fs.BoolVar(&o.inputProbe, "input-probe", false, "headless: send a zero mouse move once a second, which moves nothing")
 	fs.DurationVar(&o.inputEvery, "input-probe-every", time.Second, "headless: how often -input-probe sends")
 	fs.BoolVar(&o.json, "json", false, "headless: print the summary as JSON")
-	fs.StringVar(&mode, "path-mode", string(pathAuto), "headless: auto, lan or tailscale; lan and tailscale race only those paths and fail on another")
+	fs.StringVar(&mode, "path-mode", string(pathAuto), "auto, lan or tailscale; headless, lan and tailscale race only those paths and fail on another")
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}
@@ -111,21 +125,42 @@ func parseOptions(args []string, out io.Writer) (options, error) {
 		return o, fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
 	var err error
-	if codec != "" {
+	if codec != "" && codec != "auto" {
 		if o.codec, err = session.ParseCodec(codec); err != nil {
 			return o, err
 		}
+		k.Codec = codec
 	}
-	if chroma != "" {
+	if chroma != "" && chroma != "auto" {
 		if o.chroma, err = session.ParseChroma(chroma); err != nil {
 			return o, err
 		}
+		k.Chroma = chroma
+	}
+	if fps != "auto" {
+		if o.fps, err = strconv.Atoi(fps); err != nil {
+			return o, fmt.Errorf("-fps %q: want auto, 60, 120, 144 or 240", fps)
+		}
+		k.FPS = fps
+	}
+	if slices != "auto" {
+		if o.slices, err = strconv.Atoi(slices); err != nil {
+			return o, fmt.Errorf("-slices %q: want auto, 1, 4 or 8", slices)
+		}
+		k.Slices = slices
+	}
+	if o.bitrateKbps == 0 {
+		o.bitrateKbps = k.BitrateMbps * 1000
 	}
 	switch m := pathMode(mode); m {
 	case pathAuto, pathLAN, pathTailscale:
 		o.pathMode = m
+		k.Route = mode
 	default:
 		return o, fmt.Errorf("-path-mode %q: want auto, lan or tailscale", mode)
+	}
+	if o.overrides, err = k.Overrides(); err != nil {
+		return o, fmt.Errorf("overrides: %w", err)
 	}
 	for _, s := range strings.Split(probe, ",") {
 		if s = strings.TrimSpace(s); s == "" {

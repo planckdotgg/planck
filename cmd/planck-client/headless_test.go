@@ -336,3 +336,29 @@ func freeUDPPort(t *testing.T) int {
 	defer c.Close()
 	return c.LocalAddr().(*net.UDPAddr).Port
 }
+
+func TestParseOptionsOverrides(t *testing.T) {
+	o, err := parseOptions([]string{"-headless", "-connect", "a", "-codec", "pyrowave", "-chroma", "444", "-bit-depth", "10",
+		"-res", "1080p", "-fps", "120", "-bitrate-mbps", "400", "-vdd", "on", "-vdd-gpu", "4080", "-slices", "4",
+		"-nvenc-split", "off", "-direct-display", "off", "-vsync", "on", "-path-mode", "lan"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ov := o.overrides
+	if ov.Codec != "pyrowave" || ov.Chroma != "444" || ov.BitDepth != "10" || ov.Resolution != "1080p" || ov.FPS != "120" ||
+		ov.BitrateMbps != 400 || ov.VirtualDisplay != "on" || ov.VirtualDisplayGPU != "4080" || ov.SubFrameSlices != "4" ||
+		ov.NVENC2EngineSplit != "off" || ov.MetalDirectDisplay != "off" || ov.VSyncMode != "on" || ov.RoutePolicy != "lan" {
+		t.Errorf("overrides %+v", ov)
+	}
+	if o.codec != encode.PyroWave || o.fps != 120 || o.slices != 4 || o.bitrateKbps != 400_000 {
+		t.Errorf("legacy request: %+v", o)
+	}
+	if o, err := parseOptions([]string{"-headless", "-connect", "a"}, io.Discard); err != nil || o.overrides.Codec != "auto" || o.fps != 0 {
+		t.Errorf("defaults: %+v %v", o.overrides, err)
+	}
+	for _, args := range [][]string{{"-fps", "90"}, {"-slices", "3"}, {"-res", "wide"}, {"-vdd", "maybe"}, {"-vsync", "x"}} {
+		if _, err := parseOptions(append([]string{"-headless", "-connect", "a"}, args...), io.Discard); err == nil {
+			t.Errorf("%v: accepted", args)
+		}
+	}
+}
