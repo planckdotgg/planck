@@ -436,3 +436,28 @@ func TestBackendOverlayPlacements(t *testing.T) {
 		t.Fatalf("legacy layout %+v, want %+v", got, want)
 	}
 }
+
+// TestBackendFailedSwitchEndsTheStream: a connect that replaces a live
+// stream and then fails leaves no stream behind, so the stream's window
+// closes rather than showing the old one's telemetry forever.
+func TestBackendFailedSwitchEndsTheStream(t *testing.T) {
+	h := startFakeHost(t, "off")
+	b, _ := newTestBackend(t, t.TempDir(), nil)
+	ctx := context.Background()
+	if err := b.Connect(ctx, h.Addr().String()); !errors.Is(err, ui.ErrPairingRequired) {
+		t.Fatalf("connect unpaired: %v", err)
+	}
+	if err := b.SubmitPIN(ctx, "246810"); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "the stream", func() bool { return b.Telemetry().Connected })
+
+	dead, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	defer cancel()
+	if err := b.Connect(dead, "127.0.0.1:9"); err == nil {
+		t.Fatal("connect to a closed port succeeded")
+	}
+	if tel := b.Telemetry(); tel.Connected {
+		t.Fatalf("telemetry after the failed switch: %+v, want no stream", tel)
+	}
+}

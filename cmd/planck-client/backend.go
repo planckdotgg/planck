@@ -440,6 +440,20 @@ func (b *backend) dial(ctx context.Context, t session.Target, pin string) error 
 	if old != nil {
 		old.Close()
 	}
+	err := b.dialNew(ctx, t, pin, s)
+	if err != nil && old != nil {
+		// The stream this one replaced is gone; its telemetry must go too.
+		b.mu.Lock()
+		if b.client == nil {
+			b.tel, b.connected = ui.Telemetry{}, ""
+		}
+		b.mu.Unlock()
+		b.changed()
+	}
+	return err
+}
+
+func (b *backend) dialNew(ctx context.Context, t session.Target, pin string, s ui.Settings) error {
 	ov := b.overridesFor(targetKey(t))
 	routes, err := routeAllowed(t, ov.RoutePolicy)
 	if err != nil {
