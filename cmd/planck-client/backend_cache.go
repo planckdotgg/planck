@@ -119,29 +119,36 @@ func (b *backend) RunningApps() []string { return slices.Clone(b.caches.runningA
 
 func (b *backend) PrivacyModeProblem() string { return b.caches.privacy.get() }
 
-// pairedFileCache keeps paired-clients.json's clients while the file's
-// size and modification time stay the same.
+// pairedFileCache keeps paired-clients.json's clients while the file stays
+// the same file with the same size and modification time.
 type pairedFileCache struct {
 	mu    sync.Mutex
-	key   pairedFileKey
+	info  os.FileInfo
 	all   map[string]session.PairedClient
 	valid bool
 }
 
-type pairedFileKey struct {
-	exists bool
-	size   int64
-	mod    time.Time
+// sameFile also compares identity: an atomic replace (temp file + rename)
+// can keep the size and modification time.
+func sameFile(a, b os.FileInfo) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Size() == b.Size() && a.ModTime().Equal(b.ModTime()) && os.SameFile(a, b)
 }
 
 func (p *pairedFileCache) load(dir string, logf func(string, ...any)) map[string]session.PairedClient {
-	var key pairedFileKey
-	if fi, err := os.Stat(filepath.Join(dir, session.PairedClientsFile)); err == nil {
-		key = pairedFileKey{exists: true, size: fi.Size(), mod: fi.ModTime()}
+	info, err := os.Stat(filepath.Join(dir, session.PairedClientsFile))
+	if err != nil {
+		info = nil
+	} else {
+		// Windows reads the file ID on first SameFile, from the path; pin
+		// it now, before a rename can swap the file under the cached info.
+		os.SameFile(info, info)
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.valid && p.key == key {
+	if p.valid && sameFile(p.info, info) {
 		return maps.Clone(p.all)
 	}
 	all, err := session.LoadPairedClients(dir)
@@ -150,12 +157,12 @@ func (p *pairedFileCache) load(dir string, logf func(string, ...any)) map[string
 		p.valid = false
 		return all
 	}
-	p.key, p.all, p.valid = key, all, true
+	p.info, p.all, p.valid = info, all, true
 	return maps.Clone(all)
 }
 
 func (p *pairedFileCache) invalidate() {
 	p.mu.Lock()
-	p.valid, p.all = false, nil
+	p.valid, p.all, p.info = false, nil, nil
 	p.mu.Unlock()
 }

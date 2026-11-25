@@ -164,3 +164,46 @@ func TestPairedClientsWhileNotHostingReadsChangedFileOnly(t *testing.T) {
 		t.Fatalf("after an edit %+v", pc)
 	}
 }
+
+// TestPairedClientsSeesAtomicReplace: a temp file renamed over
+// paired-clients.json with the same size and time is a new file.
+func TestPairedClientsSeesAtomicReplace(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, session.PairedClientsFile)
+	fpA, fpB := string(bytes.Repeat([]byte("a"), 64)), string(bytes.Repeat([]byte("b"), 64))
+	body := func(fp string) []byte {
+		return []byte(`{"` + fp + `":{"name":"mac","method":"pin","pairedAt":"2026-11-01T00:00:00Z"}}`)
+	}
+	mod := time.Unix(1_800_000_000, 0)
+	if err := os.WriteFile(path, body(fpA), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, mod, mod); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := newTestBackend(t, dir, nil)
+	if pc := b.PairedClients(); len(pc) != 1 || pc[0].Fingerprint != fpA {
+		t.Fatalf("paired %+v", pc)
+	}
+
+	tmp := filepath.Join(dir, "paired-clients.json.tmp")
+	if err := os.WriteFile(tmp, body(fpB), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(tmp, mod, mod); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Size() != int64(len(body(fpA))) || !fi.ModTime().Equal(mod) {
+		t.Fatalf("replacement size %d mod %v, want %d %v", fi.Size(), fi.ModTime(), len(body(fpA)), mod)
+	}
+	if pc := b.PairedClients(); len(pc) != 1 || pc[0].Fingerprint != fpB {
+		t.Fatalf("after an atomic replace %+v", pc)
+	}
+}
