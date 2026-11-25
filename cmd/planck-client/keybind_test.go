@@ -302,3 +302,35 @@ func TestCtrlAltDelIgnoresSwap(t *testing.T) {
 		}
 	}
 }
+
+// TestForwarderReleasesKeyBeforeNeverSendChord: a key that went down on
+// the host comes up there, though the modifier pressed since makes it a
+// never-sent chord.
+func TestForwarderReleasesKeyBeforeNeverSendChord(t *testing.T) {
+	var sent []input.Event
+	f := &inputForwarder{send: func(ev input.Event) { sent = append(sent, ev) }, local: rebound(t, nil, "Alt+Q")}
+	f.keyboard([]mui.Key{mui.KeyQ}, 0)
+	f.keyboard([]mui.Key{mui.KeyQ}, mui.Alt)
+	f.keyboard(nil, mui.Alt)
+	f.keyboard(nil, 0)
+	var downs, ups int
+	for _, ev := range sent {
+		if ev.Type == input.TypeKey && ev.Key.Usage == input.KeyQ {
+			if ev.Key.Pressed {
+				downs++
+			} else {
+				ups++
+			}
+		}
+	}
+	if downs != 1 || ups != 1 {
+		t.Errorf("Q went down %d times and up %d times on the host, want once each", downs, ups)
+	}
+	f.keyboard([]mui.Key{mui.KeyQ}, mui.Alt)
+	f.keyboard(nil, 0)
+	for _, ev := range sent[len(sent)-2:] {
+		if ev.Key.Usage == input.KeyQ {
+			t.Errorf("the never-sent Alt+Q reached the host: %+v", ev.Key)
+		}
+	}
+}

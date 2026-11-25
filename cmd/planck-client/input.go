@@ -27,8 +27,9 @@ type inputForwarder struct {
 	// local are the chords never sent to the host.
 	local *localKeys
 
-	keys []mui.Key
-	mods uint8
+	// keys are the keys down on the host; next is scratch for the next.
+	keys, next []mui.Key
+	mods       uint8
 	// over is whether the host has the pointer's position x, y.
 	over bool
 	x, y uint16
@@ -241,8 +242,13 @@ func (f *inputForwarder) keyboard(held []mui.Key, m mui.Modifiers) {
 			f.sendKey(k, true)
 		}
 	}
-	f.keys = append(f.keys[:0], held...)
-	f.keys = slices.DeleteFunc(f.keys, func(k mui.Key) bool { return f.localKey(k, m) })
+	f.next = f.next[:0]
+	for _, k := range held {
+		if slices.Contains(f.keys, k) || !f.localKey(k, m) {
+			f.next = append(f.next, k)
+		}
+	}
+	f.keys, f.next = f.next, f.keys
 	for _, mk := range modifierKeys {
 		if mods&mk.bit == 0 && f.mods&mk.bit != 0 {
 			f.mods &^= mk.bit
