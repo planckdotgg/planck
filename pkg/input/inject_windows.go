@@ -7,6 +7,8 @@ import (
 	"sync"
 	"syscall"
 	"unsafe"
+
+	"github.com/planckdotgg/planck/pkg/gamepad"
 )
 
 var procSendInput = syscall.NewLazyDLL("user32.dll").NewProc("SendInput")
@@ -62,8 +64,8 @@ type inputRecord struct {
 
 // SendInputInjector injects keyboard and mouse input with SendInput.
 // Absolute moves cover the display SetTarget names, the primary one until
-// then. Gamepads need a virtual controller driver (ViGEmBus) that is not
-// wired in yet, so they return ErrUnsupported.
+// then. Gamepads plug into ViGEmBus virtual controllers the first time
+// each sends a state; without ViGEmBus they return ErrUnsupported.
 type SendInputInjector struct {
 	in inputRecord
 	// post replaces SendInput in tests, which must never move the cursor.
@@ -71,6 +73,46 @@ type SendInputInjector struct {
 
 	mu               sync.Mutex
 	display, desktop Rect
+
+	padMu   sync.Mutex
+	padType gamepad.PadType
+	pads    *gamepad.VirtualPads
+	padErr  error
+}
+
+// SetGamepadType sets what virtual controllers appear as; pads already
+// plugged in keep their type until Gamepads().ResetSlots.
+func (s *SendInputInjector) SetGamepadType(t gamepad.PadType) {
+	s.padMu.Lock()
+	defer s.padMu.Unlock()
+	s.padType = t
+	if s.pads != nil {
+		s.pads.SetType(t)
+	}
+}
+
+// Gamepads opens the virtual controllers on first use, for slot
+// management and rumble. A failed open is kept: ViGEmBus installed later
+// takes a new injector.
+func (s *SendInputInjector) Gamepads() (*gamepad.VirtualPads, error) {
+	s.padMu.Lock()
+	defer s.padMu.Unlock()
+	if s.pads == nil && s.padErr == nil {
+		s.pads, s.padErr = gamepad.OpenVirtualPads(s.padType)
+		if s.padErr != nil {
+			s.padErr = fmt.Errorf("%w: %w", ErrUnsupported, s.padErr)
+		}
+	}
+	return s.pads, s.padErr
+}
+
+func (s *SendInputInjector) gamepad(g GamepadState) error {
+	pads, err := s.Gamepads()
+	if err != nil {
+		return err
+	}
+	return pads.Submit(g.Index, gamepad.State{Buttons: g.Buttons, LT: g.LeftTrigger, RT: g.RightTrigger,
+		LX: g.LeftX, LY: g.LeftY, RX: g.RightX, RY: g.RightY})
 }
 
 // SetTarget makes absolute moves cover display, within the desktop of
@@ -187,13 +229,25 @@ func (s *SendInputInjector) Inject(ev Event) error {
 			return s.mouse(0, 0, uint32(int32(ev.Wheel.DX)), mouseeventfHWheel)
 		}
 		return nil
-	case TypeGamepad, TypeRumble:
+	case TypeGamepad:
+		return s.gamepad(ev.Gamepad)
+	case TypeRumble:
 		return ErrUnsupported
 	}
 	return fmt.Errorf("%w: type %d", ErrInvalid, ev.Type)
 }
 
-func (s *SendInputInjector) Close() error { return nil }
+// Close unplugs the virtual controllers.
+func (s *SendInputInjector) Close() error {
+	s.padMu.Lock()
+	defer s.padMu.Unlock()
+	if s.pads == nil {
+		return nil
+	}
+	err := s.pads.Close()
+	s.pads, s.padErr = nil, ErrUnsupported
+	return err
+}
 
 var (
 	_ Injector = (*SendInputInjector)(nil)
