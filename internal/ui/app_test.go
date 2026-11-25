@@ -134,54 +134,74 @@ func TestQuickConnect(t *testing.T) {
 	f.connectResult <- errors.New("unreachable")
 }
 
-func TestPairingRequiredOpensPairing(t *testing.T) {
+// TestPairingRequiredOpensPanel: a host that needs pairing opens the PIN
+// panel under Quick connect; Pair & connect waits for six digits and the
+// fingerprint tick, then the panel collapses.
+func TestPairingRequiredOpensPanel(t *testing.T) {
 	f := newFake()
 	f.hosts = sampleHosts()
-	_, tt := newTester(t, f)
+	a, tt := newTester(t, f)
 	f.set(func(f *fakeBackend) {
-		f.pair = PairState{Status: PairPending, HostName: "cabin-pc",
+		f.pair = PairState{Status: PairPending, HostName: "cabin-pc", Address: "100.64.0.9:47701",
 			Fingerprint: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"}
 	})
 	f.connectResult <- ErrPairingRequired
 	if err := tt.Click("Connect to cabin-pc"); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, tt, func() bool { return tt.HasText("With a PIN") })
-	if !tt.HasText("9F86 D081 884C 7D65 9A2F EAA0 C55A D015") {
-		t.Fatalf("fingerprint missing: %q", tt.Texts())
+	eventually(t, tt, func() bool { return tt.HasText("Enter the six digits on cabin-pc’s screen") })
+	if a.screen != ScreenHosts {
+		t.Fatalf("screen %v, want Hosts", a.screen)
+	}
+	for _, s := range []string{"9F86 D081 884C 7D65 9A2F EAA0 C55A D015", "Pairing", "Waiting for the code"} {
+		if !tt.HasText(s) {
+			t.Errorf("missing %q: %q", s, tt.Texts())
+		}
+	}
+	if info, ok := tt.AccessByRole(mui.RoleButton, "Connect"); !ok || info.Disabled {
+		t.Fatalf("Connect missing beside the panel: %+v %v", info, ok)
 	}
 	snapshot(t, tt, "pairing-pin")
 
 	click(t, tt, "PIN")
 	tt.Type("48a12-07x9")
 	tt.Frame()
-	click(t, tt, "Pair")
-	eventually(t, tt, func() bool { return tt.HasText("Paired with cabin-pc") })
+	if a.pin != "481207" {
+		t.Fatalf("pin = %q", a.pin)
+	}
+	click(t, tt, "Pair & connect")
+	tt.Frame()
+	f.mu.Lock()
+	n := len(f.pins)
+	f.mu.Unlock()
+	if n != 0 {
+		t.Fatal("paired before the fingerprints were ticked as matching")
+	}
+	click(t, tt, "They match on both screens")
+	click(t, tt, "Pair & connect")
+	eventually(t, tt, func() bool { _, ok := tt.Access("PIN"); return !ok })
 	f.mu.Lock()
 	pins := slices.Clone(f.pins)
 	f.mu.Unlock()
 	if !slices.Equal(pins, []string{"481207"}) {
 		t.Fatalf("pins = %q, want [481207]", pins)
 	}
-	click(t, tt, "Back to hosts")
 	if !tt.HasText("Pair & Connect") {
-		t.Fatalf("not back on hosts: %q", tt.Texts())
+		t.Fatalf("cards not back after pairing: %q", tt.Texts())
 	}
 }
 
 func TestPairShortPINNotSubmitted(t *testing.T) {
 	f := newFake()
 	f.pair = PairState{Status: PairPending, HostName: "cabin-pc"}
-	a, tt := newTester(t, f)
-	a.screen = ScreenPairing
-	tt.Frame()
+	_, tt := newTester(t, f)
 	click(t, tt, "PIN")
 	tt.Type("123")
 	tt.Frame()
-	click(t, tt, "Pair")
-	if !tt.HasText("Enter all six digits") {
-		t.Fatalf("hint missing: %q", tt.Texts())
+	if info, ok := tt.Access("Pair & connect"); !ok || !info.Disabled {
+		t.Fatalf("Pair & connect not disabled with three digits: %+v %v", info, ok)
 	}
+	tt.Key(0, mui.KeyEnter)
 	tt.Frame()
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -190,18 +210,48 @@ func TestPairShortPINNotSubmitted(t *testing.T) {
 	}
 }
 
+// TestPairWrongCodeClears: a refused code clears the cells and says why.
+func TestPairWrongCodeClears(t *testing.T) {
+	f := newFake()
+	f.pair = PairState{Status: PairPending, HostName: "cabin-pc"}
+	a, tt := newTester(t, f)
+	click(t, tt, "PIN")
+	tt.Type("111111")
+	tt.Frame()
+	f.set(func(f *fakeBackend) {
+		f.pair.Status, f.pair.Error = PairFailed, "The host did not accept that PIN."
+	})
+	tt.Frame()
+	if a.pin != "" || !tt.HasText("The host did not accept that PIN.") {
+		t.Fatalf("pin %q after a refusal: %q", a.pin, tt.Texts())
+	}
+	click(t, tt, "Cancel")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.cancels != 1 {
+		t.Fatalf("cancels = %d", f.cancels)
+	}
+}
+
+// TestTailnetTrust: a tailnet peer pairs on its own card, with no code and
+// no fingerprint check.
 func TestTailnetTrust(t *testing.T) {
 	f := newFake()
-	f.pair = PairState{Status: PairPending, HostName: "studio-mac", TailscaleSameUser: true}
-	a, tt := newTester(t, f)
-	a.screen = ScreenPairing
-	tt.Frame()
-	if tt.HasText("Host fingerprint, SHA-256") {
-		t.Fatal("same-user tailnet peer asked for a fingerprint check")
+	f.hosts = sampleHosts()
+	f.tailnet = TailnetStatus{Running: true, User: "watzon@github"}
+	f.pair = PairState{Status: PairPending, HostName: "studio-mac", TailscaleSameUser: true, Fingerprint: "7b4d00000000c219"}
+	_, tt := newTester(t, f)
+	if _, ok := tt.Access("PIN"); ok || tt.HasText("Host fingerprint · SHA-256") {
+		t.Fatal("same-user tailnet peer asked for a code or a fingerprint check")
+	}
+	for _, s := range []string{"your tailnet · no code", "watzon@github · fp 7B4D…C219"} {
+		if !tt.HasText(s) {
+			t.Errorf("card misses %q: %q", s, tt.Texts())
+		}
 	}
 	snapshot(t, tt, "pairing-tailnet")
 	click(t, tt, "Trust studio-mac")
-	eventually(t, tt, func() bool { return tt.HasText("Paired with studio-mac") })
+	eventually(t, tt, func() bool { return !tt.HasText("your tailnet · no code") })
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.trusts != 1 {
@@ -209,20 +259,48 @@ func TestTailnetTrust(t *testing.T) {
 	}
 }
 
-func TestPairingIdle(t *testing.T) {
+// TestTailnetTrustWithoutCard: a tailnet peer reached by address, with no
+// card, pairs from the panel.
+func TestTailnetTrustWithoutCard(t *testing.T) {
 	f := newFake()
+	f.pair = PairState{Status: PairPending, HostName: "studio-mac", TailscaleSameUser: true}
 	_, tt := newTester(t, f)
-	click(t, tt, "Pairing")
-	if !tt.HasText("No pairing request") {
-		t.Fatalf("idle pairing missing: %q", tt.Texts())
+	click(t, tt, "Not now")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.cancels != 1 {
+		t.Fatalf("cancels = %d", f.cancels)
 	}
 }
 
-func TestRailNavigation(t *testing.T) {
+func TestRailHasNoPairing(t *testing.T) {
 	f := newFake()
 	_, tt := newTester(t, f)
+	if _, ok := tt.AccessByRole(mui.RoleButton, "Pairing"); ok {
+		t.Fatal("the rail still has a Pairing button")
+	}
+}
+
+// TestRailNavigation: the rail's three pages, each button where the
+// design puts its marker (button top + 16 = 132, 196, 260).
+func TestRailNavigation(t *testing.T) {
+	f := newFake()
+	a, tt := newTester(t, f)
+	for i, name := range []string{"Hosts", "Statistics", "Settings"} {
+		info, ok := tt.AccessByRole(mui.RoleButton, name)
+		if !ok {
+			t.Fatalf("no %s button", name)
+		}
+		if want := float32(132 + 64*i); info.Bounds.Y+16 != want {
+			t.Errorf("%s marker at %v, want %v", name, info.Bounds.Y+16, want)
+		}
+	}
+	click(t, tt, "Statistics")
+	if a.screen != ScreenStatistics || !tt.HasText("No slices in flight") {
+		t.Fatalf("statistics not shown: %q", tt.Texts())
+	}
 	click(t, tt, "Settings")
-	if !tt.HasText("Bit depth") || !tt.HasText("Encoder and GPU") {
+	if a.screen != ScreenSettings || !tt.HasText("Open streams in full screen") {
 		t.Fatalf("settings not shown: %q", tt.Texts())
 	}
 	click(t, tt, "Hosts")
@@ -236,16 +314,22 @@ func TestSettingsSave(t *testing.T) {
 	f.tailnet = TailnetStatus{Running: true, User: "watzon@"}
 	f.encoders = []EncoderInfo{{GPU: "GeForce RTX 4080", API: "NVENC", EncodeMs: 1.34}, {GPU: "UHD Graphics 770", API: "oneVPL"}}
 	a, tt := newTester(t, f)
-	a.screen = ScreenSettings
+	a.screen, a.set.cat = ScreenSettings, catHost
 	tt.Frame()
-	if !tt.HasText("1.3 ms") || !tt.HasText("Relay bitrate cap") || !tt.HasText(fmt.Sprint(derpCapMbps())) {
-		t.Fatalf("encoder reading or DERP cap missing: %q", tt.Texts())
+	if !tt.HasText("1.3 ms") {
+		t.Fatalf("encoder reading missing: %q", tt.Texts())
 	}
 	snapshot(t, tt, "settings")
-
-	click(t, tt, "AV1")
-	clickScrolled(t, tt, "Stream audio")
 	clickScrolled(t, tt, "GeForce RTX 4080")
+
+	click(t, tt, "Network")
+	if !tt.HasText("Relay bitrate cap") || !tt.HasText(fmt.Sprint(derpCapMbps())) {
+		t.Fatalf("DERP cap missing: %q", tt.Texts())
+	}
+	click(t, tt, "Video & Display")
+	click(t, tt, "AV1")
+	click(t, tt, "Audio")
+	clickScrolled(t, tt, "Stream audio")
 	got := f.Settings()
 	if ov := f.override(""); ov.Codec != "av1" || got.AudioEnabled || got.Encoder != "GeForce RTX 4080" {
 		t.Fatalf("settings = %+v, overrides %+v", got, ov)
@@ -255,6 +339,7 @@ func TestSettingsSave(t *testing.T) {
 	}
 
 	f.set(func(f *fakeBackend) { f.saveErr = errors.New("disk full") })
+	click(t, tt, "Input & Hotkeys")
 	clickScrolled(t, tt, "Send system keys to the host")
 	if !tt.HasText("Could not save settings: disk full") {
 		t.Fatalf("save error missing: %q", tt.Texts())
@@ -265,13 +350,16 @@ func TestSettingsNoSaveWithoutChange(t *testing.T) {
 	f := newFake()
 	a, tt := newTester(t, f)
 	a.screen = ScreenSettings
-	for range 3 {
+	for cat := range numCategories {
+		a.set.cat = cat
+		tt.Frame()
 		tt.Frame()
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if len(f.saved) != 0 {
-		t.Fatalf("saved without a change: %d times", len(f.saved))
+	if len(f.saved) != 0 || f.hostSaves != 0 || f.layoutSaves != 0 || f.ovSaves != 0 {
+		t.Fatalf("saved without a change: settings %d, host %d, layout %d, overrides %d times",
+			len(f.saved), f.hostSaves, f.layoutSaves, f.ovSaves)
 	}
 }
 
@@ -324,24 +412,23 @@ func TestPairedButStreamFailed(t *testing.T) {
 	f.pair = PairState{Status: PairPending, HostName: "bigboi"}
 	f.pinErr = errors.New("session: video sink: no window")
 	a, tt := newTester(t, f)
-	a.screen = ScreenPairing
-	tt.Frame()
 	click(t, tt, "PIN")
 	tt.Type("623543")
 	tt.Frame()
-	click(t, tt, "Pair")
+	click(t, tt, "Pair & connect")
 	eventually(t, tt, func() bool { return tt.HasText("Could not connect: session: video sink: no window") })
 	if a.screen != ScreenHosts || a.pin != "" {
 		t.Fatalf("screen %v, pin %q after pairing then failing to stream", a.screen, a.pin)
 	}
 }
 
-// TestStreamEndShowsHosts: a stream started from Pairing ends on Hosts.
+// TestStreamEndShowsHosts: a stream started from another page ends on
+// Hosts.
 func TestStreamEndShowsHosts(t *testing.T) {
 	f := newFake()
 	f.pair = PairState{Status: PairPaired, HostName: "bigboi"}
 	a, tt := newTester(t, f)
-	a.screen = ScreenPairing
+	a.screen = ScreenStatistics
 	f.set(func(f *fakeBackend) { f.tel = sampleTelemetry() })
 	tt.Frame()
 	f.set(func(f *fakeBackend) { f.tel = Telemetry{} })

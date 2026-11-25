@@ -12,9 +12,21 @@ import (
 func settingsTester(t *testing.T, f *fakeBackend) (*App, *mui.Tester) {
 	t.Helper()
 	a, tt := newTester(t, f)
-	a.screen = ScreenSettings
+	a.screen, a.set.cat = ScreenSettings, catVideo
 	tt.Frame()
 	return a, tt
+}
+
+// choose opens the dropdown named name and picks option.
+func choose(t *testing.T, tt *mui.Tester, name, option string) {
+	t.Helper()
+	info, ok := tt.AccessByRole(mui.RolePopUpButton, name)
+	if !ok {
+		t.Fatalf("no %s dropdown: %q", name, tt.Texts())
+	}
+	tt.ClickAt(info.Bounds.X+info.Bounds.W/2, info.Bounds.Y+info.Bounds.H/2)
+	tt.Frame()
+	click(t, tt, option)
 }
 
 // TestOverrideKnobsAllHosts: every knob in Settings starts on Auto and
@@ -22,17 +34,24 @@ func settingsTester(t *testing.T, f *fakeBackend) (*App, *mui.Tester) {
 func TestOverrideKnobsAllHosts(t *testing.T) {
 	f := newFake()
 	_, tt := settingsTester(t, f)
-	for _, k := range []knob{knobCodec, knobChroma, knobBitDepth, knobResolution, knobFPS, knobVDD, knobSlices, knobSplit, knobDirect, knobVSync, knobRoute} {
+	for _, k := range []knob{knobCodec, knobChroma, knobBitDepth, knobFPS, knobVDD, knobSlices, knobSplit, knobDirect, knobVSync} {
 		if info, ok := tt.Access(k.title + ": Auto"); !ok || !info.Checked {
 			t.Errorf("%s: Auto not chosen at first (%+v, %v)", k.title, info, ok)
 		}
 	}
 	snapshot(t, tt, "settings-overrides")
-	for _, name := range []string{"Codec: PyroWave", "Chroma: 4:4:4", "Bit depth: 10-bit", "Resolution: 1440p", "Frame rate: 144",
+	choose(t, tt, "Resolution", "2560×1440")
+	for _, name := range []string{"Codec: PyroWave", "Chroma: 4:4:4", "Bit depth: 10-bit", "Frame rate: 144",
 		"Bitrate: Manual", "Virtual display: On", "Sub-frame slices: 4", "NVENC two-engine split: Off",
-		"Direct to display: On", "VSync: On", "Route: LAN"} {
+		"Direct to display: On", "VSync: On"} {
 		clickScrolled(t, tt, name)
 	}
+	click(t, tt, "Network")
+	if info, ok := tt.Access("Route: Auto"); !ok || !info.Checked {
+		t.Errorf("Route: Auto not chosen at first (%+v, %v)", info, ok)
+	}
+	click(t, tt, "Route: LAN")
+	click(t, tt, "Video & Display")
 	want := defaults.UserOverrides{Codec: "pyrowave", Chroma: "444", BitDepth: "10", Resolution: "1440p", FPS: "144",
 		BitrateMbps: manualBitrateMbps, VirtualDisplay: "on", SubFrameSlices: "4", NVENC2EngineSplit: "off",
 		MetalDirectDisplay: "on", VSyncMode: "on", RoutePolicy: "lan"}.Normalize()
@@ -57,7 +76,7 @@ func TestOverrideKnobsAllHosts(t *testing.T) {
 func TestOverrideCustomSizeAndGPU(t *testing.T) {
 	f := newFake()
 	_, tt := settingsTester(t, f)
-	click(t, tt, "Resolution: Custom")
+	choose(t, tt, "Resolution", "Custom…")
 	if got := f.override(""); got.Resolution != "custom" || got.CustomWidth != customWidth || got.CustomHeight != customHeight {
 		t.Fatalf("custom: %+v", got)
 	}
@@ -102,7 +121,7 @@ func typeInto(t *testing.T, tt *mui.Tester, field, text string) {
 }
 
 // TestOverrideHostScope: a host's scope saves under its ID only, says
-// what its auto knobs follow, and Reset to Auto clears that host alone.
+// what its auto knobs follow, and Clear overrides clears that host alone.
 func TestOverrideHostScope(t *testing.T) {
 	f := newFake()
 	f.hosts = sampleHosts()
@@ -123,7 +142,7 @@ func TestOverrideHostScope(t *testing.T) {
 	if got := f.override(""); got.Codec != defaults.Auto || got.FPS != "120" {
 		t.Fatalf("all hosts changed: %+v", got)
 	}
-	click(t, tt, "Reset to Auto")
+	click(t, tt, "Clear overrides")
 	if got := f.override("h-bigboi"); got != (defaults.UserOverrides{}).Normalize() {
 		t.Fatalf("bigboi after reset: %+v", got)
 	}

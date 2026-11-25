@@ -52,6 +52,8 @@ var (
 	knobRoute = knob{id: "routePolicy", title: "Route", desc: "Auto uses the LAN when it reaches the host, and Tailscale when not.",
 		values: []string{"auto", "lan", "tailscale"}, labels: []string{"Auto", "LAN", "Tailscale"},
 		field: func(o *defaults.UserOverrides) *string { return (*string)(&o.RoutePolicy) }}
+
+	allKnobs = []knob{knobCodec, knobChroma, knobBitDepth, knobResolution, knobFPS, knobVDD, knobSlices, knobSplit, knobDirect, knobVSync, knobRoute}
 )
 
 const (
@@ -78,6 +80,9 @@ type overrideEdit struct {
 	before defaults.UserOverrides
 	o      defaults.UserOverrides
 	base   *defaults.UserOverrides
+	// policy is what the scope's host forces, while it streams: a knob it
+	// sets shows as Set by host.
+	policy *defaults.UserOverrides
 }
 
 func (a *App) editOverrides(scope overrideScope) *overrideEdit {
@@ -138,126 +143,53 @@ func (e *overrideEdit) knobControl(c *mui.Context, k knob) {
 	pickFrom(c, k.title, k.values, k.labels, k.field(&e.o))
 }
 
-func (e *overrideEdit) knobRow(c *mui.Context, k knob) {
-	desc := k.desc
-	if s := e.inherited(k); s != "" {
-		desc = s
+// forced is the value the host's policy sets k to, if it sets one.
+func (e *overrideEdit) forced(k knob) (string, bool) {
+	if e.policy == nil {
+		return "", false
 	}
-	settingRow(c, k.title, desc, func() { e.knobControl(c, k) })
+	v := *k.field(e.policy)
+	if v == "" || v == defaults.Auto {
+		return "", false
+	}
+	if i := indexOf(k.values, v); i >= 0 {
+		return k.labels[i], true
+	}
+	return v, true
 }
 
-// resolutionRow adds the custom size's fields under Custom.
-func (a *App) resolutionRow(c *mui.Context, e *overrideEdit) {
-	before := e.o.Resolution
-	e.knobRow(c, knobResolution)
-	if e.o.Resolution != "custom" {
-		return
-	}
-	if before != "custom" && (e.o.CustomWidth == 0 || e.o.CustomHeight == 0) {
-		e.o.CustomWidth, e.o.CustomHeight = customWidth, customHeight
-	}
-	settingRow(c, "Custom size", fmt.Sprintf("Even sizes from %d x %d to %d x %d.",
-		defaults.MinCustomWidth, defaults.MinCustomHeight, defaults.MaxCustomWidth, defaults.MaxCustomHeight), func() {
-		mui.Row(c).Gap(theme.Space2).AlignItems(mui.Center).Children(func() {
-			if v, ok := a.drafts.field(c, e.scope.hostID+":customWidth", "Custom width", strconv.Itoa(e.o.CustomWidth), "", 80); ok {
-				e.o.CustomWidth = a.drafts.size(v, e.o.CustomWidth, defaults.MinCustomWidth, defaults.MaxCustomWidth)
-			}
-			label(c, "x").TextColor(theme.RoleText3)
-			if v, ok := a.drafts.field(c, e.scope.hostID+":customHeight", "Custom height", strconv.Itoa(e.o.CustomHeight), "", 80); ok {
-				e.o.CustomHeight = a.drafts.size(v, e.o.CustomHeight, defaults.MinCustomHeight, defaults.MaxCustomHeight)
-			}
-		})
-	})
-}
-
-// bitrateRow is Auto or Manual, with a slider under Manual.
-func (e *overrideEdit) bitrateRow(c *mui.Context) {
-	desc := "Auto starts from the route and follows it."
-	if s := e.inheritedBitrate(); s != "" {
-		desc = s
-	}
-	settingRow(c, "Bitrate", desc, func() {
-		mode := 0
-		if e.o.BitrateMbps > 0 {
-			mode = 1
+// overridden counts the values a host's scope sets for itself, of all it
+// could.
+func (e *overrideEdit) overridden() (n, of int) {
+	for _, k := range allKnobs {
+		if *k.field(&e.o) != defaults.Auto {
+			n++
 		}
-		c.Key("knob:" + e.scope.hostID + ":bitrate")
-		if segmented(c, "Bitrate", &mode, "Auto", "Manual") {
-			e.o.BitrateMbps = 0
-			if mode == 1 {
-				e.o.BitrateMbps = manualBitrateMbps
-			}
-		}
-	})
-	if e.o.BitrateMbps == 0 {
-		return
 	}
-	mui.Column(c).FillWidth().Padding(0, theme.Space5, theme.Space4).Gap(theme.Space3).Children(func() {
-		mui.Row(c).FillWidth().AlignItems(mui.Baseline).Children(func() {
-			secondary(c, "Video bitrate").Grow(1)
-			hudReading(c, fmt.Sprint(e.o.BitrateMbps), "Mbps")
-		})
-		v := float64(e.o.BitrateMbps)
-		c.Key("knob:" + e.scope.hostID + ":bitrateSlider")
-		if mui.StepSlider(c, &v, minBitrateMbps, maxManualBitrateMbps, 5).Label("Video bitrate").FillWidth().Changed() {
-			e.o.BitrateMbps = int(v)
-		}
-	})
-}
-
-// gpuRow names the host GPU for the virtual display, by part of its name.
-func (a *App) gpuRow(c *mui.Context, e *overrideEdit) {
-	desc := "The host GPU that renders the virtual display and encodes, by part of its name."
-	if e.base != nil && e.o.VirtualDisplayGPU == "" && e.base.VirtualDisplayGPU != "" {
-		desc = "Auto follows all hosts: " + e.base.VirtualDisplayGPU
+	if e.o.BitrateMbps != 0 {
+		n++
 	}
-	settingRow(c, "Virtual display GPU", desc, func() {
-		if v, ok := a.drafts.field(c, e.scope.hostID+":gpu", "Virtual display GPU", e.o.VirtualDisplayGPU, "Auto", 160); ok {
-			e.o.VirtualDisplayGPU = strings.TrimSpace(v)
+	if e.o.VirtualDisplayGPU != "" {
+		n++
+	}
+	return n, len(allKnobs) + 2
+}
+
+// overrides: the scope sets one of ks, or the bitrate with bitrate, for
+// itself.
+func (e *overrideEdit) overrides(bitrate bool, ks ...knob) bool {
+	if e.scope.all() {
+		return false
+	}
+	if bitrate && e.o.BitrateMbps != 0 {
+		return true
+	}
+	for _, k := range ks {
+		if *k.field(&e.o) != defaults.Auto {
+			return true
 		}
-	})
-}
-
-// videoOverridePanel, hostOverridePanel and presentOverridePanel are
-// Settings' stream panels for one scope.
-func (a *App) videoOverridePanel(c *mui.Context, e *overrideEdit) {
-	panel(c, "Video", e.scope.name, func() {
-		e.knobRow(c, knobCodec)
-		divider(c)
-		e.knobRow(c, knobChroma)
-		divider(c)
-		e.knobRow(c, knobBitDepth)
-		divider(c)
-		a.resolutionRow(c, e)
-		divider(c)
-		e.knobRow(c, knobFPS)
-		divider(c)
-		e.bitrateRow(c)
-	})
-}
-
-func (a *App) hostOverridePanel(c *mui.Context, e *overrideEdit) {
-	panel(c, "Host display and encoder", e.scope.name, func() {
-		e.knobRow(c, knobVDD)
-		if e.o.VirtualDisplay != defaults.ToggleOff {
-			divider(c)
-			a.gpuRow(c, e)
-		}
-		divider(c)
-		e.knobRow(c, knobSlices)
-		divider(c)
-		e.knobRow(c, knobSplit)
-	})
-}
-
-func (a *App) presentOverridePanel(c *mui.Context, e *overrideEdit) {
-	panel(c, "Presentation and route", e.scope.name, func() {
-		e.knobRow(c, knobDirect)
-		divider(c)
-		e.knobRow(c, knobVSync)
-		divider(c)
-		e.knobRow(c, knobRoute)
-	})
+	}
+	return false
 }
 
 // drafts are text fields that edit a draft and commit it on Enter or when
@@ -268,8 +200,9 @@ type drafts struct {
 	err     string
 }
 
-// field draws the draft field key, showing value while it is not
-// focused. It returns the draft when the user commits it.
+// field draws the draft field key, width wide or as wide as its parent
+// for 0, showing value while it is not focused. It returns the draft when
+// the user commits it.
 func (d *drafts) field(c *mui.Context, key, name, value, placeholder string, width float32) (string, bool) {
 	if d.text == nil {
 		d.text, d.focused = map[string]*string{}, map[string]bool{}
@@ -282,8 +215,13 @@ func (d *drafts) field(c *mui.Context, key, name, value, placeholder string, wid
 	if !d.focused[key] {
 		*v = value
 	}
-	in := mui.TextInput(c.Key("draft:"+key), v).Width(width).Height(theme.SizeControl).Placeholder(placeholder).Label(name).
-		Radius(theme.RadiusSm).Background(theme.RoleRaised).Border(1, theme.RoleControlEdge)
+	in := mui.TextInput(c.Key("draft:"+key), v).Height(theme.SizeControl).Placeholder(placeholder).Label(name).
+		Font(theme.FontMono).FontSize(12).Radius(theme.RadiusSm).Background(theme.RoleRaised).Border(1, theme.RoleControlEdge)
+	if width > 0 {
+		in.Width(width)
+	} else {
+		in.FillWidth()
+	}
 	focused := in.Focused()
 	commit := in.Submitted() || d.focused[key] && !focused
 	d.focused[key] = focused

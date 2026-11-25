@@ -241,7 +241,7 @@ func TestRenameError(t *testing.T) {
 func TestSettingsHostName(t *testing.T) {
 	f := newFake()
 	a, tt := newTester(t, f)
-	a.screen = ScreenSettings
+	a.screen, a.set.cat = ScreenSettings, catHost
 	tt.Frame()
 	field, ok := tt.AccessByRole(mui.RoleTextField, "Host name")
 	if !ok {

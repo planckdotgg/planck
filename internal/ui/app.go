@@ -1,6 +1,6 @@
 // Package ui is Planck's desktop client interface, drawn with MyGo: the
-// icon rail, the Hosts, Pairing and Settings screens, and the stream view
-// with its overlay. It reads and drives a Backend and holds no networking
+// icon rail, the Hosts, Statistics and Settings screens, and the stream
+// view with its overlay. It reads and drives a Backend and holds no networking
 // of its own.
 package ui
 
@@ -21,7 +21,7 @@ type Screen int
 
 const (
 	ScreenHosts Screen = iota
-	ScreenPairing
+	ScreenStatistics
 	ScreenSettings
 )
 
@@ -46,8 +46,13 @@ type App struct {
 	// Main-thread state, read and written only by the view.
 	screen       Screen
 	quickConnect string
-	pin          string
-	streaming    bool
+	// pin is what the pairing panel's cells hold, and fpMatch whether the
+	// user ticked that the fingerprints match; pairFailed whether the last
+	// frame saw the request failed, whose code the cells then cleared.
+	pin        string
+	fpMatch    bool
+	pairFailed bool
+	streaming  bool
 	// ovl is the stream overlay; frameNow is the time of the frame being
 	// built, for the overlay's key handlers.
 	ovl      overlay
@@ -78,6 +83,10 @@ type App struct {
 	// text fields.
 	ovScope overrideScope
 	drafts  drafts
+	// set is the Settings page's own state: its category and search.
+	set settingsState
+	// stats keeps the Statistics page's charts, a sample a second.
+	stats statsHistory
 
 	mu           sync.Mutex
 	services     mui.Services
@@ -98,8 +107,9 @@ type App struct {
 	settingsErr string
 	hostingBusy bool
 	pairBusy    bool
-	toPairing   bool
-	toHosts     bool
+	// toPairing opens Hosts on the pairing request Connect asked for.
+	toPairing bool
+	toHosts   bool
 	// overlayShown is whether the overlay draws over the stream: the
 	// button, its tab, the menu, the metrics window or the toast. onOverlay
 	// hears it change.
@@ -107,6 +117,10 @@ type App struct {
 	onOverlay    func(shown bool)
 	// micErr is why the last unmute failed.
 	micErr string
+	// measureBusy is set while Settings → Host measures the encoders;
+	// measureErr is why the last reading failed.
+	measureBusy bool
+	measureErr  string
 }
 
 // NewApp returns the UI driving backend, and subscribes to its changes.
@@ -125,7 +139,7 @@ func (a *App) Content() *mui.Content { return mui.View(a.View) }
 func (a *App) StreamContent() *mui.Content { return mui.View(a.StreamView) }
 
 // SetStreamWindow has streams show in a window of their own, which h opens
-// and closes, while Content keeps Hosts, Pairing and Settings. Call it on
+// and closes, while Content keeps Hosts, Statistics and Settings. Call it on
 // the main thread before the first frame.
 func (a *App) SetStreamWindow(h StreamWindowHook) { a.streamWin = h }
 
@@ -195,7 +209,7 @@ func (a *App) OnOverlayChange(fn func(shown bool)) {
 func (a *App) openHostSettings(h HostInfo) {
 	a.ovScope = overrideScope{hostID: h.ID, name: h.Name}
 	a.drafts.err = ""
-	a.screen = ScreenSettings
+	a.screen, a.set.cat, a.set.query = ScreenSettings, catVideo, ""
 }
 
 // View builds one frame of the client. Without SetStreamWindow a stream
@@ -209,19 +223,17 @@ func (a *App) View(c *mui.Context) {
 	}
 	mui.Row(c).Fill().Background(theme.RoleGround).Children(func() {
 		a.rail(c)
+		if a.screen == ScreenSettings {
+			a.settingsScreen(c)
+			return
+		}
 		mui.Scroll(c).Grow(1).FillHeight().Children(func() {
-			top, bottom := theme.Space7, theme.Space6
-			if a.screen == ScreenHosts {
-				top, bottom = theme.Space5, theme.Space5
-			}
-			mui.Column(c).FillWidth().Padding(top, theme.Space7, bottom).Gap(theme.Space6).Children(func() {
+			mui.Column(c).FillWidth().Padding(theme.Space5, theme.Space7).Children(func() {
 				switch a.screen {
 				case ScreenHosts:
 					a.hostsScreen(c)
-				case ScreenPairing:
-					a.pairingScreen(c)
-				case ScreenSettings:
-					a.settingsScreen(c)
+				case ScreenStatistics:
+					a.statisticsScreen(c)
 				}
 			})
 		})
@@ -257,7 +269,7 @@ func (a *App) frame(c *mui.Context, stream bool) (Telemetry, string) {
 	}
 	if a.toPairing {
 		a.toPairing = false
-		a.screen = ScreenPairing
+		a.screen, a.pin, a.fpMatch = ScreenHosts, "", false
 	}
 	toHosts := a.toHosts
 	a.toHosts = false
@@ -267,7 +279,7 @@ func (a *App) frame(c *mui.Context, stream bool) (Telemetry, string) {
 
 	tel := a.backend.Telemetry()
 	split := a.streamWin != nil
-	// A stream, even one started from Pairing, ends on Hosts.
+	// A stream, even one started from another page, ends on Hosts.
 	if a.streaming && !tel.Connected {
 		toHosts = true
 		a.noteOverlay(false)
@@ -283,8 +295,8 @@ func (a *App) frame(c *mui.Context, stream bool) (Telemetry, string) {
 		a.ovlLive = false
 	}
 	if split && !a.streaming && tel.Connected {
-		// A stream from Pairing, or one the backend started, opens its
-		// window too; the launcher waits on Hosts.
+		// A stream from the pairing panel, or one the backend started,
+		// opens its window too; the launcher waits on Hosts.
 		toHosts = true
 		if !a.streamWin.StreamWindowOpen() {
 			a.streamWin.OpenStreamWindow(tel.HostName)
@@ -302,7 +314,7 @@ func (a *App) frame(c *mui.Context, stream bool) (Telemetry, string) {
 	}
 	a.streaming = tel.Connected
 	if toHosts {
-		a.screen, a.pin = ScreenHosts, ""
+		a.screen, a.pin, a.fpMatch = ScreenHosts, "", false
 	}
 	if split && !tel.Connected && connecting == "" && !pairBusy && a.streamWin.StreamWindowOpen() {
 		a.mu.Lock()

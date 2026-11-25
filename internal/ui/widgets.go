@@ -122,59 +122,26 @@ func signalColor(k discovery.PathKind) mui.Color {
 	return theme.RoleDirect
 }
 
-// panel is a raised panel with an optional head.
-func panel(c *mui.Context, title, trailing string, fn func()) mui.Element {
-	return mui.Column(c).FillWidth().Background(theme.RoleSurface).Border(1, theme.RoleBorder).
-		Radius(theme.RadiusMd).Clip().Children(func() {
-		if title != "" {
-			mui.Row(c).FillWidth().AlignItems(mui.Center).Padding(theme.Space4, theme.Space5).Children(func() {
-				heading(c, title, theme.TextHeading).Grow(1)
-				if trailing != "" {
-					caption(c, trailing)
-				}
-			})
-			divider(c)
-		}
-		fn()
-	})
-}
-
 func divider(c *mui.Context) mui.Element {
 	return mui.Box(c).FillWidth().Height(1).Background(theme.RoleBorder)
 }
 
-// settingRow is one line of a settings panel: title and description on
-// the left, its control on the right.
-func settingRow(c *mui.Context, title, desc string, control func()) {
-	mui.Row(c).FillWidth().MinHeight(theme.SizeRow).AlignItems(mui.Center).Gap(theme.Space4).
-		Padding(theme.Space3, theme.Space5).Children(func() {
-		mui.Column(c).Grow(1).Shrink(1).Gap(2).Children(func() {
-			label(c, title).FontWeight(500)
-			if desc != "" {
-				secondary(c, desc)
-			}
-		})
-		control()
-	})
-}
-
-// segmented is the design system's segmented control: a well, the chosen
-// segment on the hover fill in weight 600. It reports whether the choice
-// changed.
+// segmented is the design system's segmented control: a 30 px well, the
+// chosen segment on the hover fill in weight 600. It reports whether the
+// choice changed.
 func segmented(c *mui.Context, name string, sel *int, labels ...string) bool {
 	parts := mui.SegmentedBase(c, sel, len(labels))
-	track := parts.Track.Label(name).Padding(3).Gap(2).Radius(theme.RadiusSm).
-		Background(theme.RoleWell).Border(1, theme.RoleBorderStrong)
+	track := parts.Track.Label(name).Height(30).Padding(2).Gap(2).Radius(theme.RadiusSm).Background(theme.RoleWell)
 	track.Children(func() {
 		for i, l := range labels {
-			s := parts.Segment(i).Height(theme.SizeControl - 8).PaddingX(theme.Space3).
-				Radius(theme.RadiusXs).Cursor(mui.CursorPointer).AlignItems(mui.Center).Label(name + ": " + l)
-			weight, col := 400, theme.RoleText2
+			s := parts.Segment(i).Height(26).PaddingX(10).
+				Radius(4).Cursor(mui.CursorPointer).AlignItems(mui.Center).Label(name + ": " + l)
+			weight, col := 500, theme.RoleText3
 			if i == *sel {
 				s.Background(theme.RoleHover)
 				weight, col = 600, theme.RoleText
 			} else if s.Hovered() {
-				col = theme.RoleText
+				col = theme.RoleText2
 			}
 			s.Children(func() {
 				mui.Text(c, l).Font(theme.FontUI).FontSize(theme.TextBody).FontWeight(weight).TextColor(col).SingleLine()
@@ -182,30 +149,6 @@ func segmented(c *mui.Context, name string, sel *int, labels ...string) bool {
 		}
 	})
 	return track.Changed()
-}
-
-// switchRow is a whole row that toggles *on: its title names the switch
-// for assistive technology, and a click anywhere on it flips it. pad gives
-// it a settings panel's row padding. It reports whether it changed.
-func switchRow(c *mui.Context, title, desc string, on *bool, pad bool) bool {
-	r := mui.SwitchBase(c, on).FillWidth().AlignItems(mui.Center).Gap(theme.Space4).Label(title).
-		Cursor(mui.CursorPointer)
-	if pad {
-		r.MinHeight(theme.SizeRow).Padding(theme.Space3, theme.Space5)
-	}
-	if r.Hovered() && pad {
-		r.Background(theme.RoleRaised)
-	}
-	r.Children(func() {
-		mui.Column(c).Grow(1).Shrink(1).Gap(2).Children(func() {
-			label(c, title).FontWeight(500)
-			if desc != "" {
-				secondary(c, desc)
-			}
-		})
-		switchTrack(c, *on)
-	})
-	return r.Changed()
 }
 
 // switchTrack draws the 32 x 18 toggle: ember with an ink knob when on,

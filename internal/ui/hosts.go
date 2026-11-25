@@ -90,6 +90,7 @@ func hostsSubtitle(hosts []HostInfo) string {
 func (a *App) hostsScreen(c *mui.Context) {
 	hosts := a.backend.Hosts()
 	sortHosts(hosts)
+	pv := a.pairingView(hosts)
 	a.mu.Lock()
 	connectErr := a.connectErr
 	a.mu.Unlock()
@@ -101,12 +102,19 @@ func (a *App) hostsScreen(c *mui.Context) {
 	}
 
 	mui.Column(c).FillWidth().MaxWidth(hostsColumn).AlignSelf(mui.Center).Gap(theme.Space5).Children(func() {
-		pageHeader(c, "Hosts", hostsSubtitle(hosts), func() {
+		sub := hostsSubtitle(hosts)
+		if pv.open() {
+			sub += " · 1 pairing now"
+		}
+		pageHeader(c, "Hosts", sub, func() {
 			if button(c, buttonSecondary, "Refresh", false).Clicked() {
 				a.backend.RefreshHosts()
 			}
 		})
-		a.quickConnectBar(c, len(hosts) == 0)
+		a.quickConnectBar(c, !pv.panel())
+		if pv.panel() {
+			a.pairingPanel(c, pv)
+		}
 		if connectErr != "" {
 			mui.Row(c).FillWidth().Padding(theme.Space3, theme.Space4).Radius(theme.RadiusSm).
 				Border(1, theme.RoleFault).Children(func() {
@@ -116,20 +124,33 @@ func (a *App) hostsScreen(c *mui.Context) {
 		if len(hosts) == 0 {
 			a.hostsEmpty(c)
 		} else {
-			a.hostsGrid(c, hosts)
+			a.hostsGrid(c, hosts, pv)
 		}
 		a.tailnetFooter(c, hosts)
 	})
 }
 
-// quickConnectBar takes an address or name typed by hand. It holds the
-// view's primary action when no host has been found.
+// quickConnectHint says what the field takes.
+const quickConnectHint = "address · name · peer ID · planck.gg/j/… share link"
+
+// quickConnectBar takes an address, a name, a peer fingerprint or a share
+// link typed by hand. Its Connect is the page's ember unless the pairing
+// panel holds it.
 func (a *App) quickConnectBar(c *mui.Context, primary bool) {
 	mui.Row(c).FillWidth().Gap(theme.Space2).AlignItems(mui.Center).Children(func() {
-		in := mui.TextInput(c, &a.quickConnect).Width(420).Shrink(1).Height(theme.SizeControlLg).
-			Placeholder("Host address or name").Label("Quick connect").Font(theme.FontMono).
-			FontSize(theme.TextBody).Radius(theme.RadiusSm).
-			Background(theme.RoleRaised).Border(1, theme.RoleControlEdge)
+		field := mui.Row(c).Grow(1).Height(theme.SizeControlLg+8).PaddingX(14).Gap(10).AlignItems(mui.Center).
+			Radius(theme.RadiusSm).Background(theme.RoleRaised).Border(1, theme.RoleControlEdge)
+		var in mui.Element
+		field.Children(func() {
+			mui.Icon(c, theme.IconPrompt).Size(theme.SizeIcon, theme.SizeIcon).TextColor(theme.RoleText3)
+			in = mui.TextInputBase(c.Key("quick-connect"), &a.quickConnect).Grow(1).Shrink(1).FillHeight().
+				Label("Quick connect").Font(theme.FontMono).FontSize(14).FontWeight(500).
+				TextColor(theme.RoleText).CaretColor(theme.RoleAccent)
+			caption(c, quickConnectHint).SingleLine().Shrink(0)
+		})
+		if field.FocusWithin() {
+			field.Border(1, theme.RoleFocus)
+		}
 		if a.focusQuick {
 			a.focusQuick = false
 			in.Focus()
@@ -138,9 +159,7 @@ func (a *App) quickConnectBar(c *mui.Context, primary bool) {
 		if primary {
 			kind = buttonPrimary
 		}
-		b := button(c, kind, "Connect", false).Width(100).Height(theme.SizeControlLg).Shrink(0)
-		caption(c, "For a host discovery can’t see — an IP, a hostname, or a tailnet name. Pairing starts automatically.").
-			MaxWidth(300).Shrink(1).PaddingStart(theme.Space2)
+		b := button(c, kind, "Connect", false).Width(132).Height(theme.SizeControlLg + 8).Shrink(0)
 		target := strings.TrimSpace(a.quickConnect)
 		if (b.Clicked() || in.Submitted()) && target != "" {
 			a.connect(target, target)
@@ -175,10 +194,10 @@ func (a *App) hostsEmpty(c *mui.Context) {
 	})
 }
 
-func (a *App) hostsGrid(c *mui.Context, hosts []HostInfo) {
+func (a *App) hostsGrid(c *mui.Context, hosts []HostInfo, pv pairView) {
 	mui.Row(c).FillWidth().Wrap().Gap(theme.Space4).AlignContent(mui.Start).Children(func() {
 		for _, h := range hosts {
-			a.hostCard(c, h)
+			a.hostCard(c, h, pv)
 		}
 	})
 }
@@ -187,7 +206,7 @@ func (a *App) hostsGrid(c *mui.Context, hosts []HostInfo) {
 // which discovery may never find (a host typed in by address).
 func canConnect(h HostInfo) bool { return h.Online || h.Paired && h.Address != "" }
 
-func (a *App) hostCard(c *mui.Context, h HostInfo) {
+func (a *App) hostCard(c *mui.Context, h HostInfo, pv pairView) {
 	st := hostCardState(h)
 	card := mui.Column(c).Key(h.ID).Size(cardSize, cardSize).Shrink(0).Radius(theme.RadiusMd).Clip()
 	hover := card.Hovered()
@@ -205,21 +224,23 @@ func (a *App) hostCard(c *mui.Context, h HostInfo) {
 		})
 	}
 	card.Children(func() {
-		a.slicePlate(c, h, st, hover)
+		a.slicePlate(c, h, st, hover, pv.waiting(h.ID))
 		switch {
+		case pv.onCard(h.ID):
+			a.trustBody(c, h, pv)
 		case a.renaming == h.ID:
 			a.renameBody(c, h)
 		case a.removing == h.ID:
 			a.removeBody(c, h)
 		default:
-			a.cardBody(c, h, st, hover)
+			a.cardBody(c, h, st, hover, pv.waiting(h.ID))
 		}
 	})
 }
 
 // slicePlate is the card's top: status, the frame arriving in slices, and
 // the route pill.
-func (a *App) slicePlate(c *mui.Context, h HostInfo, st cardState, hover bool) {
+func (a *App) slicePlate(c *mui.Context, h HostInfo, st cardState, hover, pairing bool) {
 	plateBg := theme.RoleWell
 	if st == cardOffline {
 		plateBg = theme.RoleSurface.Mix(theme.RoleWell, 0.6)
@@ -231,14 +252,16 @@ func (a *App) slicePlate(c *mui.Context, h HostInfo, st cardState, hover bool) {
 	}
 	plate.Children(func() {
 		mui.Row(c).FillWidth().Height(16).Gap(7).AlignItems(mui.Center).Children(func() {
-			statusDot(c, st)
+			statusDot(c, st, pairing)
 			text, col, weight := "Online", theme.RoleText2, 500
-			switch st {
-			case cardConnected:
+			switch {
+			case pairing:
+				text = "Pairing"
+			case st == cardConnected:
 				text, col, weight = "Connected", theme.RoleAccent, 600
-			case cardUnpaired:
+			case st == cardUnpaired:
 				text = "Not paired"
-			case cardOffline:
+			case st == cardOffline:
 				text, col = "Offline", theme.RoleText3
 			}
 			caption(c, text).TextColor(col).FontWeight(weight).SingleLine()
@@ -261,12 +284,14 @@ func (a *App) slicePlate(c *mui.Context, h HostInfo, st cardState, hover bool) {
 	mui.Box(c).FillWidth().Height(1).Shrink(0).Background(bottom)
 }
 
-func statusDot(c *mui.Context, st cardState) {
+func statusDot(c *mui.Context, st cardState, pairing bool) {
 	mui.Box(c).Size(6, 6).Shrink(0).Draw(func(p *mui.Painter, r mui.Rect) {
-		switch st {
-		case cardOffline:
+		switch {
+		case pairing:
+			p.Stroke(r, theme.RoleText2, 3, 1.5)
+		case st == cardOffline:
 			p.Stroke(r, theme.RoleText3, 3, 1.5)
-		case cardConnected:
+		case st == cardConnected:
 			p.Fill(r, theme.RoleAccent, 3)
 		default:
 			p.Fill(r, theme.RoleDirect, 3)
@@ -548,7 +573,7 @@ func hardwareLine(h HostInfo) string {
 	return strings.Join(parts, " · ")
 }
 
-func (a *App) cardBody(c *mui.Context, h HostInfo, st cardState, hover bool) {
+func (a *App) cardBody(c *mui.Context, h HostInfo, st cardState, hover, pairing bool) {
 	mui.Column(c).FillWidth().Height(cardSize - plateHeight).Shrink(0).Padding(theme.Space3).Children(func() {
 		nameCol := theme.RoleText
 		if st == cardOffline {
@@ -563,7 +588,29 @@ func (a *App) cardBody(c *mui.Context, h HostInfo, st cardState, hover bool) {
 			cardMeta(c, s, theme.RoleText2)
 		}
 		mui.Spacer(c)
+		if pairing {
+			waitingRow(c)
+			return
+		}
 		a.cardActions(c, h, st, hover)
+	})
+}
+
+// waitingRow stands in for a card's button while its host's PIN is asked
+// for in the panel above.
+func waitingRow(c *mui.Context) {
+	mui.Row(c).FillWidth().Height(theme.SizeControl).Gap(theme.Space2).Radius(theme.RadiusSm).Border(1, theme.RoleBorder).
+		AlignItems(mui.Center).Justify(mui.Center).Children(func() {
+		mui.Box(c).Size(22, 10).Draw(func(p *mui.Painter, r mui.Rect) {
+			for i := range 3 {
+				col := theme.RoleBorderStrong
+				if i < 2 {
+					col = theme.RoleText2
+				}
+				p.Fill(mui.Rect{X: r.X, Y: r.Y + float32(i*4), W: r.W, H: 2}, col, 0)
+			}
+		})
+		label(c, "Waiting for the code").FontWeight(500).TextColor(theme.RoleText2).SingleLine()
 	})
 }
 

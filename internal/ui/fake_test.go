@@ -51,10 +51,12 @@ type fakeBackend struct {
 	stats         SessionStats
 	last          *SessionStats
 	hostSettings  HostSettings
+	hostSaves     int
 	displays      []DisplayInfo
 	ports         PortStatus
 	paired        []PairedClient
 	revokes       []string
+	measures      []string
 	clientName    string
 }
 
@@ -200,6 +202,7 @@ func (f *fakeBackend) HostSettings() HostSettings { defer f.lock()(); return f.h
 
 func (f *fakeBackend) SetHostSettings(s HostSettings) error {
 	defer f.lock()()
+	f.hostSaves++
 	f.hostSettings = s
 	return nil
 }
@@ -208,6 +211,7 @@ func (f *fakeBackend) Displays() []DisplayInfo { defer f.lock()(); return f.disp
 
 func (f *fakeBackend) MeasureEncoder(ctx context.Context, gpu string) (float64, error) {
 	defer f.lock()()
+	f.measures = append(f.measures, gpu)
 	for _, e := range f.encoders {
 		if e.GPU == gpu {
 			return e.EncodeMs, nil
@@ -327,4 +331,22 @@ func scrollTo(t *testing.T, tt *mui.Tester, name string) {
 		tt.Frame()
 	}
 	t.Fatalf("%q did not scroll into the window", name)
+}
+
+// liveSample is a live stream's statistics, as the design's live page.
+func liveSample() SessionStats {
+	ft := make([]float64, 60)
+	for i := range ft {
+		ft[i] = 8.33 + float64(i%5-2)*0.2
+	}
+	ft[40] = 11.1
+	return SessionStats{Live: true, HostName: "bigboi", HostID: "h-bigboi", Started: time.Now().Add(-42 * time.Minute),
+		Capture: StageStat{P50: 1.6}, Encode: StageStat{P50: 1.41}, Network: StageStat{P50: 0.5}, Decode: StageStat{P50: 0.87},
+		Present: StageStat{P50: 4.02}, Total: StageStat{P50: 8.4, P99: 11.2},
+		FrameTimesMs: ft, FPS: 120, TargetFPS: 120, FramesReceived: 302400, FramesDropped: 0, FramesLost: 1, Keyframes: 14,
+		BitrateMbps: 84.2, CeilingMbps: 150, LossPct: 0.08, FECParityPct: 18, FECRepaired: 412,
+		AudioBufMs: 21, MicDevice: "TONOR G11", Codec: encode.HEVC, Chroma: encode.YUV444P10, BitDepth: 10,
+		Width: 1920, Height: 1080, EncoderGPU: "NVIDIA GeForce RTX 4080", EncoderAPI: "NVENC",
+		PathKind: discovery.PathLANDirect, RTTMs: 0.42, DatagramBytes: 1452,
+		Profile: &defaults.ResolvedProfile{Slices: 4, Split: true, DirectDisplay: true}}
 }

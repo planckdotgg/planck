@@ -135,7 +135,8 @@ func TestStreamWindowClosesWithTheStream(t *testing.T) {
 }
 
 // TestStreamWindowFailedConnect: a connect that fails closes the window
-// and shows its error on Hosts; one that needs pairing opens Pairing.
+// and shows its error on Hosts; one that needs pairing opens the pairing
+// panel there.
 func TestStreamWindowFailedConnect(t *testing.T) {
 	f := newFake()
 	f.hosts = sampleHosts()
@@ -151,8 +152,12 @@ func TestStreamWindowFailedConnect(t *testing.T) {
 	if len(sw.opens) != 1 {
 		t.Fatalf("Pair & Connect opened a stream window: %q", sw.opens)
 	}
+	f.set(func(f *fakeBackend) { f.pair = PairState{Status: PairPending, HostName: "cabin-pc"} })
 	f.connectResult <- ErrPairingRequired
-	eventually(t, launcher, func() bool { return a.screen == ScreenPairing })
+	eventually(t, launcher, func() bool {
+		_, ok := launcher.Access("PIN")
+		return ok && a.screen == ScreenHosts
+	})
 	if sw.open || sw.closes != 1 {
 		t.Fatalf("window open %v, closes %d when pairing is needed", sw.open, sw.closes)
 	}
@@ -267,13 +272,14 @@ func TestStreamWindowHostClicks(t *testing.T) {
 	}
 }
 
-// TestStreamWindowFromPairing: a stream that starts from Pairing opens its
-// window and leaves the launcher on Hosts.
+// TestStreamWindowFromPairing: a stream that starts from pairing, while
+// the launcher shows another page, opens its window and leaves the
+// launcher on Hosts.
 func TestStreamWindowFromPairing(t *testing.T) {
 	f := newFake()
 	f.pair = PairState{Status: PairPaired, HostName: "bigboi"}
 	a, sw, launcher, _ := newSplitTester(t, f)
-	a.screen = ScreenPairing
+	a.screen = ScreenStatistics
 	launcher.Frame()
 	f.set(func(f *fakeBackend) { f.tel = sampleTelemetry() })
 	launcher.Frame()
