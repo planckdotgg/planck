@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -21,10 +22,13 @@ func (a *App) hostPage(c *mui.Context, f *settingsFrame) {
 		setPanel(c, "Host policy", func() { caption(c, "beats every client’s choice") }, func() { a.entries(c, f, "host.policy") })
 		a.entries(c, f, "host.ports")
 	}, func() {
+		setPanel(c, "Session & privacy", nil, func() {
+			a.entries(c, f, "host.stayAwake", "host.lock", "host.mute", "host.privacy", "host.idle")
+		})
 		setPanel(c, "Security & pairing", nil, func() {
 			a.entries(c, f, "host.pinMode", "host.pinLAN", "host.tailnet", "host.paired")
 		})
-		setPanel(c, "Clients", nil, func() { a.entries(c, f, "host.allowInput", "host.clipboard") })
+		setPanel(c, "Clients", nil, func() { a.entries(c, f, "host.kick", "host.allowInput", "host.clipboard") })
 	})
 }
 
@@ -534,3 +538,53 @@ var (
 	clipboardValues = []ClipboardDirection{ClipboardOff, ClipboardBoth, ClipboardHostToClient, ClipboardClientToHost}
 	clipboardLabels = []string{"Off", "Both ways", "To clients", "From clients"}
 )
+
+// privacyRow is privacy mode's switch, or why this machine cannot blank
+// its displays. One left on where it cannot work stays switchable off.
+func (a *App) privacyRow(c *mui.Context, f *settingsFrame) {
+	const title = "Privacy mode — blank the physical displays"
+	problem := a.backend.PrivacyModeProblem()
+	if problem != "" && !f.hs.PrivacyMode {
+		f.unavailableRow(c, title, problem)
+		return
+	}
+	help := "The displays stay off while a client streams from a virtual display. Applies from the next stream."
+	if problem != "" {
+		help = problem
+	}
+	f.switchRow(c, title, help, &f.hs.PrivacyMode)
+}
+
+// idleChoices are the idle disconnects on offer, in minutes; 0 is never.
+var (
+	idleValues = []int{0, 15, 30, 60}
+	idleLabels = []string{"Off", "15 min", "30 min", "60 min"}
+)
+
+func (a *App) idleRow(c *mui.Context, f *settingsFrame) {
+	values, labels := idleValues, idleLabels
+	if m := f.hs.IdleTimeoutMinutes; !slices.Contains(values, m) {
+		values, labels = append(slices.Clone(values), m), append(slices.Clone(labels), strconv.Itoa(m)+" min")
+	}
+	f.row(c, "Disconnect idle clients after", "A client that sends no input for this long is disconnected.", func() {
+		dropdown(c, "Disconnect idle clients after", &f.hs.IdleTimeoutMinutes, values, labels, 110)
+	})
+}
+
+// kickRow names the device streaming from this machine, with Kick, which
+// disconnects it; it may connect again.
+func (a *App) kickRow(c *mui.Context, f *settingsFrame) {
+	client := f.hosting.Client
+	help := "No device is streaming from this " + machineWord(a.goos) + "."
+	if client != "" {
+		help = client + " is streaming now. It may connect again."
+	}
+	f.row(c, "Connected client", help, func() {
+		if client == "" {
+			return
+		}
+		if cardButton(c, ctaDisconnect, "Kick", "Kick "+client, false).Height(28).Clicked() {
+			a.setSettingsErr(a.backend.KickClient())
+		}
+	})
+}

@@ -53,6 +53,12 @@ type settingsState struct {
 	// clientNameDraft and clientNameFocused edit the device name.
 	clientNameDraft   string
 	clientNameFocused bool
+	// keys is the chord capture on Input & Hotkeys.
+	keys hotkeyEdit
+	// appAdding opens the field and picks that add an app to leave out of
+	// the sound; appDraft is the field.
+	appAdding bool
+	appDraft  string
 }
 
 // settingsFrame is one frame's edit of everything Settings changes; the

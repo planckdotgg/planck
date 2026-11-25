@@ -58,79 +58,6 @@ func (a *App) metricsRow(c *mui.Context, f *settingsFrame) {
 	})
 }
 
-func (a *App) audioPage(c *mui.Context, f *settingsFrame) {
-	settingsHeader(c, "Audio", "What this "+machineWord(a.goos)+" plays from a host, and its microphone.", nil)
-	columns(c, 1, 1, func() {
-		setPanel(c, "Stream audio", nil, func() { a.entries(c, f, "audio.stream", "audio.volume", "audio.mute") })
-	}, func() {
-		setPanel(c, "Microphone", nil, func() { a.entries(c, f, "audio.mic") })
-	})
-}
-
-func (a *App) volumeRow(c *mui.Context, f *settingsFrame) {
-	f.row(c, "Volume", "", func() {
-		v := f.s.AudioVolume
-		c.Key("audio-volume")
-		if mui.Slider(c, &v, 0, 1).Label("Volume").Width(200).Changed() {
-			f.s.AudioVolume = v
-		}
-		mono(c, fmt.Sprintf("%.0f %%", v*100)).FontSize(theme.TextCaption).TextColor(theme.RoleText2).Width(44)
-	})
-}
-
-func (a *App) inputPage(c *mui.Context, f *settingsFrame) {
-	settingsHeader(c, "Input & Hotkeys", "Planck keeps its chords on "+a.chordWord()+" so "+a.hostKeysWord()+" keys reach the host.", nil)
-	columns(c, 568, 320, func() {
-		setPanel(c, "Hotkeys", nil, func() { a.entries(c, f, "input.hotkeys") })
-	}, func() {
-		setPanel(c, "Input", nil, func() { a.entries(c, f, "input.syskeys", "input.mouse") })
-	})
-}
-
-func (a *App) chordWord() string {
-	if a.goos == "darwin" {
-		return "⌃⌥"
-	}
-	return "Ctrl+Alt"
-}
-
-func (a *App) hostKeysWord() string {
-	if a.goos == "darwin" {
-		return "⌘"
-	}
-	return "Windows"
-}
-
-func (a *App) hotkeyTable(c *mui.Context, f *settingsFrame) {
-	mui.Column(c).FillWidth().Label("Hotkeys").Children(func() {
-		mui.Row(c).FillWidth().Height(28).AlignItems(mui.Center).Children(func() {
-			sectionLabel(c, "Action").Grow(1)
-			sectionLabel(c, "Shortcut").Width(150)
-		})
-		for _, h := range a.backend.Hotkeys() {
-			name := hotkeyNames[h.Action]
-			if f.searching && !strings.Contains(strings.ToLower(name), f.query) && !strings.Contains("hotkeys shortcut", f.query) {
-				continue
-			}
-			divider(c)
-			mui.Row(c).FillWidth().Height(32).AlignItems(mui.Center).Children(func() {
-				f.title(c, name, theme.RoleText)
-				mui.Spacer(c)
-				label := chordLabel(a.goos, h.Chord)
-				if label == "" {
-					label = "Not set"
-				}
-				mui.Box(c).Size(150, 24).AlignItems(mui.Center).Justify(mui.Center).Radius(theme.RadiusXs).
-					Background(theme.RoleWell).Border(1, theme.RoleBorder).Children(func() {
-					mono(c, label).FontSize(theme.TextCaption).LetterSpacing(0.06 * theme.TextCaption)
-				})
-			})
-		}
-		divider(c)
-		caption(c, "Changing them here comes in a later build.").Margin(theme.Space2, 0, 0)
-	})
-}
-
 func (a *App) gamepadPage(c *mui.Context, f *settingsFrame) {
 	settingsHeader(c, "Gamepad", "Controllers on this device, and what a host sees them as.", nil)
 	a.entries(c, f, "gamepad.status")
@@ -245,6 +172,24 @@ var settingEntries = []settingEntry{
 		build: func(a *App, c *mui.Context, f *settingsFrame) {
 			f.switchRow(c, "Trust my own Tailscale devices with no code", "Planck checks the Tailscale identity instead.", &f.hs.AllowTailscaleSameUser)
 		}},
+	{id: "host.stayAwake", cat: catHost, title: "Stay awake while hosting", aliases: "sleep power display awake caffeinate session",
+		build: func(a *App, c *mui.Context, f *settingsFrame) {
+			f.switchRow(c, "Stay awake while hosting", "", &f.hs.StayAwake)
+		}},
+	{id: "host.lock", cat: catHost, title: "Lock this machine when the session ends", aliases: "lock screen mac pc computer session end disconnect privacy",
+		build: func(a *App, c *mui.Context, f *settingsFrame) {
+			f.switchRow(c, "Lock this "+machineWord(a.goos)+" when the session ends", "", &f.hs.LockOnDisconnect)
+		}},
+	{id: "host.mute", cat: catHost, title: "Mute this computer’s speakers while streaming", aliases: "mute speakers sound audio silence",
+		build: func(a *App, c *mui.Context, f *settingsFrame) {
+			f.switchRow(c, "Mute this computer’s speakers while streaming", "The stream still carries the sound.", &f.hs.MuteSpeakers)
+		}},
+	{id: "host.privacy", cat: catHost, title: "Privacy mode — blank the physical displays", aliases: "privacy blank displays screen off virtual display vdd",
+		build: (*App).privacyRow},
+	{id: "host.idle", cat: catHost, title: "Disconnect idle clients after", aliases: "idle timeout auto-disconnect minutes inactive afk",
+		build: (*App).idleRow},
+	{id: "host.kick", cat: catHost, title: "Connected client", help: "Kick the device streaming now.", aliases: "kick disconnect client boot",
+		build: (*App).kickRow},
 	{id: "host.paired", cat: catHost, title: "Paired devices", aliases: "revoke device fingerprint trusted clients",
 		build: (*App).pairedTable},
 	{id: "host.allowInput", cat: catHost, title: "Let clients control this machine", aliases: "input keyboard mouse gamepad permission",
@@ -314,6 +259,16 @@ var settingEntries = []settingEntry{
 		build: func(a *App, c *mui.Context, f *settingsFrame) {
 			f.switchRow(c, "Mute", "Silences the stream and keeps its audio running.", &f.s.AudioMuted)
 		}},
+	{id: "audio.output", cat: catAudio, title: "Output device", aliases: "speakers headphones playback device sound",
+		build: (*App).outputDeviceRow},
+	{id: "audio.micDevice", cat: catAudio, title: "Microphone device", aliases: "mic input device headset",
+		build: (*App).micDeviceRow},
+	{id: "audio.hostCapture", cat: catAudio, title: "Capture device", help: "The sound this machine streams while hosting.", aliases: "host loopback wasapi screencapturekit system mix",
+		build: (*App).hostCaptureRow},
+	{id: "audio.virtualMic", cat: catAudio, title: "Virtual mic sink", help: "Where a client’s microphone plays while hosting.", aliases: "microphone host virtual cable vb-audio sink",
+		build: (*App).virtualMicRow},
+	{id: "audio.exclude", cat: catAudio, title: "Leave out apps", help: "Apps kept out of the sound while hosting.", aliases: "exclude app discord teams slack process mute host",
+		build: (*App).excludeAppsRow},
 	{id: "audio.mic", cat: catAudio, title: "Microphone", aliases: "mic voice",
 		build: func(a *App, c *mui.Context, f *settingsFrame) {
 			f.row(c, "Microphone", "Every stream starts with it muted. Turn it on from the stream menu or with "+a.keyText(HotkeyMicrophone)+".", func() {})
@@ -327,7 +282,13 @@ var settingEntries = []settingEntry{
 		build: func(a *App, c *mui.Context, f *settingsFrame) {
 			f.switchRow(c, "Lock the mouse to the stream", "Relative motion, for games that turn the camera with the mouse.", &f.s.RelativeMouse)
 		}},
-	{id: "input.hotkeys", cat: catInput, title: "Hotkeys", aliases: "shortcut chord keys stream menu metrics hud microphone full screen immersive cursor disconnect keyframe ctrl alt del display kick stop hosting",
+	{id: "input.swap", cat: catInput, title: "Swap ⌘ and Ctrl", aliases: "cmd command ctrl control swap mac windows modifier",
+		build: (*App).swapRow},
+	{id: "input.neverSend", cat: catInput, title: "Never send these keys", help: "Kept on this device even in immersive mode.", aliases: "blocklist pass-through passthrough push-to-talk local block chord keys",
+		build: (*App).neverSendList},
+	{id: "input.rules", cat: catInput, title: "What the capture field accepts", aliases: "chord rules modifier reserved conflict record",
+		build: (*App).captureRules},
+	{id: "input.hotkeys", cat: catInput, title: "Hotkeys", aliases: "shortcut chord keys stream menu hide overlay button metrics hud microphone full screen immersive cursor disconnect keyframe ctrl alt del display switch kick stop hosting reset",
 		build: (*App).hotkeyTable},
 
 	{id: "gamepad.status", cat: catGamepad, title: "Gamepads", aliases: "controller gamepad joystick xbox dualsense",
