@@ -247,3 +247,26 @@ func TestPortsRecheckedOnReopen(t *testing.T) {
 		t.Fatalf("reopened ports kept a stale test: %q", tt.Texts())
 	}
 }
+
+// TestPortsRecheckedOnReturn: ports left open while another page shows are
+// tested again when Settings comes back.
+func TestPortsRecheckedOnReturn(t *testing.T) {
+	for _, away := range []string{"Hosts", "Statistics"} {
+		t.Run(away, func(t *testing.T) {
+			f := newFake()
+			f.hostSettings.Ports = HostPorts{Control: 41000, Media: 41001}
+			_, tt := settingsAt(t, f, catHost)
+			clickScrolled(t, tt, "Ports")
+			if tt.HasText("Media port: Another app is using UDP port 41001.") {
+				t.Fatal("warning shown before the port was taken")
+			}
+			click(t, tt, away)
+			f.set(func(f *fakeBackend) { f.ports = PortStatus{Media: "Another app is using UDP port 41001."} })
+			click(t, tt, "Settings")
+			scrollTo(t, tt, "Ports")
+			if !tt.HasText("Media port: Another app is using UDP port 41001.") {
+				t.Fatalf("ports kept a stale test after leaving Settings: %q", tt.Texts())
+			}
+		})
+	}
+}
