@@ -32,7 +32,10 @@ var (
 	fpsPrefs        = []string{"60", "120", "144", "240"}
 	slicesPrefs     = []string{"1", "4", "8"}
 	togglePrefs     = []string{"on", "off"}
-	routePrefs      = []string{"lan", "tailscale"}
+	// hdrPrefs: HDR10 is never forced on; auto takes it where both ends
+	// and the desktop have it.
+	hdrPrefs   = []string{"off"}
+	routePrefs = []string{"lan", "tailscale"}
 )
 
 const (
@@ -64,7 +67,15 @@ type UserOverrides struct {
 	MetalDirectDisplay Toggle     `json:"metalDirectDisplay,omitempty"`
 	VSyncMode          Toggle     `json:"vsyncMode,omitempty"` // auto = off
 	RoutePolicy        RoutePref  `json:"routePolicy,omitempty"`
+	// Display is the host display to capture, by HostDisplay.ID; "" lets
+	// the host choose. Picking one streams that physical display, not a
+	// virtual one.
+	Display string `json:"display,omitempty"`
+	HDR10   Toggle `json:"hdr10,omitempty"` // auto | off
 }
+
+// MaxDisplayIDLen bounds UserOverrides.Display.
+const MaxDisplayIDLen = 256
 
 func isAuto(s string) bool { return s == "" || s == Auto }
 
@@ -101,6 +112,7 @@ func (o UserOverrides) Validate() error {
 		{"metalDirectDisplay", string(o.MetalDirectDisplay), togglePrefs},
 		{"vsyncMode", string(o.VSyncMode), togglePrefs},
 		{"routePolicy", string(o.RoutePolicy), routePrefs},
+		{"hdr10", string(o.HDR10), hdrPrefs},
 	} {
 		if err := checkEnum(c.knob, c.v, c.allowed); err != nil {
 			return err
@@ -109,6 +121,9 @@ func (o UserOverrides) Validate() error {
 	if o.Resolution == "custom" && !validCustomSize(o.CustomWidth, o.CustomHeight) {
 		return fmt.Errorf("defaults: custom resolution %dx%d: want even sizes, width %d..%d, height %d..%d",
 			o.CustomWidth, o.CustomHeight, MinCustomWidth, MaxCustomWidth, MinCustomHeight, MaxCustomHeight)
+	}
+	if len(o.Display) > MaxDisplayIDLen {
+		return fmt.Errorf("defaults: display ID is %d bytes, at most %d", len(o.Display), MaxDisplayIDLen)
 	}
 	if o.BitrateMbps < 0 || o.BitrateMbps > MaxBitrateMbps {
 		return fmt.Errorf("defaults: bitrateMbps %d: want 0 (auto) or 1..%d", o.BitrateMbps, MaxBitrateMbps)
@@ -134,6 +149,7 @@ func (o UserOverrides) Normalize() UserOverrides {
 	norm((*string)(&o.MetalDirectDisplay))
 	norm((*string)(&o.VSyncMode))
 	norm((*string)(&o.RoutePolicy))
+	norm((*string)(&o.HDR10))
 	return o
 }
 
@@ -162,5 +178,7 @@ func Merge(base, top UserOverrides) UserOverrides {
 	pick((*string)(&base.MetalDirectDisplay), (*string)(&top.MetalDirectDisplay))
 	pick((*string)(&base.VSyncMode), (*string)(&top.VSyncMode))
 	pick((*string)(&base.RoutePolicy), (*string)(&top.RoutePolicy))
+	pick(&base.Display, &top.Display)
+	pick((*string)(&base.HDR10), (*string)(&top.HDR10))
 	return base
 }

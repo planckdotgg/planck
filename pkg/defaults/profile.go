@@ -39,9 +39,11 @@ type ResolvedProfile struct {
 	Codec     Codec `json:"codec"`
 	Chroma444 bool  `json:"chroma444"`
 	BitDepth  int   `json:"bitDepth"` // 8 | 10
-	Width     int   `json:"width"`
-	Height    int   `json:"height"`
-	FPS       int   `json:"fps"`
+	// HDR10 is a 10-bit BT.2020 PQ stream from an HDR desktop.
+	HDR10  bool `json:"hdr10,omitempty"`
+	Width  int  `json:"width"`
+	Height int  `json:"height"`
+	FPS    int  `json:"fps"`
 
 	BitrateKbps    int `json:"bitrateKbps"`    // start
 	MaxBitrateKbps int `json:"maxBitrateKbps"` // ratectl ceiling
