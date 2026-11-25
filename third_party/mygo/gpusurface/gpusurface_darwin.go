@@ -328,9 +328,11 @@ func New(opts Options) (s *Surface, err error) {
 	defer runtime.UnlockOSThread()
 	pool, _, _ := purego.SyscallN(lib.poolPush)
 	defer purego.SyscallN(lib.poolPop, pool)
+	// A failed New returns a nil surface: close the one being built.
+	built := s
 	defer func() {
 		if err != nil {
-			s.Close()
+			built.Close()
 			s = nil
 		}
 	}()
