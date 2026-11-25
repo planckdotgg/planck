@@ -12,11 +12,11 @@ import (
 
 const (
 	metricsW, metricsH = 300, 361
-	compactW, compactH = 258, 36
+	compactW, compactH = 268, 36
 	// The compact readouts sit in fixed slots, right-aligned, so the rest
 	// of the bar does not move as the figures change four times a second.
-	compactLatencyW, compactFPSW       = 58, 42
-	compactLatencyNumW, compactFPSNumW = 45, 22
+	compactLatencyW, compactFPSW       = 70, 42
+	compactLatencyNumW, compactFPSNumW = 54, 22
 	// metricsInset holds the window inside the view; it stays
 	// metricsKeepOut from the edge the button is docked to.
 	metricsInset   = 12
@@ -390,16 +390,16 @@ func (a *App) compactMetrics(c *mui.Context, tel Telemetry) mui.Element {
 		grip(c)
 		mui.Row(c).AlignItems(mui.Baseline).Gap(2).Width(compactLatencyW).Shrink(0).Label(state).Children(func() {
 			mui.Row(c).Width(compactLatencyNumW).Justify(mui.End).Shrink(0).Children(func() {
-				mono(c, t.compactTotal()).FontSize(15).FontWeight(500).TextColor(col)
+				mono(c, t.compactTotal()).FontSize(15).FontWeight(500).TextColor(col).Shrink(0)
 			})
-			mono(c, "ms").FontSize(theme.TextMicro).TextColor(theme.RoleText3)
+			mono(c, "ms").FontSize(theme.TextMicro).TextColor(theme.RoleText3).Shrink(0)
 		})
 		mui.Box(c).Size(1, 16).Background(theme.RoleText.Alpha(0.12))
 		mui.Row(c).AlignItems(mui.Baseline).Gap(2).Width(compactFPSW).Shrink(0).Children(func() {
 			mui.Row(c).Width(compactFPSNumW).Justify(mui.End).Shrink(0).Children(func() {
-				mono(c, t.fps).FontSize(theme.TextCaption)
+				mono(c, t.fps).FontSize(theme.TextCaption).Shrink(0)
 			})
-			mono(c, "fps").FontSize(theme.TextMicro).TextColor(theme.RoleText3)
+			mono(c, "fps").FontSize(theme.TextMicro).TextColor(theme.RoleText3).Shrink(0)
 		})
 		mui.Box(c).Size(1, 16).Background(theme.RoleText.Alpha(0.12))
 		mui.Row(c).Gap(4).AlignItems(mui.Center).Grow(1).Shrink(0).Label(pathLabel(tel.PathKind)).Children(func() {
@@ -454,7 +454,7 @@ func (a *App) metricsBody(c *mui.Context, tel Telemetry) {
 				mui.Box(c).Size(54, 12).Draw(w.draws[i])
 				mui.Box(c).Grow(1)
 				mono(c, t.stages[i]).FontSize(theme.TextCaption)
-				mono(c, "ms").FontSize(theme.TextMicro).TextColor(theme.RoleText3)
+				mono(c, "ms").FontSize(theme.TextMicro).TextColor(theme.RoleText3).Shrink(0)
 			})
 		}
 	})

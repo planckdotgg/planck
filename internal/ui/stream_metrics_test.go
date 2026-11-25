@@ -1,11 +1,13 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	mui "github.com/egoist/mygo/ui"
+	"github.com/planckdotgg/planck/internal/ui/theme"
 	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/discovery"
 )
@@ -354,6 +356,37 @@ func TestMetricsCompactStallStaysInSlot(t *testing.T) {
 		click(t, tt, "Expand metrics")
 		if e := bounds(t, tt, "Metrics"); e.W != metricsW {
 			t.Errorf("%v ms: expand left %+v", ms, e)
+		}
+	}
+}
+
+// TestMetricsCompactNeverEllipsizes: each compact readout keeps its
+// natural width, never one clipped to a slot. Martian Mono advances
+// 0.652 em per character; the widest figures are checked on every path.
+func TestMetricsCompactNeverEllipsizes(t *testing.T) {
+	const advance = 0.64
+	for _, k := range []discovery.PathKind{discovery.PathLANDirect, discovery.PathTailscaleDirect, discovery.PathTailscaleDERP, discovery.PathKind(99)} {
+		for _, ms := range []float64{8.4, 124.5, 999.9, 10000} {
+			f := streamFake()
+			f.tel.PathKind, f.tel.TotalMs, f.tel.FPS = k, ms, 240
+			a, tt, _ := newStreamTester(t, f)
+			showMetrics(t, tt)
+			click(t, tt, "Compact metrics")
+			tt.Frame()
+			snapshot(t, tt, fmt.Sprintf("metrics-compact-%v-%v", k, ms))
+			num := a.ovl.metrics.text.compactTotal()
+			for _, c := range []struct {
+				text string
+				size float32
+			}{{num, 15}, {"ms", theme.TextMicro}, {"240", theme.TextCaption}, {"fps", theme.TextMicro}, {pathShort(k), theme.TextMicro}} {
+				r, ok := tt.Find(c.text)
+				if !ok {
+					t.Fatalf("path %v %v ms: no %q in %q", k, ms, c.text, tt.Texts())
+				}
+				if want := float32(len([]rune(c.text))) * c.size * advance; r.W < want {
+					t.Errorf("path %v %v ms: %q is %.1f px wide, natural width is at least %.1f (clipped)", k, ms, c.text, r.W, want)
+				}
+			}
 		}
 	}
 }
