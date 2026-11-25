@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>PlanckAudio</string>
+	<key>CFBundleIdentifier</key>
+	<string>gg.planck.audio.driver</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Planck Virtual Audio</string>
+	<key>CFBundlePackageType</key>
+	<string>BNDL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@PROJECT_VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@PROJECT_VERSION@</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>@CMAKE_OSX_DEPLOYMENT_TARGET@</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright (c) 2026 Planck contributors. Apache License 2.0.</string>
+	<key>CFPlugInFactories</key>
+	<dict>
+		<key>A033E45D-D181-4566-8084-27CDD7EEB81B</key>
+		<string>PlanckAudio_Create</string>
+	</dict>
+	<key>CFPlugInTypes</key>
+	<dict>
+		<key>443ABAB8-E7B3-491A-B985-BEB9187030DB</key>
+		<array>
+			<string>A033E45D-D181-4566-8084-27CDD7EEB81B</string>
+		</array>
+	</dict>
+</dict>
+</plist>

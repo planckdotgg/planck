@@ -15,6 +15,11 @@ fetched by the Go toolchain and carry their licenses with them.
 The full license texts are in `drivers/audio/windows/LICENSE` (MIT and MS-PL),
 `third_party/mygo/LICENSE`, and `assets/fonts/OFL-*.txt`.
 
+`drivers/audio/darwin/` (the macOS Planck Virtual Audio plug-in) is Planck's
+own code under Apache-2.0 and contains no third-party code. Planck does not
+bundle BlackHole or BackgroundMusic (GPL), or VB-CABLE (no redistribution
+grant).
+
 The Planck Virtual Audio driver is a separate kernel-mode program built from
 `drivers/audio/windows/`; it is not linked into the Go binaries, which stay
 Apache-2.0 and pure Go (`CGO_ENABLED=0`). MS-PL requires that source
