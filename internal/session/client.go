@@ -90,6 +90,9 @@ type ClientConfig struct {
 	Tailscale PathInfoer
 	// OnRumble receives gamepad rumble from the host.
 	OnRumble func(input.RumbleEvent)
+	// Gamepads sends this device's controllers while a stream runs, and
+	// plays the host's rumble on them.
+	Gamepads *GamepadPump
 	// OnCursor receives the host's cursor state, from a host that sends it.
 	OnCursor func(wire.CursorState)
 	// OnCursorShape receives the host's cursor image, whole, from a host
@@ -418,6 +421,16 @@ func (c *Client) Connect(ctx context.Context, t Target) error {
 	c.conn, c.target = cc, t
 	c.mu.Unlock()
 	cc.wg.Go(func() { c.watchRoutes(cc, t) })
+	if p := c.cfg.Gamepads; p != nil {
+		id := p.Attach(c.SendInput)
+		cc.wg.Go(func() {
+			select {
+			case <-cc.done:
+			case <-cc.ctx.Done():
+			}
+			p.Detach(id)
+		})
+	}
 	return nil
 }
 
@@ -626,6 +639,9 @@ func (c *Client) dialRoute(ctx context.Context, cc *conn, r resolved) (*route, e
 			},
 			Clipboard: c.onClipboard,
 			Rumble: func(r wire.Rumble) {
+				if cfg.Gamepads != nil {
+					cfg.Gamepads.Rumble(r)
+				}
 				if cfg.OnRumble != nil {
 					cfg.OnRumble(input.RumbleEvent{Index: r.Pad, LowFreq: r.Low, HighFreq: r.High, DurationMs: r.DurationMs})
 				}

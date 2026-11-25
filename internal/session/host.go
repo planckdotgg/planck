@@ -287,7 +287,8 @@ type Host struct {
 	vdd  vddManager
 	clip *clipSync
 
-	sys hostSys
+	sys  hostSys
+	pads hostPads
 	// lastInput is when the client last sent input, on clock.
 	lastInput atomic.Int64
 	clock     func() int64
@@ -325,6 +326,10 @@ func NewHost(cfg HostConfig) (*Host, error) {
 	if err != nil {
 		return nil, err
 	}
+	pads, err := config.LoadGamepadConfig(dir)
+	if err != nil {
+		return nil, err
+	}
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = fmt.Sprintf(":%d", config.DefaultControlPort)
 	}
@@ -340,6 +345,7 @@ func NewHost(cfg HostConfig) (*Host, error) {
 		h.logf = log.Printf
 	}
 	h.sys.set, h.sys.hooks = cfg.Session, cfg.System.withDefaults()
+	h.pads.set = GamepadHostSettingsOf(pads)
 	name := cfg.Name
 	if name == "" {
 		name = stored.Name
@@ -560,6 +566,9 @@ func (h *Host) Start(ctx context.Context) error {
 	} else if h.cfg.InjectInput {
 		h.inject = h.cfg.Injector
 	}
+	if pi, ok := h.inject.(PadInjector); ok {
+		pi.SetGamepadType(h.GamepadSettings().Type)
+	}
 	ctx, h.cancel = context.WithCancel(ctx)
 	if h.cfg.DiscoveryAddr != "off" {
 		if err := h.startDiscovery(ctx); err != nil {
@@ -630,8 +639,12 @@ func (h *Host) acceptLoop(ctx context.Context) {
 			if h.cur == st {
 				h.cur = nil
 			}
+			replaced := h.cur != nil
 			h.mu.Unlock()
 			h.releaseInput()
+			if !replaced {
+				h.releasePads()
+			}
 			h.streamEnded(st)
 		})
 	}
@@ -783,10 +796,16 @@ func (h *Host) onInput(in wire.Input) {
 		h.cfg.OnInput(ev)
 	}
 	if h.inject != nil {
+		if h.dropGamepad(ev) {
+			return
+		}
 		h.secureAttention(ev)
 		if err := h.inject.Inject(ev); err != nil {
 			h.inputErr.Add(1)
 			return
+		}
+		if ev.Type == input.TypeGamepad {
+			h.injectedGamepad()
 		}
 		h.held.Note(ev)
 		if ev.Type == input.TypeMouseMoveAbs {

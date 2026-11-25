@@ -130,7 +130,29 @@ func newAudioCapturer(opts audio.CaptureOptions) (audio.Capturer, error) {
 	return audio.NewCapturer(opts)
 }
 
-func newInjector() (input.Injector, error) { return input.NewInjector() }
+func newInjector() (input.Injector, error) {
+	inj, err := input.NewInjector()
+	if err != nil {
+		return nil, err
+	}
+	return vigemInjector{inj}, nil
+}
+
+// vigemInjector gives a host its injector's ViGEmBus controllers.
+type vigemInjector struct{ *input.SendInputInjector }
+
+var (
+	_ PadInjector    = vigemInjector{}
+	_ input.Targeter = vigemInjector{}
+)
+
+func (v vigemInjector) VirtualPads() (VirtualPadSlots, error) {
+	pads, err := v.Gamepads()
+	if err != nil {
+		return nil, err
+	}
+	return pads, nil
+}
 
 func newAudioPlayer() (audio.Player, error) { return audio.NewPlayer(audio.PlayerConfig{}) }
 
