@@ -229,3 +229,6 @@ func ParseProfile(b []byte) (*defaults.ResolvedProfile, error) {
 	}
 	return &p, nil
 }
+
+// LocalDisplays lists this machine's displays, which a host captures.
+func LocalDisplays() []defaults.HostDisplay { return hostDisplays(HostConfig{}) }

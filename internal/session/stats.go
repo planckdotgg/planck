@@ -48,6 +48,14 @@ func (w *window) last() float64 {
 	return w.buf[i]
 }
 
+// ordered appends the samples to dst, oldest first.
+func (w *window) ordered(dst []float64) []float64 {
+	if w.full {
+		dst = append(dst, w.buf[w.next:]...)
+	}
+	return append(dst, w.buf[:w.next]...)
+}
+
 func (w *window) summary() Latency {
 	n := w.len()
 	if n == 0 {

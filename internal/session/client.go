@@ -213,6 +213,13 @@ type ClientStats struct {
 	FramesPartial   uint64
 	SlicesRecovered uint64
 	SinkErrors      uint64
+	// Keyframes counts the keyframes decoded, and FrameTimesMs holds the
+	// gaps between the last FrameTimeRing pictures decoded, oldest first.
+	Keyframes    uint64
+	FrameTimesMs []float64
+	// HostPolicy is what the host's owner forces on clients, which beats
+	// this client's overrides; all auto from a host that sent none.
+	HostPolicy defaults.UserOverrides
 	AudioBufferMs   float64
 	AudioPackets    uint64
 	InputSent       uint64
@@ -271,6 +278,9 @@ type conn struct {
 	// waits for a keyframe.
 	intra   atomic.Bool
 	profile atomic.Pointer[defaults.ResolvedProfile]
+	// policy is what the host's owner forces on its clients, from its
+	// capabilities; nil from a host that sent none.
+	policy atomic.Pointer[defaults.UserOverrides]
 	// openSink makes the sink of each stream.
 	openSink SinkOpener
 	// asked is the window last offered the host, at the connect or a
@@ -309,6 +319,11 @@ type conn struct {
 	host      wire.HostStats
 	recv      rate
 	dataShard uint64
+	// frameTimes are the gaps between the pictures decoded, and lastShown
+	// when the last one was.
+	frameTimes *window
+	lastShown  int64
+	keyframes  uint64
 
 	lastPLI                             atomic.Int64
 	dropped, sinkErr, audioPkts, inputs atomic.Uint64
@@ -403,7 +418,8 @@ func (c *Client) connect(ctx context.Context, t Target) (*conn, error) {
 	cc := &conn{hostID: r.hostID, name: r.name, frames: make(chan *frameBuf, warmupQueue),
 		free: make(chan *frameBuf, warmupQueue+2), e2e: newWindow(latencyWindow), network: newWindow(latencyWindow),
 		encodeW: newWindow(latencyWindow), decodeW: newWindow(latencyWindow), presentW: newWindow(latencyWindow),
-		glassW: newWindow(latencyWindow), e2eGlassW: newWindow(latencyWindow), done: make(chan struct{}), gain: &c.gain}
+		glassW: newWindow(latencyWindow), e2eGlassW: newWindow(latencyWindow), frameTimes: newWindow(FrameTimeRing),
+		done: make(chan struct{}), gain: &c.gain}
 	for range warmupQueue + 2 {
 		cc.free <- &frameBuf{}
 	}
@@ -426,6 +442,7 @@ func (c *Client) connect(ctx context.Context, t Target) (*conn, error) {
 	dcfg, prof := c.streamConfig(sess)
 	cc.stream.Store(&streamState{sink: dcfg})
 	cc.profile.Store(prof)
+	cc.policy.Store(hostPolicy(sess))
 	cc.openSink = cfg.OpenSink
 	if cc.openSink == nil {
 		cc.openSink = OpenDecodeSink
@@ -675,6 +692,22 @@ func decoderFormat(p *defaults.ResolvedProfile) defaults.UserOverrides {
 	return o
 }
 
+// FrameTimeRing is how many frame times ClientStats keeps.
+const FrameTimeRing = 120
+
+// hostPolicy is the Forced overrides of the capabilities the host sent.
+func hostPolicy(sess *transport.Session) *defaults.UserOverrides {
+	js := sess.PeerCapabilities()
+	if len(js) == 0 {
+		return nil
+	}
+	var caps defaults.HostCapabilities
+	if err := json.Unmarshal(js, &caps); err != nil {
+		return nil
+	}
+	return &caps.Forced
+}
+
 // streamConfig is the decoder config and resolved profile of sess's stream.
 func (c *Client) streamConfig(sess *transport.Session) (decode.Config, *defaults.ResolvedProfile) {
 	acc := sess.Config()
@@ -912,6 +945,7 @@ func (c *Client) switchRoute(cc *conn, r resolved) error {
 		return fmt.Errorf("session: the host changed the stream to %dx%d %v chroma %v chunk %d on %s", dcfg.Width, dcfg.Height, dcfg.Codec, dcfg.Chroma, dcfg.ChunkLen, r.kind)
 	}
 	cc.profile.Store(prof)
+	cc.policy.Store(hostPolicy(rt.sess))
 	cc.stream.Store(&streamState{sink: cur})
 	if cc.jb != nil {
 		cc.jb.Restart()
@@ -1070,6 +1104,13 @@ func (cc *conn) decodeLoop(sink Sink, sinkCfg decode.Config, logf func(string, .
 		cc.encodeW.add(cc.encodeMs)
 		if err == nil {
 			cc.decodeW.add(cc.decodeMs)
+			if cc.lastShown != 0 {
+				cc.frameTimes.add(ms(shown - cc.lastShown))
+			}
+			cc.lastShown = shown
+			if info.Keyframe {
+				cc.keyframes++
+			}
 		}
 		if clock.Samples() > 0 {
 			cc.network.add(ms(arrival - clock.ToLocal(info.EncodeTS)))
@@ -1224,7 +1265,11 @@ func (cc *conn) stats() ClientStats {
 	s.Encode, s.Decode, s.Present = cc.encodeW.summary(), cc.decodeW.summary(), cc.presentW.summary()
 	s.Glass, s.E2EGlass = cc.glassW.summary(), cc.e2eGlassW.summary()
 	s.E2EMs, s.NetworkMs = cc.e2e.last(), cc.network.last()
+	s.FrameTimesMs, s.Keyframes = cc.frameTimes.ordered(nil), cc.keyframes
 	cc.mu.Unlock()
+	if p := cc.policy.Load(); p != nil {
+		s.HostPolicy = *p
+	}
 	return s
 }
 
