@@ -64,24 +64,30 @@ func (b *backend) RemoveNeverSend(chord string) error {
 
 // updateKeys changes the hotkeys or the never-send list in client.json,
 // then hands them to the key filters and the desktop. While hosting, a
-// chord the desktop refuses is not saved and the old ones stay registered.
+// chord the desktop refuses is not saved and the old ones stay registered;
+// a failed save puts the old ones back too.
 func (b *backend) updateKeys(fn func(*config.ClientConfig) error) error {
-	var keys config.ClientConfig
+	var keys, old config.ClientConfig
+	registered := false
 	err := config.UpdateClientConfig(b.dir, func(c *config.ClientConfig) error {
 		if err := fn(c); err != nil {
 			return err
 		}
 		keys = config.ClientConfig{Hotkeys: c.Hotkeys, NeverSend: c.NeverSend}
 		b.mu.Lock()
-		old := b.keys
+		old = b.keys
 		b.mu.Unlock()
 		if err := b.registerGlobals(keys, &old); err != nil {
 			_ = b.registerGlobals(old, nil)
 			return err
 		}
+		registered = true
 		return nil
 	})
 	if err != nil {
+		if registered {
+			_ = b.registerGlobals(old, nil)
+		}
 		return err
 	}
 	b.mu.Lock()

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"runtime"
 	"slices"
 	"sync"
@@ -235,6 +236,37 @@ func TestBackendHotkeyDesktopRefuses(t *testing.T) {
 	}
 	if got := globals.keys(); !slices.Equal(got, []string{"Ctrl+F3", "Ctrl+F4"}) {
 		t.Errorf("after binding kick: %v", got)
+	}
+}
+
+// TestBackendHotkeySaveFailureRollsBackDesktop: while hosting, a chord the
+// desktop takes but client.json cannot save is an error, and the desktop
+// goes back to the old chord.
+func TestBackendHotkeySaveFailureRollsBackDesktop(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a read-only directory still takes new files on Windows")
+	}
+	dir := t.TempDir()
+	b, _ := newTestBackend(t, dir, nil)
+	globals := &fakeShortcuts{}
+	b.globals = globals
+	if err := b.SetHosting(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.SetHosting(context.Background(), false) })
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	if err := b.SetHotkey(ui.HotkeyStopHosting, "Ctrl+Alt+J"); err == nil {
+		t.Fatal("SetHotkey saved into a read-only directory")
+	}
+	if got := chordOf(b.Hotkeys(), ui.HotkeyStopHosting); got != "Ctrl+F3" {
+		t.Errorf("backend has %q", got)
+	}
+	if got := globals.keys(); !slices.Equal(got, []string{"Ctrl+F3"}) {
+		t.Errorf("registered %v", got)
 	}
 }
 
