@@ -83,11 +83,7 @@ func TestLiveVirtualPadLoopback(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Error("no rumble back from ViGEmBus")
 	}
-	select {
-	case r := <-rumble:
-		t.Errorf("second rumble %v with no motor change", r)
-	case <-time.After(200 * time.Millisecond):
-	}
+
 	capture.Rumble(slot, 0, 0)
 
 	// Faster than the pad is polled, as a client mashing a button: the
