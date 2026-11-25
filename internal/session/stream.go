@@ -332,6 +332,50 @@ func (st *stream) restream(p *defaults.ResolvedProfile, next VideoParams, pipe *
 	return from
 }
 
+// encoderWatcher is a VideoPipe that opens its encoder on the first
+// picture (sourcePipe), and tells fn of each one before it encodes.
+type encoderWatcher interface {
+	watchEncoder(fn func(encode.Config))
+}
+
+// hdrCaptured8Bit is why a stream the profile settled as HDR10 is SDR.
+const hdrCaptured8Bit = "the host captured its HDR desktop 8-bit"
+
+// followEncoder gives the client the stream the encoder settled when it
+// differs from the profile on HDR10: an HDR desktop that capture delivers
+// 8-bit encodes SDR, and the client's sink must show it as SDR, not PQ. It
+// runs before the encoder's first picture, so every frame of the new epoch
+// is the encoder's. It reports whether the stream changed.
+func (st *stream) followEncoder(hdr10 bool) bool {
+	if st.profile == nil || st.profile.HDR10 == hdr10 {
+		return false
+	}
+	if st.sess.PeerFeatures()&wire.FeatureStreamSwitch == 0 {
+		st.h.logf("planck: the encoder settled HDR10 %v, but the client cannot follow a stream switch", hdr10)
+		return false
+	}
+	p := *st.profile
+	p.HDR10 = hdr10
+	p.Decisions = slices.Clone(p.Decisions)
+	for i := range p.Decisions {
+		if d := &p.Decisions[i]; d.Knob == "hdr10" {
+			d.Value, d.Why = "off", hdrCaptured8Bit
+			if hdr10 {
+				d.Value, d.Why = "on", "HDR desktop and HDR client display"
+			}
+		}
+	}
+	st.epoch++
+	st.mu.Lock()
+	st.profile = &p
+	st.mu.Unlock()
+	if js, err := json.Marshal(&p); err == nil {
+		_ = st.sess.SendControl(&wire.Stream{Epoch: st.epoch, Profile: js})
+	}
+	st.h.logf("planck: stream %d is HDR10 %v, as the encoder settled", st.epoch, hdr10)
+	return true
+}
+
 // requestDisplay leaves the host display the client asked for to the
 // video loop, replacing one it has not taken yet.
 func (st *stream) requestDisplay(id string) {
@@ -584,6 +628,13 @@ func (st *stream) videoLoop() {
 					return
 				}
 				continue
+			}
+			if w, ok := pipe.(encoderWatcher); ok {
+				w.watchEncoder(func(cfg encode.Config) {
+					if st.followEncoder(cfg.HDR10) {
+						out.epoch = st.epoch
+					}
+				})
 			}
 			info := pipe.Info()
 			st.mu.Lock()

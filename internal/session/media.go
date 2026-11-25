@@ -104,6 +104,10 @@ type sourcePipe struct {
 	enc     encode.Encoder
 	wrap    func(encode.Encoder) encode.Encoder
 	cfg     encode.Config // the encoder's, after fallbacks
+	// openEnc opens the encoder, encode.Open when nil.
+	openEnc func(encode.Config, ...gpu.Device) (encode.Encoder, error)
+	// opened hears of each encoder before it encodes its first picture.
+	opened func(encode.Config)
 	// emit and emitTS are the current NextSlices call's; encSlice, made
 	// once, forwards the encoder's slices to them.
 	emit     sliceEmit
@@ -245,12 +249,16 @@ func (p *sourcePipe) openEncoder(f capture.Frame) error {
 		Slices: p.params.Slices, SubFrame: p.params.SubFrame, Split: p.params.Split, ChunkLen: p.params.ChunkLen,
 		HDR10: hdrSource(p.params, f.Format),
 	}
-	enc, err := encode.Open(cfg, p.devices...)
+	open := p.openEnc
+	if open == nil {
+		open = encode.Open
+	}
+	enc, err := open(cfg, p.devices...)
 	if errors.Is(err, encode.ErrUnsupported) && (cfg.Slices > 1 || cfg.SubFrame) {
 		// Transport slices are independent of codec slices; a backend
 		// without slice support (VideoToolbox) encodes whole pictures.
 		cfg.Slices, cfg.SubFrame = 0, false
-		enc, err = encode.Open(cfg, p.devices...)
+		enc, err = open(cfg, p.devices...)
 	}
 	if err != nil {
 		return err
@@ -260,8 +268,13 @@ func (p *sourcePipe) openEncoder(f capture.Frame) error {
 	}
 	p.enc, p.cfg, p.srcFmt, p.w, p.h = enc, cfg, f.Format, f.Width, f.Height
 	p.info.Width, p.info.Height = cfg.Width, cfg.Height
+	if p.opened != nil {
+		p.opened(cfg)
+	}
 	return nil
 }
+
+func (p *sourcePipe) watchEncoder(fn func(encode.Config)) { p.opened = fn }
 
 func (p *sourcePipe) SetBitrate(kbps int) error {
 	p.params.BitrateKbps = kbps
