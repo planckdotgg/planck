@@ -230,7 +230,7 @@ func (a *App) View(c *mui.Context) {
 		// Ports left open elsewhere are tested again when Settings returns.
 		a.set.portsShownAt = 0
 		mui.Scroll(c).Grow(1).FillHeight().Children(func() {
-			mui.Column(c).FillWidth().Padding(theme.Space5, theme.Space7).Children(func() {
+			mui.Column(c).FillWidth().Padding(pagePadTop, theme.Space7).Children(func() {
 				switch a.screen {
 				case ScreenHosts:
 					a.hostsScreen(c)

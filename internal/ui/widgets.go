@@ -30,13 +30,28 @@ func heading(c *mui.Context, s string, size float32) mui.Element {
 	return e
 }
 
+// The title block is pageTitleLine + pageHeaderGap + pageSubLine = 52 px
+// tall, and the first row under it starts pageRowGap below. Every rail
+// screen starts at pagePadTop, so the first row's top is the same
+// pageRowTop on all of them and the rail aligns to it.
+const (
+	pagePadTop    = 24
+	pageTitleLine = 34
+	pageSubLine   = 14
+	pageHeaderGap = 4
+	pageHeaderH   = pageTitleLine + pageHeaderGap + pageSubLine
+	pageRowGap    = 24
+	pageRowTop    = pagePadTop + pageHeaderH + pageRowGap
+	pageFirstRowH = 48
+)
+
 // pageHeader is the title block every rail screen opens with.
 func pageHeader(c *mui.Context, title, sub string, trailing func()) {
 	mui.Row(c).FillWidth().AlignItems(mui.End).Children(func() {
-		mui.Column(c).Gap(theme.Space1).Grow(1).Children(func() {
-			heading(c, title, theme.TextReadout)
+		mui.Column(c).Gap(pageHeaderGap).Grow(1).Children(func() {
+			heading(c, title, theme.TextReadout).FixedLineHeight(pageTitleLine)
 			if sub != "" {
-				secondary(c, sub)
+				secondary(c, sub).FixedLineHeight(pageSubLine)
 			}
 		})
 		if trailing != nil {

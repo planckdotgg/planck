@@ -137,10 +137,6 @@ var categoryPages = [numCategories]func(a *App, c *mui.Context, f *settingsFrame
 	catNetwork: (*App).networkPage,
 }
 
-// settingsPadTop is one px under the other screens' 24: Settings' title is a
-// 25 px display line, so its cap height centres where the 31 px titles' does.
-const settingsPadTop = 25
-
 func (a *App) settingsScreen(c *mui.Context) {
 	f := &settingsFrame{s: a.backend.Settings(), hs: a.backend.HostSettings(), layout: a.backend.OverlayLayout(),
 		hosting: a.backend.Hosting(), stats: a.backend.SessionStats(), gp: a.backend.GamepadSettings()}
@@ -162,7 +158,7 @@ func (a *App) settingsScreen(c *mui.Context) {
 	mui.Row(c).Grow(1).FillHeight().Children(func() {
 		a.settingsNav(c, f)
 		mui.Scroll(c).Grow(1).FillHeight().Children(func() {
-			mui.Column(c).FillWidth().MaxWidth(968).Padding(settingsPadTop, theme.Space6, theme.Space5).Gap(18).Children(func() {
+			mui.Column(c).FillWidth().MaxWidth(968).Padding(pagePadTop, theme.Space6, theme.Space5).Gap(18).Children(func() {
 				a.settingsError(c)
 				if f.searching {
 					a.searchResults(c, f)
@@ -217,7 +213,7 @@ func (a *App) settingsError(c *mui.Context) {
 func (a *App) settingsNav(c *mui.Context, f *settingsFrame) {
 	found := hits(f.query)
 	mui.Column(c).Width(theme.SizeSidebar).Shrink(0).FillHeight().BorderEndWidth(1).BorderColor(theme.RoleBorder).
-		Padding(theme.Space5, theme.Space4).Gap(theme.Space4).Children(func() {
+		Padding(pageRowTop, theme.Space4, theme.Space5).Gap(theme.Space4).Children(func() {
 		a.searchField(c, f, found)
 		mui.Column(c).FillWidth().Gap(2).Children(func() {
 			for cat := range numCategories {
@@ -228,7 +224,7 @@ func (a *App) settingsNav(c *mui.Context, f *settingsFrame) {
 }
 
 func (a *App) searchField(c *mui.Context, f *settingsFrame, found [numCategories][]*settingEntry) {
-	field := mui.Row(c).FillWidth().Height(34).PaddingStart(10).PaddingEnd(6).Gap(theme.Space2).AlignItems(mui.Center).
+	field := mui.Row(c).FillWidth().Height(pageFirstRowH).PaddingStart(10).PaddingEnd(6).Gap(theme.Space2).AlignItems(mui.Center).
 		Radius(theme.RadiusSm).Background(theme.RoleRaised).Border(1, theme.RoleControlEdge)
 	var in mui.Element
 	field.Children(func() {
@@ -319,10 +315,10 @@ func (a *App) searchResults(c *mui.Context, f *settingsFrame) {
 // settingsHeader is a category's title, the scope it speaks for, and an
 // optional control on the right.
 func settingsHeader(c *mui.Context, title, sub string, trailing func()) {
-	mui.Row(c).FillWidth().AlignItems(mui.Center).Gap(theme.Space4).Children(func() {
-		mui.Column(c).Grow(1).Shrink(1).Gap(2).Children(func() {
-			heading(c, title, theme.TextDisplay).FixedLineHeight(theme.LeadingDisplay)
-			caption(c, sub).FontSize(12).FixedLineHeight(18)
+	mui.Row(c).FillWidth().AlignItems(mui.End).Gap(theme.Space4).Margin(0, 0, pageRowGap-18).Children(func() {
+		mui.Column(c).Grow(1).Shrink(1).Gap(pageHeaderGap).Children(func() {
+			heading(c, title, theme.TextReadout).FixedLineHeight(pageTitleLine)
+			secondary(c, sub).FixedLineHeight(pageSubLine)
 		})
 		if trailing != nil {
 			trailing()

@@ -681,7 +681,9 @@ func (a *App) diagnostics(c *mui.Context, st SessionStats) {
 }
 
 func (a *App) idleStats(c *mui.Context) {
-	pageHeader(c, "Statistics", "Nothing is streaming right now.", nil)
+	mui.Column(c).FillWidth().Margin(0, 0, pageRowGap-theme.Space4).Children(func() {
+		pageHeader(c, "Statistics", "Nothing is streaming right now.", nil)
+	})
 	mui.Column(c).FillWidth().MinHeight(320).Padding(theme.Space6).AlignItems(mui.Center).Justify(mui.Center).
 		Gap(theme.Space4).Background(theme.RoleSurface).Border(1, theme.RoleBorder).Radius(theme.RadiusMd).Children(func() {
 		mui.Box(c).Size(420, 112).Draw(func(p *mui.Painter, r mui.Rect) {

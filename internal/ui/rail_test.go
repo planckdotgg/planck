@@ -4,6 +4,8 @@ import (
 	"image"
 	"testing"
 	"time"
+
+	mui "github.com/egoist/mygo/ui"
 )
 
 // TestHostingTooltipShowsOnce: the hosting button's status card is its
@@ -56,43 +58,123 @@ func inkSpan(img *image.RGBA, r image.Rectangle, bg [4]uint8) (top, bot int, ok 
 	return top, bot, top >= 0
 }
 
-func TestRailLogoAlignsWithPageTitle(t *testing.T) {
-	a, tt := newTester(t, newFake())
-	screens := []struct {
-		screen Screen
-		sub    string
-		name   string
-	}{
+type railScreen struct {
+	screen Screen
+	sub    string
+	name   string
+}
+
+func railScreens(a *App) []railScreen {
+	return []railScreen{
 		{ScreenHosts, "Searching your network and tailnet", "hosts"},
 		{ScreenStatistics, "Nothing is streaming right now.", "statistics"},
 		{ScreenSettings, "How this " + machineWord(a.goos) + " opens streams and what it shares with them.", "settings"},
 	}
-	for _, s := range screens {
-		a.screen = s.screen
-		a.Notify()
-		tt.Frame()
-		snapshot(t, tt, "rail-"+s.name)
-		sub, ok := tt.Find(s.sub)
-		if !ok {
-			t.Fatalf("%s: subtitle %q not found", s.name, s.sub)
+}
+
+// firstInk is the first row at or below y0 where column x differs from bg.
+func firstInk(img *image.RGBA, x, y0 int, bg [4]uint8) int {
+	for y := y0; y < img.Bounds().Max.Y; y++ {
+		p := img.RGBAAt(x, y)
+		if [4]uint8{p.R, p.G, p.B, p.A} != bg {
+			return y
 		}
-		img := tt.Image()
-		pg := img.RGBAAt(int(sub.X)-8, 2)
-		bg := [4]uint8{pg.R, pg.G, pg.B, pg.A}
-		x0 := int(sub.X)
-		tTop, tBot, ok := inkSpan(img, image.Rect(x0, 0, x0+14, int(sub.Y)), bg)
-		if !ok {
-			t.Fatalf("%s: no title ink above the subtitle", s.name)
+	}
+	return -1
+}
+
+// railGeometry is what one screen measures: the header block (title top to
+// subtitle bottom), the first row below it, the Hosts button and the logo ink.
+type railGeometry struct {
+	headTop, headBot, rowTop float64
+	btnTop, btnBot           float64
+	logoTop, logoBot         int
+}
+
+func measureRail(t *testing.T, a *App, tt *mui.Tester, s railScreen) railGeometry {
+	t.Helper()
+	a.screen = s.screen
+	a.Notify()
+	tt.Frame()
+	snapshot(t, tt, "rail-"+s.name)
+	sub, ok := tt.Find(s.sub)
+	if !ok {
+		t.Fatalf("%s: subtitle %q not found", s.name, s.sub)
+	}
+	btn, ok := tt.Find("Hosts")
+	if !ok {
+		t.Fatalf("%s: no Hosts rail button", s.name)
+	}
+	img := tt.Image()
+	pg := img.RGBAAt(int(sub.X)-8, 2)
+	bg := [4]uint8{pg.R, pg.G, pg.B, pg.A}
+	g := railGeometry{
+		headTop: float64(sub.Y) - pageHeaderGap - pageTitleLine,
+		headBot: float64(sub.Y + sub.H),
+		btnTop:  float64(btn.Y), btnBot: float64(btn.Y + btn.H),
+	}
+	y0 := int(sub.Y+sub.H) + 1
+	g.rowTop = float64(firstInk(img, int(sub.X)+10, y0, bg))
+	if s.screen == ScreenSettings {
+		sb := img.RGBAAt(144, y0)
+		sbg := [4]uint8{sb.R, sb.G, sb.B, sb.A}
+		side := float64(firstInk(img, 144, y0, sbg))
+		t.Logf("settings: search field top %.0f, first panel top %.0f", side, g.rowTop)
+		if side != g.rowTop {
+			t.Errorf("settings: search field top %.0f, first panel top %.0f", side, g.rowTop)
 		}
-		rl := img.RGBAAt(4, 2)
-		lTop, lBot, ok := inkSpan(img, image.Rect(20, 0, 68, 110), [4]uint8{rl.R, rl.G, rl.B, rl.A})
-		if !ok {
-			t.Fatalf("%s: no logo ink", s.name)
+	}
+	rl := img.RGBAAt(4, 2)
+	var okLogo bool
+	g.logoTop, g.logoBot, okLogo = inkSpan(img, image.Rect(20, 0, 68, 90), [4]uint8{rl.R, rl.G, rl.B, rl.A})
+	if !okLogo {
+		t.Fatalf("%s: no logo ink", s.name)
+	}
+	return g
+}
+
+// TestRailLogoAlignsWithPageTitle: the mark's ink is centred on the whole
+// header block, title and subtitle, on every rail screen.
+func TestRailLogoAlignsWithPageTitle(t *testing.T) {
+	a, tt := newTester(t, newFake())
+	for _, s := range railScreens(a) {
+		g := measureRail(t, a, tt, s)
+		hc, lc := (g.headTop+g.headBot)/2, float64(g.logoTop+g.logoBot)/2
+		t.Logf("%s: header %.0f..%.0f (centre %.1f), logo ink %d..%d (centre %.1f)", s.name, g.headTop, g.headBot, hc, g.logoTop, g.logoBot, lc)
+		if d := hc - lc; d > 1 || d < -1 {
+			t.Errorf("%s: logo centre %.1f is %.1f px from header centre %.1f", s.name, lc, d, hc)
 		}
-		tc, lc := float64(tTop+tBot)/2, float64(lTop+lBot)/2
-		t.Logf("%s: title ink %d..%d (centre %.1f), logo ink %d..%d (centre %.1f)", s.name, tTop, tBot, tc, lTop, lBot, lc)
-		if d := tc - lc; d > 1 || d < -1 {
-			t.Errorf("%s: logo centre %.1f is %.1f px from title centre %.1f", s.name, lc, d, tc)
+		if g.headTop != pagePadTop || g.headBot != pagePadTop+pageHeaderH {
+			t.Errorf("%s: header %.0f..%.0f, want %d..%d", s.name, g.headTop, g.headBot, pagePadTop, pagePadTop+pageHeaderH)
 		}
+	}
+}
+
+// TestRailHostsAlignsWithFirstRow: the Hosts button is centred on the first
+// row under the header: the quick-connect field on Hosts, the first panel
+// on Statistics and Settings, and the Settings search field beside it.
+func TestRailHostsAlignsWithFirstRow(t *testing.T) {
+	a, tt := newTester(t, newFake())
+	for _, s := range railScreens(a) {
+		g := measureRail(t, a, tt, s)
+		bc := (g.btnTop + g.btnBot) / 2
+		t.Logf("%s: first row top %.0f, Hosts button %.0f..%.0f (centre %.1f)", s.name, g.rowTop, g.btnTop, g.btnBot, bc)
+		if g.rowTop != pageRowTop {
+			t.Errorf("%s: first row top %.0f, want %d", s.name, g.rowTop, pageRowTop)
+		}
+		if want := g.rowTop + pageFirstRowH/2; bc != want {
+			t.Errorf("%s: Hosts button centre %.1f, want the first row's centre %.1f", s.name, bc, want)
+		}
+	}
+	a.screen = ScreenHosts
+	a.Notify()
+	tt.Frame()
+	in, ok := tt.Find("Connect")
+	btn, _ := tt.Find("Hosts")
+	if !ok {
+		t.Fatal("no Connect button")
+	}
+	if ic, bc := in.Y+in.H/2, btn.Y+btn.H/2; ic != bc {
+		t.Errorf("quick-connect row centre %.1f, Hosts button centre %.1f", ic, bc)
 	}
 }

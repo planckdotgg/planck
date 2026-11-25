@@ -138,7 +138,7 @@ const quickConnectHint = "address · name · peer ID · planck.gg/j/… share li
 // panel holds it.
 func (a *App) quickConnectBar(c *mui.Context, primary bool) {
 	mui.Row(c).FillWidth().Gap(theme.Space2).AlignItems(mui.Center).Children(func() {
-		field := mui.Row(c).Grow(1).Height(theme.SizeControlLg+8).PaddingX(14).Gap(10).AlignItems(mui.Center).
+		field := mui.Row(c).Grow(1).Height(pageFirstRowH).PaddingX(14).Gap(10).AlignItems(mui.Center).
 			Radius(theme.RadiusSm).Background(theme.RoleRaised).Border(1, theme.RoleControlEdge)
 		var in mui.Element
 		field.Children(func() {
@@ -159,7 +159,7 @@ func (a *App) quickConnectBar(c *mui.Context, primary bool) {
 		if primary {
 			kind = buttonPrimary
 		}
-		b := button(c, kind, "Connect", false).Width(132).Height(theme.SizeControlLg + 8).Shrink(0)
+		b := button(c, kind, "Connect", false).Width(132).Height(pageFirstRowH).Shrink(0)
 		target := strings.TrimSpace(a.quickConnect)
 		if (b.Clicked() || in.Submitted()) && target != "" {
 			a.connect(target, target)

@@ -282,7 +282,7 @@ func TestRailHasNoPairing(t *testing.T) {
 }
 
 // TestRailNavigation: the rail's three pages, each button where the
-// design puts its marker (button top + 16 = 132, 196, 260).
+// design puts its marker (button top + 16 = 112, 176, 240).
 func TestRailNavigation(t *testing.T) {
 	f := newFake()
 	a, tt := newTester(t, f)
@@ -291,7 +291,7 @@ func TestRailNavigation(t *testing.T) {
 		if !ok {
 			t.Fatalf("no %s button", name)
 		}
-		if want := float32(132 + 64*i); info.Bounds.Y+16 != want {
+		if want := float32(112 + 64*i); info.Bounds.Y+16 != want {
 			t.Errorf("%s marker at %v, want %v", name, info.Bounds.Y+16, want)
 		}
 	}

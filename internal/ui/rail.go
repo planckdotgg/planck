@@ -15,15 +15,17 @@ var railItems = []struct {
 	{ScreenSettings, "Settings", &theme.IconSetting},
 }
 
-// The rail's vertical rhythm: the mark's centre sits at 21 + 20 = 41, on the
-// middle of the cap height of every page title (content starts 24 down), and
-// the nav stack starts at 21 + 40 + 55 = 116, so the active marker sits at
-// 132, 196 and 260.
+// The rail's vertical rhythm. The logo box is centred on the page header
+// block (pagePadTop..pagePadTop+pageHeaderH, centre 50), and the Hosts button
+// is centred on the first row below the header (pageRowTop, pageFirstRowH
+// tall, centre 124), so its top is 96 and the active marker sits at 112,
+// 176 and 240.
 const (
-	railPadTop    = 21
-	railPadBottom = 20
 	railLogoBox   = 40
-	railNavGap    = 55
+	railPadTop    = pagePadTop + (pageHeaderH-railLogoBox)/2
+	railPadBottom = 20
+	railNavTop    = pageRowTop + (pageFirstRowH-theme.SizeRailButton)/2
+	railNavGap    = railNavTop - railPadTop - railLogoBox
 )
 
 // rail is the 88 px icon rail: the mark, the three destinations, and the
