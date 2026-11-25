@@ -93,7 +93,38 @@ type HostConfig struct {
 	KeyPath                string `json:"keyPath"`
 	// Policy becomes HostCapabilities.Forced: it beats the client's overrides.
 	Policy defaults.UserOverrides `json:"policy"`
+
+	// AudioDevice is the output device whose sound streams, by
+	// audio.Device ID; empty is everything this machine plays.
+	AudioDevice string `json:"audioDevice,omitempty"`
+	// AudioExcludeApps are apps left out of the streamed sound, by name,
+	// such as "Discord"; each session finds their processes.
+	AudioExcludeApps AppList `json:"audioExcludeApps,omitempty"`
+	// VirtualMic is where a client's microphone plays: empty finds a
+	// virtual mic, VirtualMicOff refuses the microphone, and anything else
+	// is an output device's ID or part of its name.
+	VirtualMic string `json:"virtualMic,omitempty"`
+
+	// StayAwake keeps this machine and its display from sleeping while
+	// hosting is on.
+	StayAwake bool `json:"stayAwake,omitempty"`
+	// LockOnDisconnect locks this machine when a client leaves.
+	LockOnDisconnect bool `json:"lockOnDisconnect,omitempty"`
+	// MuteSpeakers mutes this machine's speakers while a client streams.
+	MuteSpeakers bool `json:"muteSpeakers,omitempty"`
+	// PrivacyMode turns this machine's own displays off while a client
+	// streams from a virtual display (Windows).
+	PrivacyMode bool `json:"privacyMode,omitempty"`
+	// IdleTimeoutMinutes disconnects a client that sent no input for that
+	// long; 0 is never.
+	IdleTimeoutMinutes int `json:"idleTimeoutMinutes,omitempty"`
 }
+
+// VirtualMicOff is HostConfig.VirtualMic for no microphone.
+const VirtualMicOff = "off"
+
+// MaxIdleTimeoutMinutes is the longest IdleTimeoutMinutes, a day.
+const MaxIdleTimeoutMinutes = 24 * 60
 
 type ClientConfig struct {
 	PreferredCodec  string `json:"preferredCodec"`
@@ -131,6 +162,21 @@ type ClientConfig struct {
 	// OpenFullscreen is whether a stream's window opens in full screen;
 	// nil is on (StreamsOpenFullscreen).
 	OpenFullscreen *bool `json:"openFullscreen,omitempty"`
+
+	// Hotkeys are the hotkeys the user changed, by HotkeyAction, as
+	// chords; "" is unbound. The rest keep their defaults (Hotkey).
+	Hotkeys map[string]string `json:"hotkeys,omitempty"`
+	// NeverSend are chords never sent to the host, such as a voice chat's
+	// push-to-talk key.
+	NeverSend []string `json:"neverSend,omitempty"`
+	// SwapCmdCtrl trades Cmd and Ctrl in what goes to a host whose OS is
+	// macOS when this one's is not, or the other way.
+	SwapCmdCtrl bool `json:"swapCmdCtrl,omitempty"`
+	// AudioOutputDevice and MicDevice are the devices a stream plays on
+	// and records from, by audio.Device ID; empty, or a device that is
+	// gone, is the system's default.
+	AudioOutputDevice string `json:"audioOutputDevice,omitempty"`
+	MicDevice         string `json:"micDevice,omitempty"`
 }
 
 // StreamsOpenFullscreen reports whether a stream's window opens in full
@@ -329,6 +375,8 @@ func (c HostConfig) Validate() error {
 		return fmt.Errorf("config: host: fps %d and maxBitrateKbps %d must be positive", c.FPS, c.MaxBitrateKbps)
 	case c.CertPath == "" || c.KeyPath == "":
 		return errors.New("config: host: certPath and keyPath are required")
+	case c.IdleTimeoutMinutes < 0 || c.IdleTimeoutMinutes > MaxIdleTimeoutMinutes:
+		return fmt.Errorf("config: host: idleTimeoutMinutes %d: want 0 to %d", c.IdleTimeoutMinutes, MaxIdleTimeoutMinutes)
 	}
 	if err := c.Policy.Validate(); err != nil {
 		return fmt.Errorf("config: host: policy: %w", err)
@@ -347,6 +395,9 @@ func (c ClientConfig) Validate() error {
 		if err := c.HostOverrides[id].Validate(); err != nil {
 			return fmt.Errorf("config: client: host %s overrides: %w", id, err)
 		}
+	}
+	if err := c.validateHotkeys(); err != nil {
+		return err
 	}
 	return validateFormat("client", c.PreferredCodec, c.PreferredChroma)
 }
@@ -419,4 +470,39 @@ func writeFileAtomic(path string, data []byte, perm fs.FileMode) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// AppList is a list of app names. It is a string inside so that
+// HostConfig stays comparable; in JSON it is an array.
+type AppList string
+
+// NewAppList keeps the names that are not blank, once each, trimmed.
+func NewAppList(names ...string) AppList {
+	var kept []string
+	for _, n := range names {
+		n = strings.TrimSpace(n)
+		if n != "" && !slices.ContainsFunc(kept, func(k string) bool { return strings.EqualFold(k, n) }) {
+			kept = append(kept, n)
+		}
+	}
+	return AppList(strings.Join(kept, "\n"))
+}
+
+// Names are the apps in the list.
+func (l AppList) Names() []string {
+	if l == "" {
+		return nil
+	}
+	return strings.Split(string(l), "\n")
+}
+
+func (l AppList) MarshalJSON() ([]byte, error) { return json.Marshal(l.Names()) }
+
+func (l *AppList) UnmarshalJSON(b []byte) error {
+	var names []string
+	if err := json.Unmarshal(b, &names); err != nil {
+		return err
+	}
+	*l = NewAppList(names...)
+	return nil
 }
