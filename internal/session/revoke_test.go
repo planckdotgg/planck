@@ -37,6 +37,9 @@ func TestRevokeClient(t *testing.T) {
 		t.Fatalf("revoke an unknown fingerprint: %v, want ErrNotPaired", err)
 	}
 	waitFor(t, "the host to run the stream", func() bool { return hs.host.Stats().Connected })
+	if got := hs.host.ConnectedClient(); got != fp {
+		t.Fatalf("connected client %q, want %q", got, fp)
+	}
 	done := r.client.Done()
 	if err := hs.host.RevokeClient(fp); err != nil {
 		t.Fatal(err)
@@ -115,7 +118,10 @@ func TestHostConfigFromStored(t *testing.T) {
 
 func TestMeasureEncoder(t *testing.T) {
 	var got VideoParams
-	open := func(p VideoParams) (VideoPipe, error) { got = p; return &fakePipe{fps: p.FPS, forced: new(atomic.Int64), kbps: new(atomic.Int64)}, nil }
+	open := func(p VideoParams) (VideoPipe, error) {
+		got = p
+		return &fakePipe{fps: p.FPS, forced: new(atomic.Int64), kbps: new(atomic.Int64)}, nil
+	}
 	l, err := MeasureEncoder(context.Background(), open, "4080", 20)
 	if err != nil {
 		t.Fatal(err)

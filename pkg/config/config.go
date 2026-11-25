@@ -82,7 +82,7 @@ type HostConfig struct {
 	NoInput bool `json:"noInput,omitempty"`
 	// Clipboard is what the host shares: one of the Clipboard constants,
 	// empty is off.
-	Clipboard string `json:"clipboard,omitempty"`
+	Clipboard              string `json:"clipboard,omitempty"`
 	Codec                  string `json:"codec"`
 	Chroma                 string `json:"chroma"`
 	FPS                    int    `json:"fps"`

@@ -449,6 +449,18 @@ func RevokePairedClients(dir string, fingerprints []string) error {
 	return err
 }
 
+// ConnectedClient is the certificate fingerprint (hex) of the client
+// streaming now, "" without one.
+func (h *Host) ConnectedClient() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cur == nil {
+		return ""
+	}
+	fp := h.cur.sess.PeerFingerprint()
+	return hex.EncodeToString(fp[:])
+}
+
 // MediaPort is the fixed UDP media port, or 0 when each session picks one.
 func (h *Host) MediaPort() int { return h.cfg.MediaPort }
 

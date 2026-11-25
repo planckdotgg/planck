@@ -219,12 +219,12 @@ type ClientStats struct {
 	FrameTimesMs []float64
 	// HostPolicy is what the host's owner forces on clients, which beats
 	// this client's overrides; all auto from a host that sent none.
-	HostPolicy defaults.UserOverrides
-	AudioBufferMs   float64
-	AudioPackets    uint64
-	InputSent       uint64
-	Mic             MicStats
-	Clipboard       ClipboardStats
+	HostPolicy    defaults.UserOverrides
+	AudioBufferMs float64
+	AudioPackets  uint64
+	InputSent     uint64
+	Mic           MicStats
+	Clipboard     ClipboardStats
 }
 
 // Client connects to one host at a time.
@@ -607,6 +607,9 @@ func (c *Client) dialRoute(ctx context.Context, cc *conn, r resolved) (*route, e
 			},
 		},
 	})
+	if errors.Is(err, transport.ErrAuthDenied) && seen != ([32]byte{}) {
+		return nil, &HostDeniedError{Fingerprint: hex.EncodeToString(seen[:]), Err: err}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1336,6 +1339,17 @@ func (c *Client) Err() error {
 }
 
 var ErrNotConnected = errors.New("session: not connected")
+
+// HostDeniedError is a connect the host refused, which errors.Is finds as
+// transport.ErrAuthDenied, with the fingerprint (hex) of the certificate
+// the host presented: the one to check on both screens before pairing.
+type HostDeniedError struct {
+	Fingerprint string
+	Err         error
+}
+
+func (e *HostDeniedError) Error() string { return e.Err.Error() }
+func (e *HostDeniedError) Unwrap() error { return e.Err }
 
 // ErrNoAnswer is a connect to a host that answered on none of its routes.
 var ErrNoAnswer = errors.New("the host did not answer on any route")
