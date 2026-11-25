@@ -83,6 +83,10 @@ type App struct {
 	streamServices     mui.Services
 	haveStreamServices bool
 	connecting         string
+	// connectTarget is what the connect under way dials, and connectGen
+	// counts connects, so that one replaced by another drops its result.
+	connectTarget string
+	connectGen    int
 	// abandoned is set when the user closed the stream's window while it
 	// was connecting: a connect that succeeds anyway is dropped.
 	abandoned   bool
@@ -315,16 +319,22 @@ func (a *App) connect(target, name string) { a.startConnect(target, name, true) 
 
 // startConnect starts Backend.Connect; window false leaves the stream's
 // window to the stream, for a host that will most likely ask to pair
-// first.
+// first. A connect to another target replaces one under way, which the
+// launcher may not show.
 func (a *App) startConnect(target, name string, window bool) {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.mu.Lock()
 	if a.connecting != "" {
-		a.mu.Unlock()
-		cancel()
-		return
+		if a.connectTarget == target {
+			a.mu.Unlock()
+			cancel()
+			return
+		}
+		a.cancel()
 	}
-	a.connecting, a.cancel, a.connectErr, a.abandoned = name, cancel, "", false
+	a.connectGen++
+	gen := a.connectGen
+	a.connecting, a.connectTarget, a.cancel, a.connectErr, a.abandoned = name, target, cancel, "", false
 	a.mu.Unlock()
 	if a.streamWin != nil && window {
 		a.streamWin.OpenStreamWindow(name)
@@ -332,8 +342,13 @@ func (a *App) startConnect(target, name string, window bool) {
 	go func() {
 		err := a.backend.Connect(ctx, target)
 		a.mu.Lock()
+		if a.connectGen != gen {
+			a.mu.Unlock()
+			cancel()
+			return
+		}
 		abandoned := a.abandoned && err == nil
-		a.connecting, a.cancel, a.abandoned = "", nil, false
+		a.connecting, a.connectTarget, a.cancel, a.abandoned = "", "", nil, false
 		switch {
 		case errors.Is(err, ErrPairingRequired):
 			a.toPairing = true

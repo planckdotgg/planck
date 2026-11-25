@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"testing"
@@ -264,4 +265,33 @@ func TestSettingsHostName(t *testing.T) {
 	if got := f.Settings(); got.AudioEnabled != newFake().settings.AudioEnabled || f.ovSaves != 0 {
 		t.Fatalf("other settings changed: %+v, %d override saves", got, f.ovSaves)
 	}
+}
+
+// TestConnectReplacesPending: Pair & Connect leaves the launcher on Hosts,
+// so a connect that never ends is invisible there; Connect on another host
+// replaces it rather than doing nothing.
+func TestConnectReplacesPending(t *testing.T) {
+	f := newFake()
+	f.hosts = sampleHosts()
+	_, sw, launcher, _ := newSplitTester(t, f)
+	click(t, launcher, "Connect to cabin-pc")
+	eventually(t, launcher, func() bool { f.mu.Lock(); defer f.mu.Unlock(); return len(f.connects) == 1 })
+	click(t, launcher, "Connect to bigboi")
+	eventually(t, launcher, func() bool { f.mu.Lock(); defer f.mu.Unlock(); return len(f.connects) == 2 })
+	f.mu.Lock()
+	got, ctxErr := slices.Clone(f.connects), f.connectCtxErr
+	f.mu.Unlock()
+	if !slices.Equal(got, []string{"h-cabin", "h-bigboi"}) || !errors.Is(ctxErr, context.Canceled) {
+		t.Fatalf("connects %q, first one's context %v", got, ctxErr)
+	}
+	if !slices.Equal(sw.opens, []string{"bigboi"}) {
+		t.Fatalf("stream windows opened %q", sw.opens)
+	}
+	click(t, launcher, "Connect to bigboi")
+	if f.mu.Lock(); len(f.connects) != 2 {
+		t.Fatalf("a second click on the same host connected again: %q", f.connects)
+	}
+	f.mu.Unlock()
+	f.connectResult <- errors.New("host refused the session")
+	eventually(t, launcher, func() bool { return launcher.HasText("Could not connect: host refused the session") })
 }

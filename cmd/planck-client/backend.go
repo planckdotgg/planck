@@ -485,6 +485,11 @@ func (b *backend) dialNew(ctx context.Context, t session.Target, pin string, s u
 	if err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		// Another connect replaced this one as it finished.
+		c.Close()
+		return err
+	}
 	st := c.Stats()
 	b.mu.Lock()
 	b.client, b.target = c, t

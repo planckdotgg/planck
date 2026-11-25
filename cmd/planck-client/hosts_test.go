@@ -290,3 +290,28 @@ func TestBackendTelemetryFollowsRoute(t *testing.T) {
 		return tel.Connected && tel.PathKind == discovery.PathLANDirect && tel.DatagramBytes == wire.MaxLANDatagram
 	})
 }
+
+// TestBackendConnectToGoneHost: a host discovery found, gone before the
+// connect, fails it. The UI's connect has no deadline of its own, so a race
+// that waited for an answer forever kept every later Connect from starting.
+func TestBackendConnectToGoneHost(t *testing.T) {
+	h := startFakeHost(t, "127.0.0.1:0")
+	disc := h.DiscoveryAddr().(*net.UDPAddr).AddrPort()
+	b, _ := newTestBackend(t, t.TempDir(), []netip.AddrPort{disc})
+	waitUntil(t, "the host to be found", func() bool { return len(b.Hosts()) == 1 })
+	id := b.Hosts()[0].ID
+	h.Stop()
+	if !b.Hosts()[0].Online {
+		t.Fatal("the host went offline at once; the test needs it still listed online")
+	}
+	done := make(chan error, 1)
+	go func() { done <- b.Connect(context.Background(), id) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, session.ErrNoAnswer) {
+			t.Fatalf("connect: %v, want session.ErrNoAnswer", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("connect to a host that went away never returned")
+	}
+}

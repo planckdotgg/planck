@@ -127,6 +127,9 @@ const (
 	// raceBeforeAddr is how long the candidates may race before a target's
 	// address is dialed instead.
 	raceBeforeAddr = time.Second
+	// raceTimeout bounds the race of a target with no address to fall
+	// back on: a host discovery found may have gone since.
+	raceTimeout = 5 * time.Second
 	// rerouteFor is how long a stream that lost its route tries the
 	// others before it ends.
 	rerouteFor = 10 * time.Second
@@ -619,18 +622,24 @@ type resolved struct {
 func (c *Client) resolve(ctx context.Context, t Target) (resolved, error) {
 	r := resolved{addr: t.Addr, hostID: t.HostID, fingerprint: t.Fingerprint, kind: discovery.PathLANDirect}
 	if len(t.Candidates) > 0 {
-		rctx := ctx
-		if t.Addr != "" {
-			// A host with discovery off never answers; its address does.
-			var cancel context.CancelFunc
-			rctx, cancel = context.WithTimeout(ctx, raceBeforeAddr)
-			defer cancel()
+		// A host with discovery off never answers; its address does.
+		wait := raceBeforeAddr
+		if t.Addr == "" {
+			wait = raceTimeout
 		}
+		rctx, cancel := context.WithTimeout(ctx, wait)
+		defer cancel()
 		res, err := discovery.Racer{}.Race(rctx, t.Candidates)
 		if err == nil {
 			return r.from(res), nil
 		}
-		if t.Addr == "" || ctx.Err() != nil {
+		if ctx.Err() != nil {
+			return r, ctx.Err()
+		}
+		if t.Addr == "" {
+			if errors.Is(err, context.DeadlineExceeded) {
+				err = ErrNoAnswer
+			}
 			return r, err
 		}
 	}
@@ -1282,6 +1291,9 @@ func (c *Client) Err() error {
 }
 
 var ErrNotConnected = errors.New("session: not connected")
+
+// ErrNoAnswer is a connect to a host that answered on none of its routes.
+var ErrNoAnswer = errors.New("the host did not answer on any route")
 
 // SendInput sends one input event to the host. Safe from any goroutine.
 func (c *Client) SendInput(ev input.Event) error {
