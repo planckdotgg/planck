@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -204,6 +205,15 @@ func (b *vigemBus) plug(t PadType, onRumble func(large, small uint8)) (padTarget
 		tg.unplug()
 		return nil, err
 	}
+	// A new pad takes reports only once its driver stack polls it, some
+	// milliseconds after plug-in; until then the bus refuses them and the
+	// pad reads back values that were never sent. A neutral report that
+	// lands first makes the caller's first state land too.
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(2 * time.Millisecond) {
+		if tg.submitReport(State{}) != windows.ERROR_NO_MORE_ITEMS {
+			break
+		}
+	}
 	return tg, nil
 }
 
@@ -220,9 +230,8 @@ type vigemTarget struct {
 	plugged bool
 }
 
-// submit drops a report the pad has no read pending for, as ViGEmClient
-// does: right after plug-in, before the HID stack polls a DualShock 4,
-// the driver answers ERROR_NO_MORE_ITEMS. States are absolute, so the
+// submit drops a report the pad has no read pending for
+// (ERROR_NO_MORE_ITEMS), as ViGEmClient does; states are absolute, so the
 // next one carries it.
 func (t *vigemTarget) submit(s State) error {
 	err := t.submitReport(s)

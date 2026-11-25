@@ -108,13 +108,7 @@ func TestLiveVirtualPadLoopback(t *testing.T) {
 	if s := pads.Slots(); s[0] != 0 {
 		t.Errorf("DS4 slots = %v", s)
 	}
-	// Once the HID stack polls the new pad, the driver takes the report.
-	tg := pads.slots[0].target.(*vigemTarget)
-	err = tg.submitReport(ds4)
-	for deadline := time.Now().Add(5 * time.Second); err != nil && time.Now().Before(deadline); err = tg.submitReport(ds4) {
-		time.Sleep(50 * time.Millisecond)
-	}
-	if err != nil {
-		t.Fatalf("DualShock 4 never took a report: %v", err)
+	if err := pads.slots[0].target.(*vigemTarget).submitReport(ds4); err != nil {
+		t.Fatalf("DualShock 4 refused a report after plug-in: %v", err)
 	}
 }
