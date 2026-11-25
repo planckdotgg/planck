@@ -205,14 +205,12 @@ func (b *vigemBus) plug(t PadType, onRumble func(large, small uint8)) (padTarget
 		tg.unplug()
 		return nil, err
 	}
-	// A new pad takes reports only once its driver stack polls it, some
-	// milliseconds after plug-in; until then the bus refuses them and the
-	// pad reads back values that were never sent. A neutral report that
-	// lands first makes the caller's first state land too.
-	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(2 * time.Millisecond) {
-		if tg.submitReport(State{}) != windows.ERROR_NO_MORE_ITEMS {
-			break
-		}
+	// XUSB skips a report equal to its cached one, which is not what a new
+	// pad reads back before its first delivered report; one that differs
+	// and then a neutral one leave it centred.
+	for _, s := range []State{{LX: 1}, {}} {
+		tg.submit(s)
+		tg.waitDelivered(time.Second)
 	}
 	return tg, nil
 }
@@ -228,22 +226,65 @@ type vigemTarget struct {
 	ds4Rep  ds4SubmitReport
 	notify  *overlappedIO
 	plugged bool
+	// pending is the newest state the bus refused; retry resubmits it
+	// until it lands, a newer state replaces it, or retryUntil passes.
+	pending    State
+	hasPending bool
+	retrying   bool
+	retryUntil time.Time
 }
 
-// submit drops a report the pad has no read pending for
-// (ERROR_NO_MORE_ITEMS), as ViGEmClient does; states are absolute, so the
-// next one carries it.
+const (
+	resubmitEvery = time.Millisecond
+	resubmitFor   = time.Second
+)
+
+// submit sends s, or keeps it to resend when the bus refuses it: ViGEmBus
+// copies a report into the pad's pending interrupt read and caches nothing,
+// answering ERROR_NO_MORE_ITEMS when no read is pending (right after
+// plug-in, or between two polls), so a refused release would leave a
+// button held.
 func (t *vigemTarget) submit(s State) error {
-	err := t.submitReport(s)
-	if err == windows.ERROR_NO_MORE_ITEMS {
-		return nil
-	}
-	return err
-}
-
-func (t *vigemTarget) submitReport(s State) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	err := t.submitLocked(s)
+	if err != windows.ERROR_NO_MORE_ITEMS {
+		t.hasPending = false
+		return err
+	}
+	t.pending, t.hasPending, t.retryUntil = s, true, time.Now().Add(resubmitFor)
+	if !t.retrying {
+		t.retrying = true
+		time.AfterFunc(resubmitEvery, t.retry)
+	}
+	return nil
+}
+
+func (t *vigemTarget) retry() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.hasPending && t.plugged && time.Now().Before(t.retryUntil) {
+		if t.submitLocked(t.pending) == windows.ERROR_NO_MORE_ITEMS {
+			time.AfterFunc(resubmitEvery, t.retry)
+			return
+		}
+	}
+	t.hasPending, t.retrying = false, false
+}
+
+// waitDelivered waits up to d for a refused state to land.
+func (t *vigemTarget) waitDelivered(d time.Duration) bool {
+	for deadline := time.Now().Add(d); ; time.Sleep(resubmitEvery) {
+		t.mu.Lock()
+		done := !t.hasPending
+		t.mu.Unlock()
+		if done || time.Now().After(deadline) {
+			return done
+		}
+	}
+}
+
+func (t *vigemTarget) submitLocked(s State) error {
 	if t.ds4 {
 		t.ds4Rep = ds4SubmitReport{Size: uint32(unsafe.Sizeof(t.ds4Rep)), SerialNo: t.serial, Report: toDS4(s)}
 		return t.io.do(t.bus.h, ioctlDS4SubmitReport, unsafe.Pointer(&t.ds4Rep), t.ds4Rep.Size, nil, 0)
@@ -296,6 +337,7 @@ func (t *vigemTarget) watchRumble(onRumble func(large, small uint8)) error {
 func (t *vigemTarget) unplug() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.plugged, t.hasPending = false, false
 	if t.notify != nil {
 		windows.CancelIoEx(t.bus.h, t.notify.ov)
 		t.notify = nil

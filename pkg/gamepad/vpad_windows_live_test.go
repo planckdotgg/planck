@@ -108,7 +108,7 @@ func TestLiveVirtualPadLoopback(t *testing.T) {
 	if s := pads.Slots(); s[0] != 0 {
 		t.Errorf("DS4 slots = %v", s)
 	}
-	if err := pads.slots[0].target.(*vigemTarget).submitReport(ds4); err != nil {
-		t.Fatalf("DualShock 4 refused a report after plug-in: %v", err)
+	if !pads.slots[0].target.(*vigemTarget).waitDelivered(time.Second) {
+		t.Fatal("DualShock 4 never took its first report")
 	}
 }
