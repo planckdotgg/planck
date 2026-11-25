@@ -252,6 +252,8 @@ func (a *App) chordRefused(err error, old string) string {
 		return "A shortcut needs at least one modifier. " + keep
 	case errors.Is(err, ErrNotGlobal):
 		return chord + " cannot fire while Planck is not in front. " + keep
+	case errors.Is(err, ErrDesktopRefused):
+		return chord + " is taken by another app. " + keep
 	}
 	return err.Error()
 }

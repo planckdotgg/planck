@@ -315,6 +315,9 @@ var (
 	ErrReservedChord = config.ErrReservedChord
 	ErrChordInUse    = config.ErrChordInUse
 	ErrNotGlobal     = config.ErrNotGlobal
+	// ErrDesktopRefused is a host hotkey's chord the desktop would not
+	// register while hosting; Reason is the desktop's answer.
+	ErrDesktopRefused = config.ErrDesktopRefused
 )
 
 // ErrOneDisplay is SwitchDisplay's answer while a host streams one

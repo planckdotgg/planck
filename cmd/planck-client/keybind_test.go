@@ -186,6 +186,58 @@ func TestBackendHotkeys(t *testing.T) {
 	}
 }
 
+type busyShortcuts struct {
+	fakeShortcuts
+	busy string
+}
+
+func (f *busyShortcuts) Register(acc string, fn func()) error {
+	if acc == f.busy {
+		return errors.New("the shortcut is registered by another application")
+	}
+	return f.fakeShortcuts.Register(acc, fn)
+}
+
+// TestBackendHotkeyDesktopRefuses: while hosting, a host hotkey chord the
+// desktop refuses is an error, is not saved, and the old chord stays
+// registered.
+func TestBackendHotkeyDesktopRefuses(t *testing.T) {
+	dir := t.TempDir()
+	b, _ := newTestBackend(t, dir, nil)
+	globals := &busyShortcuts{busy: "Ctrl+Alt+J"}
+	b.globals = globals
+	if err := b.SetHosting(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.SetHosting(context.Background(), false) })
+
+	err := b.SetHotkey(ui.HotkeyStopHosting, "Ctrl+Alt+J")
+	var he *ui.HotkeyError
+	if !errors.As(err, &he) || !errors.Is(err, ui.ErrDesktopRefused) || he.Chord.String() != "Ctrl+Alt+J" {
+		t.Fatalf("SetHotkey: %v", err)
+	}
+	stored, err := config.LoadClientConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := stored.Hotkey(config.HotkeyStopHosting).String(); got != "Ctrl+F3" {
+		t.Errorf("saved %q", got)
+	}
+	if got := chordOf(b.Hotkeys(), ui.HotkeyStopHosting); got != "Ctrl+F3" {
+		t.Errorf("backend has %q", got)
+	}
+	if got := globals.keys(); !slices.Equal(got, []string{"Ctrl+F3"}) {
+		t.Errorf("registered %v", got)
+	}
+
+	if err := b.SetHotkey(ui.HotkeyKickClient, "Ctrl+F4"); err != nil {
+		t.Fatalf("a free chord after the refusal: %v", err)
+	}
+	if got := globals.keys(); !slices.Equal(got, []string{"Ctrl+F3", "Ctrl+F4"}) {
+		t.Errorf("after binding kick: %v", got)
+	}
+}
+
 func chordOf(hs []ui.Hotkey, a ui.HotkeyAction) string {
 	for _, h := range hs {
 		if h.Action == a {

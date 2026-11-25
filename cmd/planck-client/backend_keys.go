@@ -63,7 +63,8 @@ func (b *backend) RemoveNeverSend(chord string) error {
 }
 
 // updateKeys changes the hotkeys or the never-send list in client.json,
-// then hands them to the key filters and the desktop.
+// then hands them to the key filters and the desktop. While hosting, a
+// chord the desktop refuses is not saved and the old ones stay registered.
 func (b *backend) updateKeys(fn func(*config.ClientConfig) error) error {
 	var keys config.ClientConfig
 	err := config.UpdateClientConfig(b.dir, func(c *config.ClientConfig) error {
@@ -71,6 +72,13 @@ func (b *backend) updateKeys(fn func(*config.ClientConfig) error) error {
 			return err
 		}
 		keys = config.ClientConfig{Hotkeys: c.Hotkeys, NeverSend: c.NeverSend}
+		b.mu.Lock()
+		old := b.keys
+		b.mu.Unlock()
+		if err := b.registerGlobals(keys, &old); err != nil {
+			_ = b.registerGlobals(old, nil)
+			return err
+		}
 		return nil
 	})
 	if err != nil {
@@ -79,24 +87,29 @@ func (b *backend) updateKeys(fn func(*config.ClientConfig) error) error {
 	b.mu.Lock()
 	b.keys = keys
 	b.mu.Unlock()
-	b.keysChanged()
-	b.changed()
-	return nil
-}
-
-// keysChanged tells the key filters and the desktop's shortcuts.
-func (b *backend) keysChanged() {
 	if b.onKeys != nil {
 		b.onKeys(b.Hotkeys(), b.NeverSend())
 	}
-	b.syncGlobals()
+	b.changed()
+	return nil
 }
 
 // syncGlobals registers the host's hotkeys with the desktop while
 // hosting, and takes them back otherwise.
 func (b *backend) syncGlobals() {
+	b.mu.Lock()
+	keys := b.keys
+	b.mu.Unlock()
+	_ = b.registerGlobals(keys, nil)
+}
+
+// registerGlobals registers keys' host hotkeys with the desktop while
+// hosting, in place of the ones registered now. With old, a chord the
+// desktop refuses that differs from old's for its hotkey is an error;
+// other refusals are logged.
+func (b *backend) registerGlobals(keys config.ClientConfig, old *config.ClientConfig) error {
 	if b.globals == nil {
-		return
+		return nil
 	}
 	b.globalMu.Lock()
 	defer b.globalMu.Unlock()
@@ -105,19 +118,23 @@ func (b *backend) syncGlobals() {
 	}
 	b.registered = b.registered[:0]
 	if !b.Hosting().On {
-		return
+		return nil
 	}
-	for _, h := range b.Hotkeys() {
+	for _, h := range hotkeysOf(keys) {
 		fn := b.hostAction(h.Action)
 		if !h.Global || h.Chord == "" || fn == nil {
 			continue
 		}
 		if err := b.globals.Register(h.Chord, fn); err != nil {
+			if old != nil && old.Hotkey(h.Action).String() != h.Chord {
+				return &config.HotkeyError{Chord: keys.Hotkey(h.Action), Err: config.ErrDesktopRefused, Reason: err.Error()}
+			}
 			b.logf("planck: hotkey %s (%s): %v", h.Action, h.Chord, err)
 			continue
 		}
 		b.registered = append(b.registered, h.Chord)
 	}
+	return nil
 }
 
 // hostAction is what a host hotkey does.

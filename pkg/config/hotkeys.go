@@ -168,6 +168,9 @@ var (
 	ErrReservedChord = errors.New("the system keeps this chord")
 	ErrChordInUse    = errors.New("already in use")
 	ErrNotGlobal     = errors.New("the desktop cannot take this chord while Planck is not in front")
+	// ErrDesktopRefused is a host hotkey's chord the desktop would not
+	// register while hosting, most often because another app holds it.
+	ErrDesktopRefused = errors.New("the desktop refused this chord")
 )
 
 // HotkeyError is a chord refused for a hotkey or the never-send list.
