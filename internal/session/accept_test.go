@@ -236,3 +236,139 @@ func TestConnectFallsBackWhenRaceWinnerIsSilent(t *testing.T) {
 	}
 	waitFor(t, "video", func() bool { return r.sink.Units.Load() >= 3 })
 }
+
+// TestConnectFallsBackWhenHandshakeTimeoutIsShort: a per-attempt handshake
+// timeout shorter than QUIC's own gives way to the next route, not ends the
+// connect, while the caller's budget lasts.
+func TestConnectFallsBackWhenHandshakeTimeoutIsShort(t *testing.T) {
+	h := newTestHost(t, HostConfig{DiscoveryAddr: "127.0.0.1:0"}, &logBuf{})
+	startTestHost(t, h)
+
+	hole, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hole.Close()
+	stale, err := discovery.OpenPort("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stale.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = stale.Serve(ctx, func() discovery.Beacon {
+			return discovery.Beacon{HostID: h.HostID(), Name: "test-host", ControlPort: uint16(hole.LocalAddr().(*net.UDPAddr).Port),
+				CertFingerprint: h.Fingerprint()}
+		})
+	}()
+
+	r := newClient(t, t.TempDir(), h.PIN())
+	r.client.cfg.HandshakeTimeout = 500 * time.Millisecond
+	target := Target{HostID: h.HostID(), Fingerprint: h.Fingerprint(), Candidates: []discovery.Candidate{
+		{HostID: h.HostID(), Kind: discovery.PathLANDirect, Addr: netip.MustParseAddrPort(stale.LocalAddr().String())},
+		{HostID: h.HostID(), Kind: discovery.PathTailscaleDirect, Addr: netip.MustParseAddrPort(h.DiscoveryAddr().String())},
+	}}
+	cctx, ccancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer ccancel()
+	if err := r.client.Connect(cctx, target); err != nil {
+		t.Fatalf("connect with a silent first route and a short handshake timeout: %v", err)
+	}
+	waitFor(t, "video", func() bool { return r.sink.Units.Load() >= 3 })
+}
+
+// TestStopDuringRelistenClosesReplacement: a listener opened again while
+// Stop runs is closed, not left serving after Done.
+func TestStopDuringRelistenClosesReplacement(t *testing.T) {
+	h := newTestHost(t, HostConfig{}, &logBuf{})
+	entered, release := make(chan struct{}), make(chan struct{})
+	replaced := make(chan *transport.Server, 1)
+	var opened atomic.Int32
+	h.listen = func(addr string, cfg transport.ServerConfig) (*transport.Server, error) {
+		if opened.Add(1) == 1 {
+			return transport.Listen(addr, cfg)
+		}
+		close(entered)
+		<-release
+		srv, err := transport.Listen(addr, cfg)
+		if err == nil {
+			replaced <- srv
+		}
+		return srv, err
+	}
+	startTestHost(t, h)
+	h.srv.Load().Close()
+	<-entered
+
+	go h.Stop()
+	waitFor(t, "Stop to begin", func() bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		return h.stopping
+	})
+	close(release)
+
+	select {
+	case <-h.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("Stop did not finish")
+	}
+	var srv *transport.Server
+	select {
+	case srv = <-replaced:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the replacement listener was never opened")
+	}
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := srv.Accept(ctx); !errors.Is(err, transport.ErrServerClosed) {
+		t.Fatalf("replacement listener after Stop: Accept = %v; want ErrServerClosed", err)
+	}
+}
+
+// TestHaltWithWedgedTeardown: a host that cannot listen again stops,
+// discovery included, even when its stream's teardown hangs.
+func TestHaltWithWedgedTeardown(t *testing.T) {
+	release := make(chan struct{})
+	var forced, kbps atomic.Int64
+	logs := &logBuf{}
+	h := newTestHost(t, HostConfig{DiscoveryAddr: "127.0.0.1:0", OpenVideo: func(p VideoParams) (VideoPipe, error) {
+		return &wedgedPipe{fakePipe: fakePipe{fps: p.FPS, forced: &forced, kbps: &kbps}, release: release}, nil
+	}}, logs)
+	h.stopWait = 200 * time.Millisecond
+	var opened atomic.Int32
+	h.listen = func(addr string, cfg transport.ServerConfig) (*transport.Server, error) {
+		if opened.Add(1) > 1 {
+			return nil, errors.New("port taken")
+		}
+		return transport.Listen(addr, cfg)
+	}
+	startTestHost(t, h)
+	t.Cleanup(func() { close(release) })
+	disc := netip.MustParseAddrPort(h.DiscoveryAddr().String())
+
+	r := newClient(t, t.TempDir(), h.PIN())
+	if err := connect(t, r, h.Addr().String()); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "video", func() bool { return r.sink.Units.Load() >= 5 })
+	h.srv.Load().Close()
+
+	select {
+	case <-h.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("a wedged stream teardown kept the host from stopping")
+	}
+	if h.Err() == nil {
+		t.Error("host stopped with no error after its listener could not come back")
+	}
+	if !logs.has("stopping without them") {
+		t.Error("the host did not log the slow teardown")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	if _, _, err := discovery.Probe(ctx, disc); err == nil {
+		t.Error("discovery still answers for a host that stopped")
+	}
+}

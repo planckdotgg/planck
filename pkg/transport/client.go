@@ -67,13 +67,15 @@ func Dial(ctx context.Context, addr string, cfg ClientConfig) (*Session, error) 
 	if timeout <= 0 {
 		timeout = defaultHandshakeTimeout
 	}
+	outer := ctx
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	conn, err := quic.DialAddr(ctx, addr, tlsConf, controlQUICConfig())
 	if err != nil {
 		var idle *quic.IdleTimeoutError
 		var hs *quic.HandshakeTimeoutError
-		if errors.As(err, &idle) || errors.As(err, &hs) {
+		attemptTimedOut := errors.Is(err, context.DeadlineExceeded) && outer.Err() == nil
+		if errors.As(err, &idle) || errors.As(err, &hs) || attemptTimedOut {
 			return nil, fmt.Errorf("%w at %s: %w", ErrUnanswered, addr, err)
 		}
 		return nil, err

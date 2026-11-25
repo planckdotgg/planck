@@ -276,8 +276,13 @@ type Host struct {
 	// on its own.
 	done    chan struct{}
 	haltErr atomic.Pointer[error]
+	// stopWait bounds each wait for a stream's teardown.
+	stopWait time.Duration
 
-	mu       sync.Mutex
+	mu sync.Mutex
+	// stopping is set once Stop runs, so a listener opened again after
+	// that is closed rather than published.
+	stopping bool
 	cur      *stream
 	report   wire.StatsReport
 	lastErr  string
@@ -349,7 +354,7 @@ func NewHost(cfg HostConfig) (*Host, error) {
 	}
 	h := &Host{inputTrace: newTracer[inputTraceRow](traceInputEnv), cfg: cfg, dir: dir, hostID: stored.HostID, cert: cert, fp: transport.CertFingerprint(cert), pairs: pairs,
 		whois: cfg.WhoIs, open: cfg.OpenVideo, logf: cfg.Logf, pin: cfg.PIN, requireLANPIN: stored.RequirePINForLAN,
-		listen: transport.Listen, done: make(chan struct{})}
+		listen: transport.Listen, done: make(chan struct{}), stopWait: defaultStopWait}
 	if h.logf == nil {
 		h.logf = log.Printf
 	}
@@ -630,6 +635,9 @@ func (h *Host) acceptLoop(ctx context.Context) {
 			return
 		case err != nil:
 			if err := h.relisten(ctx, err); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
 				h.halt(err)
 				return
 			}
@@ -676,9 +684,9 @@ const (
 	// the listener died, backing off from relistenBackoff, before it stops.
 	relistenTries   = 5
 	relistenBackoff = 100 * time.Millisecond
-	// stopWait is how long a new client waits for the stream it takes over
-	// to tear down before it goes on without it.
-	stopWait = 5 * time.Second
+	// defaultStopWait is how long a new client, or Stop, waits for a
+	// stream to tear down before it goes on without it.
+	defaultStopWait = 5 * time.Second
 )
 
 // relisten opens the control port again after its listener died. The
@@ -702,7 +710,16 @@ func (h *Host) relisten(ctx context.Context, cause error) error {
 		var srv *transport.Server
 		if srv, err = h.listen(addr, h.scfg); err == nil {
 			srv.SetName(h.Name())
-			h.srv.Store(srv)
+			h.mu.Lock()
+			stopping := h.stopping
+			if !stopping {
+				h.srv.Store(srv)
+			}
+			h.mu.Unlock()
+			if stopping {
+				_ = srv.Close()
+				return transport.ErrServerClosed
+			}
 			h.logf("planck: listening again on %v", srv.Addr())
 			return nil
 		}
@@ -734,15 +751,24 @@ func (h *Host) Err() error {
 // stopWithin ends st and waits up to stopWait for its teardown, so a
 // teardown that hangs cannot hold up the client taking over.
 func (h *Host) stopWithin(st *stream) {
-	stopped := make(chan struct{})
+	if !h.within(st.stop) {
+		h.fail("the stream of %s took over %v to stop; going on without it", st.sess.Identity(), h.stopWait)
+	}
+}
+
+// within runs f and waits up to stopWait for it, reporting whether it
+// returned; f keeps running after that.
+func (h *Host) within(f func()) bool {
+	finished := make(chan struct{})
 	go func() {
-		st.stop()
-		close(stopped)
+		f()
+		close(finished)
 	}()
 	select {
-	case <-stopped:
-	case <-time.After(stopWait):
-		h.fail("the stream of %s took over %v to stop; going on without it", st.sess.Identity(), stopWait)
+	case <-finished:
+		return true
+	case <-time.After(h.stopWait):
+		return false
 	}
 }
 
@@ -1059,19 +1085,24 @@ func (h *Host) Stop() {
 		if h.cancel != nil {
 			h.cancel()
 		}
-		if srv := h.srv.Load(); srv != nil {
+		h.mu.Lock()
+		h.stopping = true
+		srv, st := h.srv.Load(), h.cur
+		h.mu.Unlock()
+		if srv != nil {
 			srv.Close()
 		}
 		if h.disc != nil {
 			h.disc.Close()
 		}
-		h.mu.Lock()
-		st := h.cur
-		h.mu.Unlock()
-		if st != nil {
-			st.stop()
+		if !h.within(func() {
+			if st != nil {
+				st.stop()
+			}
+			h.wg.Wait()
+		}) {
+			h.fail("the host's streams took over %v to stop; stopping without them", h.stopWait)
 		}
-		h.wg.Wait()
 		if h.clip != nil {
 			h.clip.close()
 		}

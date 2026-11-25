@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"errors"
+	"net"
 	"testing"
 	"time"
 
@@ -131,5 +132,34 @@ func TestAcceptReportsDeadListener(t *testing.T) {
 	sv.Close()
 	if _, err := sv.Accept(context.Background()); !errors.Is(err, ErrServerClosed) {
 		t.Fatalf("accept after Close: %v, want ErrServerClosed", err)
+	}
+}
+
+// TestDialAttemptTimeoutIsUnanswered: a silent address that outlasts the
+// per-attempt handshake timeout, inside a longer caller budget, reports
+// ErrUnanswered so the caller tries another route.
+func TestDialAttemptTimeoutIsUnanswered(t *testing.T) {
+	hole, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hole.Close()
+	hostCert, clientCert := identities(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	_, err = Dial(ctx, hole.LocalAddr().String(), ClientConfig{
+		Certificate: clientCert, Name: "mac", VerifyHost: PinnedHost(CertFingerprint(hostCert)),
+		HandshakeTimeout: 300 * time.Millisecond,
+	})
+	if !errors.Is(err, ErrUnanswered) {
+		t.Fatalf("dial a silent address: %v; want ErrUnanswered", err)
+	}
+
+	gone, stop := context.WithCancel(context.Background())
+	stop()
+	if _, err = Dial(gone, hole.LocalAddr().String(), ClientConfig{
+		Certificate: clientCert, Name: "mac", VerifyHost: PinnedHost(CertFingerprint(hostCert)),
+	}); errors.Is(err, ErrUnanswered) {
+		t.Fatalf("dial with the caller's context done: %v; want the caller's error, not ErrUnanswered", err)
 	}
 }
