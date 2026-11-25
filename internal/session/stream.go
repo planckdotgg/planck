@@ -79,6 +79,18 @@ type stream struct {
 	bg        sync.WaitGroup
 
 	trace *tracer[hostTraceRow]
+
+	// endedByHost is set when this machine ended the stream: a stop, a
+	// kick, a revoke, or another client taking over.
+	endedByHost atomic.Bool
+	// unmute puts the speakers back while MuteSpeakers holds them; ended
+	// keeps them unmuted once the stream is over.
+	muteMu sync.Mutex
+	unmute func() error
+	ended  bool
+	// restoreDisplays turns the other displays back on in privacy mode;
+	// only the video loop touches it.
+	restoreDisplays func() error
 }
 
 func newStream(h *Host, sess *transport.Session) *stream {
@@ -148,6 +160,7 @@ func (st *stream) openVirtualDisplay() (VirtualDisplay, error) {
 	}
 	st.useVirtualDisplay(vd)
 	st.h.logf("planck: virtual display %s %dx%d@%d on %s", vd.Name(), st.params.Width, st.params.Height, st.params.FPS, st.params.Adapter)
+	st.isolate(vd)
 	return vd, nil
 }
 
@@ -165,6 +178,7 @@ func (st *stream) useVirtualDisplay(vd VirtualDisplay) {
 
 func (st *stream) closeVirtualDisplay(vd VirtualDisplay) {
 	name := vd.Name()
+	st.unisolate()
 	err := vd.Close()
 	st.mu.Lock()
 	st.vdName = ""
@@ -332,9 +346,13 @@ func (st *stream) run(parent context.Context) {
 	defer close(st.done)
 	st.ctx, st.cancel = context.WithCancel(parent)
 	defer st.cancel()
+	defer st.endMute()
+	st.applyMute(st.h.SessionSettings().MuteSpeakers)
+	st.h.lastInput.Store(st.h.now())
 	st.sendPeerState()
 	var wg sync.WaitGroup
 	wg.Go(st.videoLoop)
+	wg.Go(st.idleLoop)
 	if st.sess.Config().AudioChannels > 0 && !st.h.cfg.NoAudio {
 		wg.Go(st.audioLoop)
 	}
@@ -391,6 +409,7 @@ func (st *stream) sendPeerState() {
 // stop ends the session and waits for its goroutines.
 func (st *stream) stop() {
 	st.once.Do(func() {
+		st.endedByHost.Store(true)
 		st.sess.Close()
 		<-st.done
 	})
@@ -647,7 +666,7 @@ func (st *stream) audioLoop() {
 	open := st.h.cfg.OpenAudio
 	if open == nil {
 		open = func() (audio.Capturer, error) {
-			return newAudioCapturer(audio.CaptureOptions{ExcludePIDs: st.h.cfg.AudioExcludePIDs})
+			return newAudioCapturer(audio.CaptureOptions{ExcludePIDs: st.h.audioExcludePIDs(), DeviceID: st.h.cfg.AudioDevice})
 		}
 	}
 	capt, err := open()

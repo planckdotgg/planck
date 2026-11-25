@@ -701,6 +701,14 @@ const FrameTimeRing = 120
 
 // hostPolicy is the Forced overrides of the capabilities the host sent.
 func hostPolicy(sess *transport.Session) *defaults.UserOverrides {
+	if caps := hostCaps(sess); caps != nil {
+		return &caps.Forced
+	}
+	return nil
+}
+
+// hostCaps are the capabilities the host sent, nil from an older host.
+func hostCaps(sess *transport.Session) *defaults.HostCapabilities {
 	js := sess.PeerCapabilities()
 	if len(js) == 0 {
 		return nil
@@ -709,7 +717,22 @@ func hostPolicy(sess *transport.Session) *defaults.UserOverrides {
 	if err := json.Unmarshal(js, &caps); err != nil {
 		return nil
 	}
-	return &caps.Forced
+	return &caps
+}
+
+// HostOS is the GOOS of the host streaming now, as it said, "" without a
+// stream or from an older host.
+func (c *Client) HostOS() string {
+	c.mu.Lock()
+	cc := c.conn
+	c.mu.Unlock()
+	if cc == nil {
+		return ""
+	}
+	if caps := hostCaps(cc.session()); caps != nil {
+		return caps.OS
+	}
+	return ""
 }
 
 // streamConfig is the decoder config and resolved profile of sess's stream.

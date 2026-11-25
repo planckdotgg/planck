@@ -106,6 +106,16 @@ type HostConfig struct {
 	// AudioExcludePIDs are processes, such as a voice chat app, whose
 	// audio the stream leaves out besides Planck's own (macOS only).
 	AudioExcludePIDs []int
+	// AudioExcludeApps are apps by name whose processes each session
+	// leaves out of the sound, as AudioExcludePIDs (macOS only).
+	AudioExcludeApps []string
+	// AudioDevice records one output device by audio.Device ID, Planck
+	// included (Windows); empty records everything but Planck.
+	AudioDevice string
+	// Session is what hosting does around a session; SetSessionSettings
+	// changes it live. System replaces the OS actions it takes.
+	Session SessionSettings
+	System  SystemHooks
 	// NoMic refuses the client's microphone.
 	NoMic bool
 	// MicDevice picks the virtual input device the client's microphone
@@ -155,8 +165,9 @@ func DefaultHostConfig() HostConfig {
 
 // FromStored is c with the hosting settings host.json keeps: the ports
 // and discovery, the capture display, the encoding GPU, the virtual
-// display's primary flag, a fixed PIN and what clients may do. NewHost
-// reads the name, the policy and the trust settings itself.
+// display's primary flag, a fixed PIN, what clients may do, the sound and
+// the virtual mic, and the session settings. NewHost reads the name, the
+// policy and the trust settings itself.
 func (c HostConfig) FromStored(s config.HostConfig) HostConfig {
 	listenHost, _, err := net.SplitHostPort(c.ListenAddr)
 	if err != nil {
@@ -173,6 +184,16 @@ func (c HostConfig) FromStored(s config.HostConfig) HostConfig {
 		c.Adapter = s.Adapter
 	}
 	c.InjectInput = c.InjectInput && !s.NoInput
+	c.AudioExcludeApps, c.AudioDevice = s.AudioExcludeApps.Names(), s.AudioDevice
+	switch s.VirtualMic {
+	case "":
+	case config.VirtualMicOff:
+		c.NoMic = true
+	default:
+		c.MicDevice = s.VirtualMic
+	}
+	c.Session = SessionSettings{StayAwake: s.StayAwake, LockOnDisconnect: s.LockOnDisconnect, MuteSpeakers: s.MuteSpeakers,
+		PrivacyMode: s.PrivacyMode, IdleTimeout: time.Duration(s.IdleTimeoutMinutes) * time.Minute}
 	c.Clipboard = ClipboardConfig{}
 	switch s.Clipboard {
 	case config.ClipboardBoth:
@@ -265,6 +286,11 @@ type Host struct {
 	caps hostCapsCache
 	vdd  vddManager
 	clip *clipSync
+
+	sys hostSys
+	// lastInput is when the client last sent input, on clock.
+	lastInput atomic.Int64
+	clock     func() int64
 }
 
 // NewHost loads or creates the host's identity and paired clients.
@@ -313,6 +339,7 @@ func NewHost(cfg HostConfig) (*Host, error) {
 	if h.logf == nil {
 		h.logf = log.Printf
 	}
+	h.sys.set, h.sys.hooks = cfg.Session, cfg.System.withDefaults()
 	name := cfg.Name
 	if name == "" {
 		name = stored.Name
@@ -542,6 +569,7 @@ func (h *Host) Start(ctx context.Context) error {
 		}
 	}
 	h.wg.Go(func() { h.acceptLoop(ctx) })
+	h.setStarted(true)
 	return nil
 }
 
@@ -604,6 +632,7 @@ func (h *Host) acceptLoop(ctx context.Context) {
 			}
 			h.mu.Unlock()
 			h.releaseInput()
+			h.streamEnded(st)
 		})
 	}
 }
@@ -749,10 +778,12 @@ func (h *Host) onInput(in wire.Input) {
 		return
 	}
 	h.inputs.Add(1)
+	h.lastInput.Store(h.now())
 	if h.cfg.OnInput != nil {
 		h.cfg.OnInput(ev)
 	}
 	if h.inject != nil {
+		h.secureAttention(ev)
 		if err := h.inject.Inject(ev); err != nil {
 			h.inputErr.Add(1)
 			return
@@ -928,5 +959,6 @@ func (h *Host) Stop() {
 		if h.inject != nil && h.cfg.Injector == nil {
 			h.inject.Close()
 		}
+		h.setStarted(false)
 	})
 }
