@@ -408,6 +408,9 @@ func (e *Encoder) initialize() error {
 		if e.caps.RefInvalidation {
 			put32(cc, hevcMaxRefDPB, refDPB)
 		}
+		if cfg.HDR10 {
+			putHEVCColor(cc[hevcVUI:], encode.HDR10Color)
+		}
 	case encode.AV1:
 		if cfg.Chroma.Full() {
 			return fmt.Errorf("%w: AV1 4:4:4 needs the high profile", encode.ErrUnsupported)
@@ -429,6 +432,9 @@ func (e *Encoder) initialize() error {
 		}
 		if e.caps.RefInvalidation {
 			put32(cc, av1MaxRefDPB, refDPB)
+		}
+		if cfg.HDR10 {
+			putAV1Color(cc, encode.HDR10Color)
 		}
 	default:
 		return encode.ErrUnsupported

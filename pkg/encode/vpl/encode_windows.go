@@ -160,15 +160,15 @@ type Encoder struct {
 	cfg             encode.Config
 	frame           int64
 
-	par, co, co3 []byte
-	extList      []uintptr
-	bs           []byte
-	bsData       []byte
-	ctrl         []byte
-	surf, sync   *uintptr
-	native       *uintptr
-	resType      *uint32
-	box          *win.Box
+	par, co, co3, vsi []byte
+	extList           []uintptr
+	bs                []byte
+	bsData            []byte
+	ctrl              []byte
+	surf, sync        *uintptr
+	native            *uintptr
+	resType           *uint32
+	box               *win.Box
 }
 
 func setFilter(loader uintptr, name string, v uint32) error {
@@ -228,7 +228,7 @@ func Open(device win.Device, adapter gpu.Adapter, cfg encode.Config) (*Encoder, 
 		return nil, errors.New("vpl: MFXLoad returned no loader")
 	}
 	e := &Encoder{loader: loader, device: device, adapter: adapter, cfg: cfg,
-		par: make([]byte, sizeVideoParam), co: make([]byte, sizeExtCO), co3: make([]byte, sizeExtCO3), extList: make([]uintptr, 2),
+		par: make([]byte, sizeVideoParam), co: make([]byte, sizeExtCO), co3: make([]byte, sizeExtCO3), extList: make([]uintptr, 0, 3),
 		bs: make([]byte, sizeBitstream), ctrl: make([]byte, sizeEncodeCtrl),
 		surf: new(uintptr), sync: new(uintptr), native: new(uintptr), resType: new(uint32),
 		box: &win.Box{Right: uint32(cfg.Width), Bottom: uint32(cfg.Height), Back: 1}}
@@ -333,7 +333,11 @@ func (e *Encoder) open(fourcc uint32) error {
 	put32(e.co, 0, extCO)
 	put32(e.co, 4, sizeExtCO)
 	put16(e.co, coNalHrdConformance, codingOptionOff)
-	e.extList[0], e.extList[1] = addr(e.co3), addr(e.co)
+	e.extList = append(e.extList[:0], addr(e.co3), addr(e.co))
+	if cfg.HDR10 {
+		e.vsi = videoSignalInfo(encode.HDR10Color)
+		e.extList = append(e.extList, addr(e.vsi))
+	}
 	put64(p, vpExtParam, uint64(uintptr(unsafe.Pointer(&e.extList[0]))))
 	put16(p, vpNumExtParam, uint16(len(e.extList)))
 

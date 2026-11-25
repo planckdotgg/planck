@@ -95,8 +95,16 @@ const (
 	hevcSliceMode          = 52
 	hevcSliceModeData      = 56
 	hevcVUI                = 64
-	hevcOutputBitDepth     = 200
-	hevcInputBitDepth      = 204
+	// NV_ENC_CONFIG_HEVC_VUI_PARAMETERS, from hevcVUI.
+	vuiSignalTypePresent = 8
+	vuiVideoFormat       = 12
+	vuiColourDescPresent = 20
+	vuiColourPrimaries   = 24
+	vuiTransfer          = 28
+	vuiColourMatrix      = 32
+	vuiVideoFormatUnspec = 5
+	hevcOutputBitDepth   = 200
+	hevcInputBitDepth    = 204
 
 	hevcBitRepeatSPSPPS = 7
 	hevcBitIntraRefresh = 8

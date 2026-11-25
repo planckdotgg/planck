@@ -404,6 +404,14 @@ func Open(device win.Device, adapter gpu.Adapter, cfg encode.Config) (*Encoder, 
 			v    *variant
 		}{"HevcSlicesPerFrame", int64Var(int64(cfg.Slices))})
 	}
+	if cfg.HDR10 {
+		for _, p := range hdrProps(encode.HDR10Color) {
+			props = append(props, struct {
+				name string
+				v    *variant
+			}{p.name, int64Var(p.value)})
+		}
+	}
 	for _, p := range props {
 		if err := setProp(comp, p.name, p.v); err != nil {
 			e.Close()
