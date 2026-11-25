@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -135,8 +136,10 @@ func runGUI(o options) error {
 	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { streams.quitting = true })
 	mygo.App.OnQuitCanceled(func() { streams.quitting = false })
 	mygo.App.WhenReady(func() {
-		if err := mygo.App.Dock.SetIcon(assets.AppIcon(runtime.GOOS)); err != nil {
-			logf("app icon: %v", err)
+		if exe, _ := os.Executable(); runtime.GOOS != "darwin" || !inAppBundle(exe) {
+			if err := mygo.App.Dock.SetIcon(assets.AppIcon(runtime.GOOS)); err != nil {
+				logf("app icon: %v", err)
+			}
 		}
 		win := mygo.NewWindow(mygo.WindowOptions{
 			Title: "Planck", Width: 1280, Height: 800, MinWidth: 960, MinHeight: 600,
