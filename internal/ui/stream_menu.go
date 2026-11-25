@@ -359,7 +359,7 @@ func panelSlider(c *mui.Context, label string, v *float64, lo, hi float64, live 
 func (a *App) modeGroup(c *mui.Context, m mui.MenuParts, e *overrideEdit, s *Settings) {
 	groupLabel(c, "Mode & window", true)
 	if w := a.window; w != nil {
-		if switchItem(c, m, "Fullscreen", w.Fullscreen(), rowParts{icon: theme.IconFullscreen}, a.shortcut(false, "F")) {
+		if switchItem(c, m, "Fullscreen", w.Fullscreen(), rowParts{icon: theme.IconFullscreen}, a.keyLabel(HotkeyFullscreen)) {
 			a.setStreamFullscreen(!w.Fullscreen())
 		}
 	}
@@ -367,7 +367,7 @@ func (a *App) modeGroup(c *mui.Context, m mui.MenuParts, e *overrideEdit, s *Set
 	if s.SystemKeysCapture && a.sysKeys != nil {
 		immersive.caption = a.sysKeys.SystemKeysProblem()
 	}
-	if switchItem(c, m, "Immersive mode", s.SystemKeysCapture, immersive, a.shortcut(false, "I")) {
+	if switchItem(c, m, "Immersive mode", s.SystemKeysCapture, immersive, a.keyLabel(HotkeyImmersive)) {
 		s.SystemKeysCapture = !s.SystemKeysCapture
 	}
 	if a.cursor != nil {
@@ -376,7 +376,7 @@ func (a *App) modeGroup(c *mui.Context, m mui.MenuParts, e *overrideEdit, s *Set
 		if on {
 			r.caption = "Locks as this menu closes"
 		}
-		if switchItem(c, m, "Lock cursor", on, r, a.shortcut(false, "G")) {
+		if switchItem(c, m, "Lock cursor", on, r, a.keyLabel(HotkeyCursorLock)) {
 			a.toggleCursorLock()
 		}
 	}
@@ -583,7 +583,7 @@ func (a *App) soundGroup(c *mui.Context, m mui.MenuParts, s *Settings, tel Telem
 		if switchItem(c, m, "Mute", s.AudioMuted, rowParts{icon: theme.IconSound}, "") {
 			s.AudioMuted = !s.AudioMuted
 		}
-		if switchItem(c, m, "Microphone", !tel.MicMuted, rowParts{icon: theme.IconSound}, a.shortcut(false, "U")) {
+		if switchItem(c, m, "Microphone", !tel.MicMuted, rowParts{icon: theme.IconSound}, a.keyLabel(HotkeyMicrophone)) {
 			go a.ToggleMic()
 		}
 		if hint := a.micHint(tel); hint != "" {
@@ -627,11 +627,15 @@ func (a *App) overlayGroup(c *mui.Context, m mui.MenuParts) {
 	if o.vh < compactBelow {
 		caption = "Compact under a 720 px window"
 	}
-	if switchItem(c, m, "Metrics window", o.metrics.shown, rowParts{icon: theme.IconMetrics, caption: caption}, a.shortcut(false, "M")) {
+	if switchItem(c, m, "Metrics window", o.metrics.shown, rowParts{icon: theme.IconMetrics, caption: caption}, a.keyLabel(HotkeyMetrics)) {
 		o.metrics.toggle(o.vh)
 	}
 	hide := m.Item()
-	menuRow(c, hide, "Hide button", rowParts{icon: theme.IconHide, trailing: func() { badge(c, a.shortcut(false, "P")) }})
+	menuRow(c, hide, "Hide button", rowParts{icon: theme.IconHide, trailing: func() {
+		if k := a.keyLabel(HotkeyHideButton); k != "" {
+			badge(c, k)
+		}
+	}})
 	if hide.Clicked() {
 		a.toggleHidden()
 	}
@@ -648,9 +652,11 @@ func (a *App) menuFoot(c *mui.Context, m mui.MenuParts) {
 		d.Children(func() {
 			mui.Icon(c, theme.IconPower).Size(16, 16).TextColor(theme.RoleFault)
 			mui.Text(c, "Disconnect").Font(theme.FontUI).FontSize(theme.TextBody).FontWeight(600).TextColor(theme.RoleFault).Grow(1)
-			mui.Row(c).Height(18).PaddingX(5).AlignItems(mui.Center).Radius(3).Border(1, theme.RoleFault.Alpha(0.5)).Children(func() {
-				mui.Text(c, a.shortcut(true, "D")).Font(theme.FontMono).FontSize(theme.TextMini).TextColor(theme.RoleFault).SingleLine()
-			})
+			if k := a.keyLabel(HotkeyDisconnect); k != "" {
+				mui.Row(c).Height(18).PaddingX(5).AlignItems(mui.Center).Radius(3).Border(1, theme.RoleFault.Alpha(0.5)).Children(func() {
+					mui.Text(c, k).Font(theme.FontMono).FontSize(theme.TextMini).TextColor(theme.RoleFault).SingleLine()
+				})
+			}
 		})
 		if d.Clicked() {
 			a.disconnect()

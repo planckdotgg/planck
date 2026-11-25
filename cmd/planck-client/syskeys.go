@@ -45,6 +45,8 @@ type systemKeys struct {
 	tap  keyTap
 	send func(input.Event)
 	logf func(string, ...any)
+	// local are the chords that stay on this device.
+	local *localKeys
 	// changed asks for a frame, from any goroutine.
 	changed func()
 
@@ -176,7 +178,8 @@ func (s *systemKeys) event(e tapEvent) bool {
 		return false
 	}
 	was := s.held.KeyDown(e.usage)
-	if e.down && !was && overlayUsage(e.usage, e.chord) {
+	// The OS's chord lacks Cmd and the Windows key; the hook sent them.
+	if e.down && !was && s.local.has(e.chord|guiModifier(s.held.Modifiers()), e.usage) {
 		return false
 	}
 	if e.down == was {
@@ -215,18 +218,3 @@ func modifierBit(usage uint16) uint8 {
 	}
 	return 0
 }
-
-// overlayUsage reports whether a HID usage with chord is one of the
-// overlay's keys.
-func overlayUsage(usage uint16, chord mui.Modifiers) bool {
-	k, ok := muiKeys[usage]
-	return ok && overlayKey(k, chord)
-}
-
-var muiKeys = func() map[uint16]mui.Key {
-	m := make(map[uint16]mui.Key, len(hidUsage))
-	for k, u := range hidUsage {
-		m[u] = k
-	}
-	return m
-}()

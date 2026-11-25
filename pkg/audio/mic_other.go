@@ -20,3 +20,4 @@ func OutputDevices() ([]Device, error)             { return nil, ErrUnsupported 
 func InputDevices() ([]Device, error)              { return nil, ErrUnsupported }
 func MuteOutput() (func() error, error)            { return nil, ErrUnsupported }
 func RunningApps() ([]App, error)                  { return nil, ErrUnsupported }
+func NewOutputPlayer(string) (Player, error)       { return nil, ErrUnsupported }

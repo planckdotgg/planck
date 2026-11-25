@@ -98,10 +98,12 @@ type overlay struct {
 }
 
 // toast is a short note across the top of the stream: a title, and the
-// overlay key that undoes it between lead and tail.
+// hotkey that undoes it between lead and tail, which go too while that
+// hotkey is unbound.
 type toast struct {
-	at                     time.Time
-	title, lead, key, tail string
+	at                time.Time
+	title, lead, tail string
+	key               HotkeyAction
 }
 
 // tween is a rect moving from one place to another over dur.
@@ -428,7 +430,7 @@ func (a *App) motion(c *mui.Context, d time.Duration) time.Duration {
 // view and throws into an edge to dock it.
 func (a *App) bubble(c *mui.Context, now time.Time) mui.Element {
 	o := &a.ovl
-	b := mui.ButtonBase(c.Key("overlay-button")).Label("Stream controls").Description(a.shortcut(false, "O")).
+	b := mui.ButtonBase(c.Key("overlay-button")).Label("Stream controls").Description(a.keyLabel(HotkeyStreamMenu)).
 		Expanded(o.menuOpen).Cursor(mui.CursorPointer)
 	dragging := b.Dragging()
 	pressed := b.Pressed() || dragging
@@ -641,7 +643,9 @@ func (a *App) buttonTip(c *mui.Context, b mui.Element, now time.Time) {
 			Shadow(0, 16, 40, 0, theme.FloatShadow).IgnoreInput(true).Children(func() {
 			mui.Row(c).AlignItems(mui.Center).Gap(theme.Space2).Children(func() {
 				mui.Text(c, "Stream controls").Font(theme.FontUI).FontSize(theme.TextCaption + 1).TextColor(theme.RoleText).SingleLine()
-				badge(c, a.shortcut(false, "O"))
+				if k := a.keyLabel(HotkeyStreamMenu); k != "" {
+					badge(c, k)
+				}
 			})
 		})
 	}
@@ -673,21 +677,6 @@ func badge(c *mui.Context, keys string) mui.Element {
 	return mui.Row(c).Height(18).PaddingX(5).AlignItems(mui.Center).Radius(3).Border(1, theme.RoleBorder).Children(func() {
 		mui.Text(c, keys).Font(theme.FontMono).FontSize(theme.TextMini).TextColor(theme.RoleText3).SingleLine()
 	})
-}
-
-// shortcut prints a three-key chord as this platform does: "⌃⌥P" on
-// macOS, "Ctrl Alt P" elsewhere.
-func (a *App) shortcut(shift bool, key string) string {
-	if a.goos == "darwin" {
-		if shift {
-			return "⌃⌥⇧" + key
-		}
-		return "⌃⌥" + key
-	}
-	if shift {
-		return "Ctrl Alt Shift " + key
-	}
-	return "Ctrl Alt " + key
 }
 
 // toastView shows the toast, if one is due, for a moment. It never takes
@@ -724,10 +713,14 @@ func (a *App) toastView(c *mui.Context, now time.Time) {
 			mui.Image(c, theme.Mark).Size(10, 15).Opacity(0.8)
 			mui.Box(c).Size(1, 16).Background(theme.RoleText.Alpha(0.12))
 			mui.Text(c, o.toast.title).Font(theme.FontUI).FontSize(theme.TextBody).FontWeight(500).TextColor(theme.RoleText).SingleLine()
+			key := a.keyLabel(o.toast.key)
+			if o.toast.key != "" && key == "" {
+				return
+			}
 			note(o.toast.lead)
-			if o.toast.key != "" {
+			if key != "" {
 				mui.Row(c).Height(18).PaddingX(5).AlignItems(mui.Center).Radius(3).Border(1, theme.RoleBorderStrong).Children(func() {
-					mui.Text(c, a.shortcut(false, o.toast.key)).Font(theme.FontMono).FontSize(theme.TextMini).TextColor(theme.RoleText2).SingleLine()
+					mui.Text(c, key).Font(theme.FontMono).FontSize(theme.TextMini).TextColor(theme.RoleText2).SingleLine()
 				})
 			}
 			note(o.toast.tail)
@@ -740,39 +733,77 @@ func (a *App) showToast(t toast) {
 	a.ovl.toast = t
 }
 
-// overlayShortcuts are the overlay's keys, which work while it is hidden.
+// overlayShortcuts are the stream's hotkeys, as the user bound them,
+// which work while the overlay is hidden.
 func (a *App) overlayShortcuts(c *mui.Context) {
-	chord := mui.Ctrl | mui.Alt
-	c.OnWindowShortcut(chord, mui.KeyO, func() {
-		o := &a.ovl
-		if o.hidden {
-			o.hidden = false
-			o.menuOpen = true
-			return
+	for _, h := range a.backend.Hotkeys() {
+		fn := a.streamAction(h.Action)
+		if mods, key, ok := muiChord(h.Chord); ok && fn != nil && !h.Global {
+			c.OnWindowShortcut(mods, key, fn)
 		}
-		o.menuOpen = !o.menuOpen
-	})
-	c.OnWindowShortcut(chord, mui.KeyP, a.toggleHidden)
-	c.OnWindowShortcut(chord, mui.KeyH, func() {
-		o := &a.ovl
-		o.hidden = false
-		o.metrics.cycle(o.vh)
-	})
-	c.OnWindowShortcut(chord, mui.KeyM, func() {
-		o := &a.ovl
-		o.hidden = false
-		o.metrics.toggle(o.vh)
-	})
-	c.OnWindowShortcut(chord, mui.KeyU, func() { go a.ToggleMic() })
-	c.OnWindowShortcut(chord, mui.KeyF, a.toggleFullscreen)
-	c.OnWindowShortcut(chord, mui.KeyI, func() {
-		s := a.backend.Settings()
-		before := s
-		s.SystemKeysCapture = !s.SystemKeysCapture
-		a.saveSettings(before, s)
-	})
-	c.OnWindowShortcut(chord, mui.KeyG, a.toggleCursorLock)
-	c.OnWindowShortcut(chord|mui.Shift, mui.KeyD, a.disconnect)
+	}
+}
+
+// streamAction is what a stream hotkey does, nil for a host's.
+func (a *App) streamAction(action HotkeyAction) func() {
+	switch action {
+	case HotkeyStreamMenu:
+		return func() {
+			o := &a.ovl
+			if o.hidden {
+				o.hidden = false
+				o.menuOpen = true
+				return
+			}
+			o.menuOpen = !o.menuOpen
+		}
+	case HotkeyHideButton:
+		return a.toggleHidden
+	case HotkeyCycleHUD:
+		return func() {
+			o := &a.ovl
+			o.hidden = false
+			o.metrics.cycle(o.vh)
+		}
+	case HotkeyMetrics:
+		return func() {
+			o := &a.ovl
+			o.hidden = false
+			o.metrics.toggle(o.vh)
+		}
+	case HotkeyMicrophone:
+		return func() { go a.ToggleMic() }
+	case HotkeyFullscreen:
+		return a.toggleFullscreen
+	case HotkeyImmersive:
+		return func() {
+			s := a.backend.Settings()
+			before := s
+			s.SystemKeysCapture = !s.SystemKeysCapture
+			a.saveSettings(before, s)
+		}
+	case HotkeyCursorLock:
+		return a.toggleCursorLock
+	case HotkeySwitchDisplay:
+		return func() {
+			if err := a.backend.SwitchDisplay(); err != nil {
+				a.showToast(toast{title: "Display not switched", tail: err.Error()})
+			}
+		}
+	case HotkeyCtrlAltDel:
+		return func() {
+			a.backend.SendCtrlAltDel()
+			a.showToast(toast{title: "Ctrl+Alt+Del sent"})
+		}
+	case HotkeyKeyframe:
+		return func() {
+			a.backend.RequestKeyframe()
+			a.showToast(toast{title: "Keyframe requested"})
+		}
+	case HotkeyDisconnect:
+		return a.disconnect
+	}
+	return nil
 }
 
 // toggleCursorLock locks the mouse to the stream, or releases it, and
@@ -785,10 +816,10 @@ func (a *App) toggleCursorLock() {
 	a.cursor.SetCursorLocked(on)
 	a.ovl.cursorLocked, a.ovl.cursorTold = on, true
 	if on {
-		a.showToast(toast{title: "Cursor locked", lead: "press", key: "G", tail: "to release"})
+		a.showToast(toast{title: "Cursor locked", lead: "press", key: HotkeyCursorLock, tail: "to release"})
 		return
 	}
-	a.showToast(toast{title: "Cursor released", key: "G", tail: "or click the stream to lock"})
+	a.showToast(toast{title: "Cursor released", key: HotkeyCursorLock, tail: "or click the stream to lock"})
 }
 
 // watchCursorLock says, the first time a stream's game locks the mouse,
@@ -801,7 +832,7 @@ func (a *App) watchCursorLock() {
 	on := a.cursor.CursorLocked()
 	if on && !o.cursorLocked && !o.cursorTold {
 		o.cursorTold = true
-		a.showToast(toast{title: "Cursor locked", lead: "press", key: "G", tail: "to release"})
+		a.showToast(toast{title: "Cursor locked", lead: "press", key: HotkeyCursorLock, tail: "to release"})
 	}
 	o.cursorLocked = on
 }
@@ -834,7 +865,7 @@ func (a *App) toggleHidden() {
 	o.menuOpen = false
 	o.toast = toast{}
 	if o.hidden {
-		a.showToast(toast{title: "Overlay hidden", lead: "press", key: "P", tail: "to show"})
+		a.showToast(toast{title: "Overlay hidden", lead: "press", key: HotkeyHideButton, tail: "to show"})
 	}
 }
 
