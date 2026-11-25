@@ -7,6 +7,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+
+	"github.com/planckdotgg/planck/pkg/gamepad"
 )
 
 type Type uint8
@@ -62,21 +64,21 @@ type MouseWheel struct{ DX, DY int16 }
 
 // Gamepad buttons use the XInput bit layout, plus Guide.
 const (
-	PadDPadUp        uint32 = 0x0001
-	PadDPadDown      uint32 = 0x0002
-	PadDPadLeft      uint32 = 0x0004
-	PadDPadRight     uint32 = 0x0008
-	PadStart         uint32 = 0x0010
-	PadBack          uint32 = 0x0020
-	PadLeftThumb     uint32 = 0x0040
-	PadRightThumb    uint32 = 0x0080
-	PadLeftShoulder  uint32 = 0x0100
-	PadRightShoulder uint32 = 0x0200
-	PadGuide         uint32 = 0x0400
-	PadA             uint32 = 0x1000
-	PadB             uint32 = 0x2000
-	PadX             uint32 = 0x4000
-	PadY             uint32 = 0x8000
+	PadDPadUp        = gamepad.ButtonDPadUp
+	PadDPadDown      = gamepad.ButtonDPadDown
+	PadDPadLeft      = gamepad.ButtonDPadLeft
+	PadDPadRight     = gamepad.ButtonDPadRight
+	PadStart         = gamepad.ButtonStart
+	PadBack          = gamepad.ButtonBack
+	PadLeftThumb     = gamepad.ButtonLeftThumb
+	PadRightThumb    = gamepad.ButtonRightThumb
+	PadLeftShoulder  = gamepad.ButtonLeftShoulder
+	PadRightShoulder = gamepad.ButtonRightShoulder
+	PadGuide         = gamepad.ButtonGuide
+	PadA             = gamepad.ButtonA
+	PadB             = gamepad.ButtonB
+	PadX             = gamepad.ButtonX
+	PadY             = gamepad.ButtonY
 )
 
 const MaxGamepads = 16
