@@ -199,3 +199,24 @@ func TestApplySplitOutputAxes(t *testing.T) {
 		t.Errorf("unmapped leftx still reads %d", s.LX)
 	}
 }
+
+func TestApplySplitOutputMissingSource(t *testing.T) {
+	const guid = "030000005e0400008e02000014010000"
+	for _, tc := range []struct {
+		fields string
+		raw    RawState
+		lx     int16
+	}{
+		{"+leftx:a0", RawState{}, 0},
+		{"-leftx:a0", RawState{}, 0},
+		{"+leftx:h0.2,-leftx:a0", RawState{Hats: []uint8{HatRight}}, 32767},
+	} {
+		m, err := ParseSDLMapping(guid + ",Pad," + tc.fields + ",")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s := m.Apply(&tc.raw); s.LX != tc.lx {
+			t.Errorf("%s: LX = %d; want %d", tc.fields, s.LX, tc.lx)
+		}
+	}
+}

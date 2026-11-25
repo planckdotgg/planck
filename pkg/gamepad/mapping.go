@@ -267,7 +267,10 @@ func (m *Mapping) Apply(raw *RawState) State {
 		}
 		for i, sign := range [2]float64{1, -1} {
 			if h := m.Halves[in][i]; h.Kind != SourceNone {
-				hv, half, _ := h.value(raw)
+				hv, half, ok := h.value(raw)
+				if !ok {
+					continue
+				}
 				if !half {
 					hv = (hv + 1) / 2
 				}
