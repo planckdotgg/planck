@@ -219,7 +219,10 @@ type ClientStats struct {
 	FrameTimesMs []float64
 	// HostPolicy is what the host's owner forces on clients, which beats
 	// this client's overrides; all auto from a host that sent none.
-	HostPolicy    defaults.UserOverrides
+	HostPolicy defaults.UserOverrides
+	// HostDisplays are the displays the host advertised, which
+	// SwitchDisplay moves the stream between; nil from an older host.
+	HostDisplays  []defaults.HostDisplay
 	AudioBufferMs float64
 	AudioPackets  uint64
 	InputSent     uint64
@@ -281,6 +284,9 @@ type conn struct {
 	// policy is what the host's owner forces on its clients, from its
 	// capabilities; nil from a host that sent none.
 	policy atomic.Pointer[defaults.UserOverrides]
+	// displays are the host's displays, from its capabilities; set before
+	// the conn is shared, and never changed.
+	displays []defaults.HostDisplay
 	// openSink makes the sink of each stream.
 	openSink SinkOpener
 	// asked is the window last offered the host, at the connect or a
@@ -442,6 +448,9 @@ func (c *Client) connect(ctx context.Context, t Target) (*conn, error) {
 	cc.stream.Store(&streamState{sink: dcfg})
 	cc.profile.Store(prof)
 	cc.policy.Store(hostPolicy(sess))
+	if caps := hostCaps(sess); caps != nil {
+		cc.displays = caps.Displays
+	}
 	// The receive goroutine reads the stream once the route is live.
 	cc.live.Store(rt)
 	cc.openSink = cfg.OpenSink
@@ -1303,6 +1312,7 @@ func (cc *conn) stats() ClientStats {
 	if p := cc.policy.Load(); p != nil {
 		s.HostPolicy = *p
 	}
+	s.HostDisplays = cc.displays
 	return s
 }
 
@@ -1429,10 +1439,7 @@ func (c *Client) HostDisplays() []defaults.HostDisplay {
 	if cc == nil {
 		return nil
 	}
-	if caps := hostCaps(cc.session()); caps != nil {
-		return caps.Displays
-	}
-	return nil
+	return cc.displays
 }
 
 // StreamedDisplay is the ID of the host display streaming now, "" on a
