@@ -74,6 +74,16 @@ var (
 	IconPower        = mustSVG("icons/ui-power.svg")
 	IconChevronRight = mustSVG("icons/ui-chevron-right.svg")
 	IconClose        = mustSVG("icons/ui-close.svg")
+
+	IconStatisticsNav = mustSVG("icons/ui-statistics-24.svg")
+	IconStatistics    = mustSVG("icons/ui-statistics.svg")
+	IconPrompt        = mustSVG("icons/ui-prompt.svg")
+	IconSearch        = mustSVG("icons/ui-search.svg")
+	IconReset         = mustSVG("icons/ui-reset.svg")
+	IconLock          = mustSVG("icons/ui-lock.svg")
+	IconShieldCheck   = mustSVG("icons/ui-shield-check.svg")
+	IconWarning       = mustSVG("icons/ui-warning.svg")
+	IconInfo          = mustSVG("icons/ui-info.svg")
 )
 
 func mustSVG(name string) *ui.SVG {

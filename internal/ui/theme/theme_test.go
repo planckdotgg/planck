@@ -54,6 +54,23 @@ func TestIconsParsed(t *testing.T) {
 	}
 }
 
+func TestLauncherIconSizes(t *testing.T) {
+	want := map[string]struct {
+		s    *ui.SVG
+		size float32
+	}{
+		"IconStatisticsNav": {IconStatisticsNav, 24}, "IconStatistics": {IconStatistics, 16},
+		"IconPrompt": {IconPrompt, 16}, "IconSearch": {IconSearch, 16}, "IconReset": {IconReset, 16},
+		"IconLock": {IconLock, 16}, "IconShieldCheck": {IconShieldCheck, 16},
+		"IconWarning": {IconWarning, 16}, "IconInfo": {IconInfo, 16},
+	}
+	for name, i := range want {
+		if w, h := ui.ImageSize(i.s); w != i.size || h != i.size {
+			t.Errorf("%s is %vx%v, want %vx%[4]v", name, w, h, i.size)
+		}
+	}
+}
+
 // TestTokensMatchJSON checks the generated Go roles against tokens.json,
 // the single source, so a hand edit or a stale copy shows up.
 func TestTokensMatchJSON(t *testing.T) {
