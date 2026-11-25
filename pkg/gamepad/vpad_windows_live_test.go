@@ -90,6 +90,28 @@ func TestLiveVirtualPadLoopback(t *testing.T) {
 	}
 	capture.Rumble(slot, 0, 0)
 
+	// Faster than the pad is polled, as a client mashing a button: the
+	// last state, a release, must still land.
+	for i := range 200 {
+		if err := pads.Submit(3, State{Buttons: ButtonA * uint32(i%2), LX: int16(i)}); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(200 * time.Microsecond)
+	}
+	final, m := State{LX: -777}, capture.DefaultMapping(slot)
+	pads.Submit(3, final)
+	var last State
+	for deadline := time.Now().Add(500 * time.Millisecond); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		var raw RawState
+		capture.Read(slot, &raw)
+		if last = m.Apply(&raw); last == final {
+			break
+		}
+	}
+	if last != final {
+		t.Errorf("after a burst slot %d reads %+v, want %+v", slot, last, final)
+	}
+
 	if err := pads.ResetSlots(); err != nil {
 		t.Fatal(err)
 	}
