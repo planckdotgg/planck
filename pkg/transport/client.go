@@ -15,6 +15,10 @@ import (
 
 var ErrHostPINMismatch = errors.New("transport: host could not prove the pairing PIN")
 
+// ErrUnanswered is a Dial whose QUIC handshake timed out: nothing answered
+// on that address, and another route to the host may.
+var ErrUnanswered = errors.New("transport: the host did not answer")
+
 type ClientConfig struct {
 	Certificate tls.Certificate
 	Name        string
@@ -67,6 +71,11 @@ func Dial(ctx context.Context, addr string, cfg ClientConfig) (*Session, error) 
 	defer cancel()
 	conn, err := quic.DialAddr(ctx, addr, tlsConf, controlQUICConfig())
 	if err != nil {
+		var idle *quic.IdleTimeoutError
+		var hs *quic.HandshakeTimeoutError
+		if errors.As(err, &idle) || errors.As(err, &hs) {
+			return nil, fmt.Errorf("%w at %s: %w", ErrUnanswered, addr, err)
+		}
 		return nil, err
 	}
 	s, err := clientHandshake(ctx, conn, cfg)

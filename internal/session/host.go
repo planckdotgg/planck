@@ -263,11 +263,19 @@ type Host struct {
 	// PIN, never by its Tailscale identity.
 	requireLANPIN bool
 
-	srv      *transport.Server
+	srv  atomic.Pointer[transport.Server]
+	scfg transport.ServerConfig
+	// listen opens the control listener: transport.Listen unless a test
+	// sets another.
+	listen   func(addr string, cfg transport.ServerConfig) (*transport.Server, error)
 	disc     *discovery.Port
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 	stopOnce sync.Once
+	// done closes once the host stopped; haltErr says why, when it stopped
+	// on its own.
+	done    chan struct{}
+	haltErr atomic.Pointer[error]
 
 	mu       sync.Mutex
 	cur      *stream
@@ -340,7 +348,8 @@ func NewHost(cfg HostConfig) (*Host, error) {
 		cfg.FPS = 60
 	}
 	h := &Host{inputTrace: newTracer[inputTraceRow](traceInputEnv), cfg: cfg, dir: dir, hostID: stored.HostID, cert: cert, fp: transport.CertFingerprint(cert), pairs: pairs,
-		whois: cfg.WhoIs, open: cfg.OpenVideo, logf: cfg.Logf, pin: cfg.PIN, requireLANPIN: stored.RequirePINForLAN}
+		whois: cfg.WhoIs, open: cfg.OpenVideo, logf: cfg.Logf, pin: cfg.PIN, requireLANPIN: stored.RequirePINForLAN,
+		listen: transport.Listen, done: make(chan struct{})}
 	if h.logf == nil {
 		h.logf = log.Printf
 	}
@@ -389,8 +398,8 @@ func (h *Host) SetName(name string) error {
 		return err
 	}
 	live := h.setLiveName(name)
-	if h.srv != nil {
-		h.srv.SetName(live)
+	if srv := h.srv.Load(); srv != nil {
+		srv.SetName(live)
 	}
 	return nil
 }
@@ -499,10 +508,11 @@ func (h *Host) MediaPort() int { return h.cfg.MediaPort }
 
 // Addr is the control listener's address once started.
 func (h *Host) Addr() net.Addr {
-	if h.srv == nil {
+	srv := h.srv.Load()
+	if srv == nil {
 		return nil
 	}
-	return h.srv.Addr()
+	return srv.Addr()
 }
 
 // DiscoveryAddr is the discovery socket's address, or nil when off.
@@ -548,14 +558,15 @@ func (h *Host) Start(ctx context.Context) error {
 	if h.cfg.OpenVideo == nil || h.cfg.Capabilities != nil {
 		scfg.Capabilities, scfg.Resolve, scfg.Resize, scfg.SwitchDisplay = h.capabilitiesJSON, h.resolve, true, true
 	}
-	srv, err := transport.Listen(h.cfg.ListenAddr, scfg)
+	srv, err := h.listen(h.cfg.ListenAddr, scfg)
 	if err != nil {
 		if h.clip != nil {
 			h.clip.close()
 		}
 		return err
 	}
-	h.srv = srv
+	h.scfg = scfg
+	h.srv.Store(srv)
 	if h.cfg.InjectInput && h.cfg.Injector == nil {
 		inj, err := newInjector()
 		if err != nil {
@@ -590,7 +601,7 @@ func (h *Host) startDiscovery(ctx context.Context) error {
 	h.disc = conn
 	base := discovery.Beacon{
 		HostID:          h.hostID,
-		ControlPort:     uint16(h.srv.Addr().(*net.UDPAddr).Port),
+		ControlPort:     uint16(h.Addr().(*net.UDPAddr).Port),
 		CertFingerprint: h.Fingerprint(),
 		OS:              runtime.GOOS,
 	}
@@ -609,13 +620,23 @@ func (h *Host) startDiscovery(ctx context.Context) error {
 
 func (h *Host) acceptLoop(ctx context.Context) {
 	for {
-		sess, err := h.srv.Accept(ctx)
+		sess, err := h.srv.Load().Accept(ctx)
 		var he *transport.HandshakeError
 		switch {
 		case errors.As(err, &he):
 			h.fail("client %v: %v", he.Remote, he.Err)
 			continue
+		case err != nil && ctx.Err() != nil:
+			return
 		case err != nil:
+			if err := h.relisten(ctx, err); err != nil {
+				h.halt(err)
+				return
+			}
+			continue
+		}
+		if ctx.Err() != nil {
+			sess.Close()
 			return
 		}
 		if _, ok := h.pairs.lookup(sess.PeerFingerprint()); !ok {
@@ -630,7 +651,7 @@ func (h *Host) acceptLoop(ctx context.Context) {
 		h.cur = st
 		h.mu.Unlock()
 		if old != nil {
-			old.stop()
+			h.stopWithin(old)
 		}
 		h.logf("planck: %s connected from %v (%s)", sess.Identity(), sess.RemoteControlAddr(), st.path)
 		h.wg.Go(func() {
@@ -647,6 +668,81 @@ func (h *Host) acceptLoop(ctx context.Context) {
 			}
 			h.streamEnded(st)
 		})
+	}
+}
+
+const (
+	// relistenTries is how often a host opens its control port again after
+	// the listener died, backing off from relistenBackoff, before it stops.
+	relistenTries   = 5
+	relistenBackoff = 100 * time.Millisecond
+	// stopWait is how long a new client waits for the stream it takes over
+	// to tear down before it goes on without it.
+	stopWait = 5 * time.Second
+)
+
+// relisten opens the control port again after its listener died. The
+// port stays the same, as discovery advertises it.
+func (h *Host) relisten(ctx context.Context, cause error) error {
+	old := h.srv.Load()
+	addr := old.Addr().String()
+	if host, _, err := net.SplitHostPort(h.cfg.ListenAddr); err == nil {
+		addr = net.JoinHostPort(host, fmt.Sprint(old.Addr().(*net.UDPAddr).Port))
+	}
+	h.fail("control listener on %s stopped: %v; listening again", addr, cause)
+	_ = old.Close()
+	wait := relistenBackoff
+	var err error
+	for range relistenTries {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
+		}
+		var srv *transport.Server
+		if srv, err = h.listen(addr, h.scfg); err == nil {
+			srv.SetName(h.Name())
+			h.srv.Store(srv)
+			h.logf("planck: listening again on %v", srv.Addr())
+			return nil
+		}
+		wait *= 2
+	}
+	return fmt.Errorf("session: control listener on %s: %w", addr, err)
+}
+
+// halt stops a host that can no longer take clients, discovery included,
+// so it never advertises a port nothing answers on.
+func (h *Host) halt(err error) {
+	h.haltErr.Store(&err)
+	h.fail("%v; stopping the host", err)
+	go h.Stop()
+}
+
+// Done closes once the host stopped, by Stop or on its own; Err then says
+// why it stopped on its own.
+func (h *Host) Done() <-chan struct{} { return h.done }
+
+// Err is why the host stopped on its own, or nil.
+func (h *Host) Err() error {
+	if e := h.haltErr.Load(); e != nil {
+		return *e
+	}
+	return nil
+}
+
+// stopWithin ends st and waits up to stopWait for its teardown, so a
+// teardown that hangs cannot hold up the client taking over.
+func (h *Host) stopWithin(st *stream) {
+	stopped := make(chan struct{})
+	go func() {
+		st.stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(stopWait):
+		h.fail("the stream of %s took over %v to stop; going on without it", st.sess.Identity(), stopWait)
 	}
 }
 
@@ -677,7 +773,7 @@ func (h *Host) preempt() {
 	h.cur = nil
 	h.mu.Unlock()
 	if st != nil {
-		st.stop()
+		h.stopWithin(st)
 	}
 }
 
@@ -963,8 +1059,8 @@ func (h *Host) Stop() {
 		if h.cancel != nil {
 			h.cancel()
 		}
-		if h.srv != nil {
-			h.srv.Close()
+		if srv := h.srv.Load(); srv != nil {
+			srv.Close()
 		}
 		if h.disc != nil {
 			h.disc.Close()
@@ -986,5 +1082,6 @@ func (h *Host) Stop() {
 			h.inject.Close()
 		}
 		h.setStarted(false)
+		close(h.done)
 	})
 }

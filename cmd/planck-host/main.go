@@ -262,6 +262,8 @@ func run(o options) error {
 		case <-ctx.Done():
 			fmt.Println("\nplanck-host: shutting down")
 			return nil
+		case <-h.Done():
+			return h.Err()
 		case <-tick:
 			if p := h.PIN(); p != pin {
 				pin = p

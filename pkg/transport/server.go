@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -83,11 +84,39 @@ type ServerConfig struct {
 	SimulateLoss float64
 }
 
-// Server accepts client sessions on a QUIC control listener.
+// maxHandshakes bounds the handshakes in flight; a connection over it is
+// refused at once.
+const maxHandshakes = 8
+
+var (
+	// ErrServerClosed is what Accept returns once Close was called.
+	ErrServerClosed = errors.New("transport: server closed")
+	// ErrHandshakeBusy refuses a connection while maxHandshakes run.
+	ErrHandshakeBusy = errors.New("transport: too many handshakes in flight")
+)
+
+// Server accepts client sessions on a QUIC control listener. Each
+// connection's handshake runs on its own goroutine, so a peer that stalls
+// cannot hold up the others.
 type Server struct {
 	cfg  ServerConfig
 	ln   *quic.Listener
 	name atomic.Pointer[string]
+
+	ctx     context.Context
+	cancel  context.CancelFunc
+	slots   chan struct{}
+	results chan accepted
+	// dead closes when the listener stops accepting; deadErr says why.
+	dead    chan struct{}
+	deadErr error
+	// handshakes counts the handshake goroutines, which Close outlives.
+	handshakes sync.WaitGroup
+}
+
+type accepted struct {
+	s   *Session
+	err error
 }
 
 // Listen starts a host control listener on addr.
@@ -102,8 +131,11 @@ func Listen(addr string, cfg ServerConfig) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	sv := &Server{cfg: cfg, ln: ln}
+	sv := &Server{cfg: cfg, ln: ln, slots: make(chan struct{}, maxHandshakes),
+		results: make(chan accepted, maxHandshakes), dead: make(chan struct{})}
+	sv.ctx, sv.cancel = context.WithCancel(context.Background())
 	sv.SetName(cfg.Name)
+	go sv.acceptConns()
 	return sv, nil
 }
 
@@ -111,7 +143,28 @@ func (sv *Server) Addr() net.Addr { return sv.ln.Addr() }
 
 // SetName changes the host name later handshakes send.
 func (sv *Server) SetName(name string) { sv.name.Store(&name) }
-func (sv *Server) Close() error        { return sv.ln.Close() }
+
+// Close stops accepting and ends the handshakes in flight. A session that
+// finished its handshake but was never accepted is closed.
+func (sv *Server) Close() error {
+	sv.cancel()
+	err := sv.ln.Close()
+	go func() {
+		<-sv.dead
+		sv.handshakes.Wait()
+		for {
+			select {
+			case r := <-sv.results:
+				if r.s != nil {
+					r.s.Close()
+				}
+			default:
+				return
+			}
+		}
+	}()
+	return err
+}
 
 // HandshakeError is a failed handshake of one connection; the server keeps
 // listening.
@@ -125,20 +178,65 @@ func (e *HandshakeError) Error() string {
 }
 func (e *HandshakeError) Unwrap() error { return e.Err }
 
-// Accept waits for the next connection and runs its handshake. A failed
-// handshake returns a *HandshakeError; any other error means the listener
-// is done.
+// Accept waits for the next finished handshake. A failed handshake returns
+// a *HandshakeError; ErrServerClosed follows Close; any other error means
+// the listener died and accepts nothing more.
 func (sv *Server) Accept(ctx context.Context) (*Session, error) {
-	conn, err := sv.ln.Accept(ctx)
-	if err != nil {
-		return nil, err
+	if sv.ctx.Err() != nil {
+		return nil, ErrServerClosed
 	}
-	s, err := sv.handshake(ctx, conn)
-	if err != nil {
-		go lingerClose(conn)
-		return nil, &HandshakeError{Remote: conn.RemoteAddr(), Err: err}
+	select {
+	case r := <-sv.results:
+		return r.s, r.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-sv.dead:
 	}
-	return s, nil
+	select {
+	case r := <-sv.results:
+		return r.s, r.err
+	default:
+	}
+	if sv.ctx.Err() != nil {
+		return nil, ErrServerClosed
+	}
+	return nil, fmt.Errorf("transport: control listener stopped: %w", sv.deadErr)
+}
+
+func (sv *Server) acceptConns() {
+	defer close(sv.dead)
+	for {
+		conn, err := sv.ln.Accept(sv.ctx)
+		if err != nil {
+			sv.deadErr = err
+			return
+		}
+		select {
+		case sv.slots <- struct{}{}:
+		default:
+			_ = conn.CloseWithError(1, "host busy")
+			select {
+			case sv.results <- accepted{err: &HandshakeError{Remote: conn.RemoteAddr(), Err: ErrHandshakeBusy}}:
+			default:
+			}
+			continue
+		}
+		sv.handshakes.Go(func() {
+			defer func() { <-sv.slots }()
+			s, err := sv.handshake(sv.ctx, conn)
+			if err != nil {
+				go lingerClose(conn)
+				err = &HandshakeError{Remote: conn.RemoteAddr(), Err: err}
+			}
+			select {
+			case sv.results <- accepted{s, err}:
+			case <-sv.ctx.Done():
+				if s != nil {
+					s.Close()
+				}
+			}
+		})
+	}
 }
 
 func (sv *Server) handshake(parent context.Context, conn *quic.Conn) (*Session, error) {
