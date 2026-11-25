@@ -37,16 +37,26 @@ func runGUI(o options) error {
 	defer ptr.close()
 	sys := newSystemKeys(newKeyTap(video.win.Load), nil, logf)
 	defer sys.streamEnded()
+	// The backend's onHostDisplays reads both once a stream runs.
+	var b *backend
+	var app *ui.App
 	b, err := newBackend(backendConfig{
 		dir: o.configDir, name: o.name, finder: f, tailscale: ts, openSink: video.open,
 		hostConfig: appHostConfig(o.configDir, logf),
 		encoders:   localEncoders(), logf: logf, overrides: o.overrides, viewSize: video.liveSize, display: video.display, onCursor: ptr.setHost, onCursorShape: ptr.setShape,
 		onSystemKeys: sys.setEnabled, globals: desktopShortcuts{},
+		onHostDisplays: func(host string, ds []defaults.HostDisplay, streamed string) {
+			s := b.Settings()
+			p := planDisplayWindows(ds, streamed, s.OpenEveryHostDisplay, s.MaxStreamWindows, hostStreamsAtOnce)
+			if title := displayNotice(host, s.OpenEveryHostDisplay, p); title != "" {
+				mygo.RunOnMain(func() { app.ShowDisplayNotice(title) })
+			}
+		},
 	})
 	if err != nil {
 		return err
 	}
-	app := ui.NewApp(b)
+	app = ui.NewApp(b)
 	video.keyframe = b.RequestKeyframe
 	app.OnOverlayChange(video.overlayChanged)
 	ptr.send, ptr.changed = b.SendInput, app.Notify
@@ -335,7 +345,7 @@ func (v *videoView) open(cfg decode.Config) (session.Sink, error) {
 			err = errNoWindow
 			return
 		}
-		if h, err = newSurfaceHost(w); err == nil && h != nil {
+		if h, err = newSurfaceHost(w, cfg.HDR10); err == nil && h != nil {
 			v.surfaces.Add(1)
 		}
 	})

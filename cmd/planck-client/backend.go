@@ -58,6 +58,8 @@ type backend struct {
 	onCursorShape func(wire.CursorShape)
 	// onSystemKeys hears immersive mode turned on or off.
 	onSystemKeys func(on bool)
+	// onHostDisplays is backendConfig's.
+	onHostDisplays func(host string, ds []defaults.HostDisplay, streamed string)
 	// measure times an encoder, and displays lists this machine's.
 	measure  func(ctx context.Context, gpu string) (session.Latency, error)
 	displays func() []defaults.HostDisplay
@@ -112,6 +114,9 @@ type backend struct {
 	// hostOS is the OS of the host hostOSOf streams from.
 	hostOSOf *session.Client
 	hostOS   string
+	// hostDisplays are each host's displays as it advertised them while
+	// streaming this run, by pin key.
+	hostDisplays map[string][]ui.DisplayInfo
 }
 
 type backendConfig struct {
@@ -135,6 +140,9 @@ type backendConfig struct {
 	onCursorShape func(wire.CursorShape)
 	// onSystemKeys hears immersive mode turned on or off, at once.
 	onSystemKeys func(on bool)
+	// onHostDisplays hears, once a stream, the host's displays and the
+	// one streaming ("" on a virtual display); nil hears nothing.
+	onHostDisplays func(host string, ds []defaults.HostDisplay, streamed string)
 	// measure replaces session.MeasureEncoder, and displays
 	// session.LocalDisplays.
 	measure  func(ctx context.Context, gpu string) (session.Latency, error)
@@ -159,7 +167,7 @@ func newBackend(c backendConfig) (*backend, error) {
 		return nil, err
 	}
 	b := &backend{dir: dir, name: cmp.Or(c.name, stored.DeviceName, config.Hostname()), finder: c.finder, ts: c.tailscale, openSink: c.openSink, hostConfig: c.hostConfig,
-		encoders: c.encoders, logf: c.logf, routeConfig: c.route, overrides: c.overrides, viewSize: c.viewSize, display: c.display, onCursor: c.onCursor, onCursorShape: c.onCursorShape, onSystemKeys: c.onSystemKeys, settings: settingsFrom(stored), pinned: stored.PinnedHosts, aliases: stored.HostAliases,
+		encoders: c.encoders, logf: c.logf, routeConfig: c.route, overrides: c.overrides, viewSize: c.viewSize, display: c.display, onCursor: c.onCursor, onCursorShape: c.onCursorShape, onSystemKeys: c.onSystemKeys, onHostDisplays: c.onHostDisplays, settings: settingsFrom(stored), pinned: stored.PinnedHosts, aliases: stored.HostAliases,
 		storedAll: stored.Overrides, storedHosts: stored.HostOverrides, layout: layoutFrom(stored.Overlay), self: map[string]bool{},
 		measure: c.measure, displays: c.displays, audioOutputs: c.audioOutputs, audioInputs: c.audioInputs, runningApps: c.runningApps,
 		globals: c.globals, keys: config.ClientConfig{Hotkeys: stored.Hotkeys, NeverSend: stored.NeverSend}}
@@ -203,7 +211,8 @@ func newBackend(c backendConfig) (*backend, error) {
 func settingsFrom(c config.ClientConfig) ui.Settings {
 	s := ui.Settings{AudioEnabled: c.AudioEnabled, ClipboardSend: c.ClipboardSend, ClipboardReceive: c.ClipboardReceive,
 		SystemKeysCapture: c.SystemKeysCapture, AudioVolume: 1, AudioMuted: c.AudioMuted, OpenFullscreen: c.StreamsOpenFullscreen(),
-		SwapCmdCtrl: c.SwapCmdCtrl, OutputDevice: c.AudioOutputDevice, MicDevice: c.MicDevice}
+		SwapCmdCtrl: c.SwapCmdCtrl, OutputDevice: c.AudioOutputDevice, MicDevice: c.MicDevice,
+		OpenEveryHostDisplay: c.OpenEveryHostDisplay, MaxStreamWindows: c.StreamWindows()}
 	if c.AudioVolume != nil {
 		s.AudioVolume = min(max(*c.AudioVolume, 0), 1)
 	}
@@ -744,6 +753,7 @@ func (b *backend) follow(c *session.Client) {
 	t := time.NewTicker(statsEvery)
 	defer t.Stop()
 	done := c.Done()
+	announced := false
 	for running := done != nil; running; {
 		select {
 		case <-done:
@@ -761,8 +771,13 @@ func (b *backend) follow(c *session.Client) {
 			b.tel = telemetry(st)
 			if st.Connected {
 				b.stats = sessionStats(st, b.started)
+				b.noteHostDisplaysLocked(st)
 			}
 			b.mu.Unlock()
+			if st.Connected && !announced && st.HostDisplays != nil && b.onHostDisplays != nil {
+				announced = true
+				b.onHostDisplays(st.HostName, st.HostDisplays, streamedDisplay(st.Profile))
+			}
 			b.changed()
 		}
 	}
@@ -773,6 +788,15 @@ func (b *backend) follow(c *session.Client) {
 	}
 	b.mu.Unlock()
 	b.changed()
+}
+
+// streamedDisplay is the host display p captures, "" on a virtual
+// display or without a profile.
+func streamedDisplay(p *defaults.ResolvedProfile) string {
+	if p == nil || p.VirtualDisplay {
+		return ""
+	}
+	return p.CaptureDisplay
 }
 
 func telemetry(s session.ClientStats) ui.Telemetry {
@@ -1052,6 +1076,11 @@ func (b *backend) SaveSettings(s ui.Settings) error {
 			stored.OpenFullscreen = &off
 		}
 		stored.SwapCmdCtrl, stored.AudioOutputDevice, stored.MicDevice = s.SwapCmdCtrl, s.OutputDevice, s.MicDevice
+		stored.OpenEveryHostDisplay = s.OpenEveryHostDisplay
+		stored.MaxStreamWindows = 0
+		if s.MaxStreamWindows != config.DefaultStreamWindows {
+			stored.MaxStreamWindows = s.MaxStreamWindows
+		}
 		return nil
 	})
 	if err != nil {

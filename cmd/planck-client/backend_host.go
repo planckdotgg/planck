@@ -154,11 +154,10 @@ func (b *backend) SetHostSettings(s ui.HostSettings) error {
 }
 
 func (b *backend) Displays() []ui.DisplayInfo {
-	var out []ui.DisplayInfo
-	for _, d := range b.displays() {
-		out = append(out, ui.DisplayInfo{ID: d.ID, Width: d.Width, Height: d.Height, RefreshHz: d.RefreshHz, Primary: d.Primary})
+	if ds := b.displays(); len(ds) > 0 {
+		return displayInfos(ds)
 	}
-	return out
+	return nil
 }
 
 // MeasureEncoder times gpu's encoder and keeps the p50 for Encoders.

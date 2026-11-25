@@ -402,6 +402,7 @@ func (a *App) videoGroup(c *mui.Context, m mui.MenuParts, e *overrideEdit, tel T
 	a.knobFlyout(c, m, e, knobVDD, theme.IconDisplay, "Display", shown, map[string][2]string{
 		"auto": {"Auto", "virtual where the host can"}, "on": {"Virtual display", "SudoVDA"}, "off": {"Physical display", ""},
 	})
+	a.hostDisplayFlyout(c, m, tel)
 	size := strings.ReplaceAll(resolutionLabel(tel.Width, tel.Height), " x ", "×")
 	custom := ""
 	if e.o.CustomWidth > 0 && e.o.CustomHeight > 0 {
@@ -426,6 +427,61 @@ func (a *App) videoGroup(c *mui.Context, m mui.MenuParts, e *overrideEdit, tel T
 	vs := e.o.VSyncMode
 	a.flyout(c, m, "VSync", rowParts{icon: theme.IconVSync, value: knobLabel(knobVSync, string(vs))}, "",
 		knobChoices(knobVSync, string(vs), func(v string) { e.o.VSyncMode = defaults.Toggle(v) }), true)
+}
+
+// hostDisplayFlyout picks which of the host's displays streams, live,
+// when it has more than one. The pick holds for the host's next streams.
+func (a *App) hostDisplayFlyout(c *mui.Context, m mui.MenuParts, tel Telemetry) {
+	ds := a.backend.HostDisplays(tel.HostID)
+	if len(ds) < 2 {
+		return
+	}
+	cur := streamedDisplay(tel.Profile)
+	value := "Virtual"
+	var choices []choice
+	for i, d := range ds {
+		name, detail := hostDisplayLabel(d, i)
+		if d.ID == cur {
+			value = name
+		}
+		choices = append(choices, choice{label: name, detail: detail, selected: d.ID == cur, pick: func() {
+			if err := a.backend.SelectHostDisplay(d.ID); err != nil {
+				a.showToast(toast{title: "Display not switched", tail: err.Error()})
+			}
+		}})
+	}
+	note := "Streams this display now and on the next connection. " + a.keyText(HotkeySwitchDisplay) + " moves to the next."
+	a.flyout(c, m, "Host display", rowParts{icon: theme.IconDisplay, value: value}, note, choices, false)
+}
+
+// streamedDisplay is the host display a profile captures, "" on a
+// virtual display or without a profile.
+func streamedDisplay(p *defaults.ResolvedProfile) string {
+	if p == nil || p.VirtualDisplay {
+		return ""
+	}
+	return p.CaptureDisplay
+}
+
+// hostDisplayLabel names the i-th host display, by its own name, or by
+// its number and whether it is the main one, with its mode as the detail.
+func hostDisplayLabel(d DisplayInfo, i int) (name, detail string) {
+	name = d.Name
+	switch {
+	case name != "":
+	case d.Primary:
+		name = fmt.Sprintf("Display %d · main", i+1)
+	default:
+		name = fmt.Sprintf("Display %d", i+1)
+	}
+	detail = fmt.Sprintf("%d×%d", d.Width, d.Height)
+	if d.RefreshHz > 0 {
+		detail += fmt.Sprintf(" %d Hz", d.RefreshHz)
+	}
+	if d.HDR {
+		detail += " HDR"
+	}
+	return name, detail
 }
 
 // knobFlyout is a knob's flyout. value is what the stream resolved to,

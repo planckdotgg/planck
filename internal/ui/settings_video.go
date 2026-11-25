@@ -26,7 +26,7 @@ func (a *App) videoPage(c *mui.Context, f *settingsFrame) {
 		})
 		setPanel(c, "Presentation", nil, func() { a.entries(c, f, "video.presentation") })
 	}, func() {
-		setPanel(c, "Display & rate", overriddenTag(c, e, true, knobResolution, knobFPS, knobDirect, knobVSync), func() {
+		setPanel(c, "Display & rate", overriddenTag(c, e, true, knobResolution, knobFPS, knobDirect, knobVSync, knobHDR), func() {
 			a.entries(c, f, "video.resolution", "video.fps", "video.bitrate", "video.direct", "video.vsync", "video.hdr", "video.multi")
 		})
 		a.advancedEncoder(c, f)
@@ -231,6 +231,51 @@ func (a *App) bitrateRow(c *mui.Context, f *settingsFrame) {
 		c.Key("knob:" + e.scope.hostID + ":bitrateSlider")
 		if mui.StepSlider(c, &v, minBitrateMbps, maxManualBitrateMbps, 5).Label("Video bitrate").FillWidth().Changed() {
 			e.o.BitrateMbps = int(v)
+		}
+	})
+}
+
+// hdrRow is HDR10 output, Auto or Off, with why a live stream is SDR.
+func (a *App) hdrRow(c *mui.Context, f *settingsFrame) {
+	help := knobHDR.desc
+	if p := f.stats.Profile; f.stats.Live && p != nil && (f.e.scope.all() || f.e.scope.hostID == f.stats.HostID) {
+		switch why := decisionWhy(p, "hdr10"); {
+		case p.HDR10:
+			help = f.stats.HostName + " streams HDR10 now."
+		case why != "" && why != "override":
+			help = f.stats.HostName + " streams SDR: " + why + "."
+		}
+	}
+	f.knobRow(c, knobHDR, "HDR10 output", help)
+}
+
+// decisionWhy is why p settled knob as it did, "" without a decision.
+func decisionWhy(p *defaults.ResolvedProfile, knob string) string {
+	for _, d := range p.Decisions {
+		if d.Knob == knob {
+			return d.Why
+		}
+	}
+	return ""
+}
+
+// multiDisplayRows are Open all host displays and, while it is on, how
+// many windows it opens at most.
+func (a *App) multiDisplayRows(c *mui.Context, f *settingsFrame) {
+	f.switchRow(c, "Open all host displays", "A window for each display of a host that streams several at once. A host that streams one moves between them with "+
+		a.keyText(HotkeySwitchDisplay)+" or the stream menu.", &f.s.OpenEveryHostDisplay)
+	if !f.s.OpenEveryHostDisplay {
+		return
+	}
+	labels := make([]string, 0, MaxStreamWindows-MinStreamWindows+1)
+	for n := MinStreamWindows; n <= MaxStreamWindows; n++ {
+		labels = append(labels, strconv.Itoa(n))
+	}
+	sel := min(max(f.s.MaxStreamWindows, MinStreamWindows), MaxStreamWindows) - MinStreamWindows
+	f.row(c, "Most windows", "Displays past this many stay one switch away.", func() {
+		c.Key("max-stream-windows")
+		if segmented(c, "Most windows", &sel, labels...) {
+			f.s.MaxStreamWindows = sel + MinStreamWindows
 		}
 	})
 }

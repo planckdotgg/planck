@@ -320,17 +320,31 @@ var (
 	ErrDesktopRefused = config.ErrDesktopRefused
 )
 
-// ErrOneDisplay is SwitchDisplay's answer while a host streams one
-// display, as every host does until multi-display streams.
-var ErrOneDisplay = errors.New("this host streams one display")
+// ErrOneDisplay is SwitchDisplay's answer from a host with one display.
+var ErrOneDisplay = errors.New("this host has one display")
 
-// DisplayInfo is a display of this machine.
+// ErrNoDisplaySwitch is the answer of SwitchDisplay and
+// SelectHostDisplay from a host whose Planck cannot move a stream to
+// another display.
+var ErrNoDisplaySwitch = errors.New("this host cannot switch displays; update Planck on it")
+
+// DisplayInfo is a display of this machine, or of a host.
 type DisplayInfo struct {
-	ID            string
+	ID string
+	// Name is what the display's OS calls it, "" without one.
+	Name          string
 	Width, Height int
 	RefreshHz     int
 	Primary       bool
+	// HDR: the desktop on the display is in HDR.
+	HDR bool
 }
+
+// MinStreamWindows and MaxStreamWindows bound Settings.MaxStreamWindows.
+const (
+	MinStreamWindows = config.MinStreamWindows
+	MaxStreamWindows = config.MaxStreamWindows
+)
 
 // PairedClient is a device this machine trusts to stream from it.
 type PairedClient struct {
@@ -371,6 +385,10 @@ type Settings struct {
 	AudioMuted  bool
 	// OpenFullscreen opens each stream's window in full screen.
 	OpenFullscreen bool
+	// OpenEveryHostDisplay opens a window for each of a host's displays,
+	// up to MaxStreamWindows, where the host streams them at once.
+	OpenEveryHostDisplay bool
+	MaxStreamWindows     int
 	// SwapCmdCtrl trades Cmd and Ctrl in what goes to a host whose OS is
 	// macOS when this one's is not, or the other way.
 	SwapCmdCtrl bool
@@ -627,9 +645,16 @@ type Backend interface {
 	// SendCtrlAltDel sends Ctrl+Alt+Del to the host, which a Windows host
 	// answers with its security screen where Windows lets it.
 	SendCtrlAltDel()
-	// SwitchDisplay moves the stream to the host's next display;
-	// ErrOneDisplay while hosts stream one.
+	// SwitchDisplay moves the stream to the host's next display, in the
+	// order HostDisplays lists them; ErrOneDisplay from a host with one,
+	// ErrNoDisplaySwitch from one that cannot.
 	SwitchDisplay() error
+	// HostDisplays lists the displays of the host hostID (a HostInfo.ID),
+	// as it advertised them while streaming this run; nil before.
+	HostDisplays(hostID string) []DisplayInfo
+	// SelectHostDisplay moves the stream to the streaming host's display
+	// id and keeps it as the display that host's streams start on.
+	SelectHostDisplay(id string) error
 
 	// KickClient disconnects the client streaming from this machine,
 	// which may connect again.
