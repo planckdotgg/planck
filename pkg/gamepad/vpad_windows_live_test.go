@@ -182,10 +182,23 @@ func TestLiveVirtualPadReorder(t *testing.T) {
 	if err := pads.ReorderSlot(0, 1); err != nil {
 		t.Fatal(err)
 	}
-	if got := find(second); got != a {
-		t.Errorf("after reorder %+v is on XInput slot %d, want %d", second, got, a)
+	reads := func(slot int, want State) State {
+		var got State
+		for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+			var raw RawState
+			capture.Read(slot, &raw)
+			if m := capture.DefaultMapping(slot); m.Apply(&raw) == want {
+				return want
+			} else {
+				got = m.Apply(&raw)
+			}
+		}
+		return got
 	}
-	if got := find(first); got != b {
-		t.Errorf("after reorder %+v is on XInput slot %d, want %d", first, got, b)
+	if got := reads(a, second); got != second {
+		t.Errorf("after reorder XInput slot %d reads %+v, want %+v", a, got, second)
+	}
+	if got := reads(b, first); got != first {
+		t.Errorf("after reorder XInput slot %d reads %+v, want %+v", b, got, first)
 	}
 }
