@@ -276,8 +276,7 @@ func TestOverlayHitZonePressOpensMenu(t *testing.T) {
 
 // TestOverlayHideShortcut: Ctrl+Alt+P takes everything away, toast aside,
 // and the stream gets presses where the tab was; pressed again it all
-// comes back. Ctrl+Alt+H does the same, and hidden does not outlast the
-// stream.
+// comes back, and hidden does not outlast the stream.
 func TestOverlayHideShortcut(t *testing.T) {
 	f := streamFake()
 	a, tt, p := dockedLeft(t, f)
@@ -329,10 +328,10 @@ func TestOverlayHideShortcut(t *testing.T) {
 	if !shows(tt, "Show stream controls") || !shows(tt, "Metrics") {
 		t.Fatalf("Ctrl+Alt+P did not bring it back: %q", tt.Texts())
 	}
-	tt.Key(mui.Ctrl|mui.Alt, mui.KeyH)
+	tt.Key(mui.Ctrl|mui.Alt, mui.KeyP)
 	tt.Frame()
 	if shows(tt, "Show stream controls") {
-		t.Fatal("Ctrl+Alt+H did not hide it")
+		t.Fatal("Ctrl+Alt+P did not hide it again")
 	}
 	if want := []bool{false, true}; !slices.Equal(shown, want) {
 		t.Fatalf("overlay changes %v, want %v: off once the toast went, on as it came back", shown, want)
