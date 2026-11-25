@@ -78,6 +78,12 @@ type Options struct {
 	Composite bool
 	// Drawable10Bit makes the drawables BGR10A2 instead of BGRA8, on macOS.
 	Drawable10Bit bool
+	// HDR10 presents the frames as BT.2020 PQ on macOS: BGR10A2
+	// drawables, the layer's extended dynamic range on and its colour space
+	// kCGColorSpaceITUR_2100_PQ, YUV converted with the BT.2020 matrix and
+	// the overlay mapped to PQ at SDR reference white. SetHDR10 turns it
+	// off and on again. Windows ignores it.
+	HDR10 bool
 }
 
 // Timing is the way of one frame from Present to the screen, in
