@@ -716,3 +716,33 @@ func TestMenuFlyoutsKeepMenuHeight(t *testing.T) {
 		}
 	}
 }
+
+// TestCycleHUDShortcut: Ctrl+Alt+H steps the metrics HUD from off to the
+// full window, to the compact bar, and off again, leaving the overlay
+// button where it is; Ctrl+Alt+P alone hides the button.
+func TestCycleHUDShortcut(t *testing.T) {
+	_, tt, _ := dockedLeft(t, streamFake())
+	mode := func() string {
+		switch {
+		case shows(tt, "Compact metrics"):
+			return "full"
+		case shows(tt, "Expand metrics"):
+			return "compact"
+		case shows(tt, "Metrics window bar"):
+			return "shown"
+		}
+		return "off"
+	}
+	var got []string
+	for range 4 {
+		tt.Key(mui.Ctrl|mui.Alt, mui.KeyH)
+		tt.Frame()
+		got = append(got, mode())
+		if !shows(tt, "Show stream controls") {
+			t.Fatalf("Ctrl+Alt+H hid the overlay button (step %d)", len(got))
+		}
+	}
+	if want := []string{"full", "compact", "off", "full"}; !slices.Equal(got, want) {
+		t.Fatalf("HUD modes %v, want %v", got, want)
+	}
+}

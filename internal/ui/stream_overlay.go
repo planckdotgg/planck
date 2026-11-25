@@ -753,7 +753,11 @@ func (a *App) overlayShortcuts(c *mui.Context) {
 		o.menuOpen = !o.menuOpen
 	})
 	c.OnWindowShortcut(chord, mui.KeyP, a.toggleHidden)
-	c.OnWindowShortcut(chord, mui.KeyH, a.toggleHidden)
+	c.OnWindowShortcut(chord, mui.KeyH, func() {
+		o := &a.ovl
+		o.hidden = false
+		o.metrics.cycle(o.vh)
+	})
 	c.OnWindowShortcut(chord, mui.KeyM, func() {
 		o := &a.ovl
 		o.hidden = false

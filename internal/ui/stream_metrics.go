@@ -111,6 +111,23 @@ func (w *metricsWindow) toggle(vh float32) {
 	}
 }
 
+// cycle steps the HUD through its modes: off, the full window, the
+// compact bar, and off again. A view too short for the full window opens
+// compact.
+func (w *metricsWindow) cycle(vh float32) {
+	switch {
+	case !w.shown:
+		w.shown, w.compact = true, vh < compactBelow
+		if !w.placed {
+			w.place()
+		}
+	case !w.compact:
+		w.compact = true
+	default:
+		w.shown = false
+	}
+}
+
 func (w *metricsWindow) size() (float32, float32) {
 	if w.compact {
 		return compactW, compactH
