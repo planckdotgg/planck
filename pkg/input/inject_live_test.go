@@ -3,8 +3,12 @@
 package input
 
 import (
+	"errors"
 	"os"
+	"runtime"
 	"testing"
+
+	"github.com/planckdotgg/planck/pkg/gamepad"
 )
 
 // Posts real OS input: the cursor moves one pixel right and back. Runs only
@@ -23,7 +27,12 @@ func TestLiveInjectorNudgesCursor(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := inj.Inject(Event{Type: TypeGamepad}); err != ErrUnsupported {
+	err = inj.Inject(Event{Type: TypeGamepad})
+	if runtime.GOOS == "windows" && gamepad.VirtualPadStatus().Installed {
+		if err != nil {
+			t.Fatalf("gamepad inject with ViGEmBus = %v", err)
+		}
+	} else if !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("gamepad inject = %v, want ErrUnsupported", err)
 	}
 }
