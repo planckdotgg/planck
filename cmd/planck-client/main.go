@@ -96,7 +96,7 @@ func parseOptions(args []string, out io.Writer) (options, error) {
 	var codec, chroma, mode, probe, fps, slices string
 	var k session.Knobs
 	fs.StringVar(&o.configDir, "config", "", "config directory (default: the user config dir /planck)")
-	fs.StringVar(&o.name, "name", "", "device name hosts pair this client under (default: the machine name)")
+	fs.StringVar(&o.name, "name", "", "device name hosts pair this client under for this run (default: the one kept in Settings, or the machine name)")
 	fs.BoolVar(&o.headless, "headless", false, "connect without a window, decode for -duration and print a summary")
 	fs.StringVar(&o.connect, "connect", "", "headless: host address, host[:port]")
 	fs.StringVar(&o.discover, "discover", "", "headless: find the host by name or host ID on the LAN and tailnet, and race its paths")
@@ -179,9 +179,6 @@ func parseOptions(args []string, out io.Writer) (options, error) {
 		}
 		o.discoveryAddrs = append(o.discoveryAddrs, ap)
 	}
-	if o.name == "" {
-		o.name = config.Hostname()
-	}
 	if *discoveryPort == 0 || *discoveryPort > 65535 {
 		return o, fmt.Errorf("-discovery-port %d out of range", *discoveryPort)
 	}
@@ -205,6 +202,23 @@ func parseOptions(args []string, out io.Writer) (options, error) {
 
 // withDefaultPort adds planck-host's control port to an address without
 // one.
+// deviceName is the name hosts pair this client under: -name, else the
+// one client.json keeps in dir, else the machine's.
+func deviceName(dir, flagName string) string {
+	if flagName != "" {
+		return flagName
+	}
+	if dir == "" {
+		if d, err := config.Dir(); err == nil {
+			dir = d
+		}
+	}
+	if c, err := config.LoadClientConfig(dir); err == nil && c.DeviceName != "" {
+		return c.DeviceName
+	}
+	return config.Hostname()
+}
+
 func withDefaultPort(addr string) string {
 	if _, _, err := net.SplitHostPort(addr); err == nil {
 		return addr

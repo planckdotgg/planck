@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/discovery"
@@ -13,6 +14,17 @@ import (
 // client has not paired with. The backend sets Pairing to the request
 // before returning it, and the app opens the Pairing screen.
 var ErrPairingRequired = errors.New("pairing required")
+
+// Quick Connect errors: Connect returns them for text that names no host
+// it can reach.
+var (
+	// ErrUnknownHost is a name or peer fingerprint no host found or
+	// remembered has.
+	ErrUnknownHost = errors.New("no host by that name or fingerprint")
+	// ErrShareLink is a planck.gg/j/ share link, which needs Planck Cloud:
+	// this build cannot open one.
+	ErrShareLink = errors.New("share links need Planck Cloud, which this build cannot reach")
+)
 
 // HostInfo is one host found on the LAN or the tailnet, or remembered:
 // one per machine, with every route it was found on.
@@ -45,6 +57,9 @@ type HostInfo struct {
 	// the host did not report it.
 	Width, Height int
 	RefreshHz     int
+	// Fingerprint is the host certificate's SHA-256, hex encoded, as it
+	// was found or pinned; Quick Connect takes it as a peer ID.
+	Fingerprint string
 }
 
 // Telemetry is the live state of the stream, sampled once a frame.
@@ -91,12 +106,157 @@ type Telemetry struct {
 	FramesDropped uint64
 }
 
+// StageStat is one pipeline stage's latency in milliseconds; 0 is not
+// measured.
+type StageStat struct {
+	P50, P99 float64
+}
+
+// SessionStats are the statistics of a stream, sampled four times a
+// second: the Statistics page's live view, and with LastSession the final
+// sample of the last stream.
+type SessionStats struct {
+	// Live is false without a stream; LastSession's is false too.
+	Live     bool
+	HostName string
+	HostID   string
+	// Started is when the stream started and Ended when it ended, zero
+	// while it runs.
+	Started, Ended time.Time
+
+	// The stages, in pipeline order. Capture is the host's, zero from a
+	// host that does not report it, whose Encode then includes it; a host
+	// that splits them reports p50s only. Total is glass to glass and may
+	// exceed the sum of the stages.
+	Capture, Encode, Network, Decode, Present, Total StageStat
+	// FrameTimesMs are the gaps between the last frames decoded, oldest
+	// first, at most session.FrameTimeRing of them.
+	FrameTimesMs []float64
+	FPS          float64
+	TargetFPS    int
+	// FramesReceived counts the frames that arrived whole, FramesDropped
+	// those this client dropped, and FramesLost those lost on the route
+	// that parity could not rebuild.
+	FramesReceived, FramesDropped, FramesLost, Keyframes uint64
+
+	BitrateMbps float64
+	// CeilingMbps is the most the host accepted on the route; 0 is
+	// unknown.
+	CeilingMbps float64
+	// LossPct is the share of frames lost; FECParityPct the parity sent
+	// over the data, and FECRepaired the slices parity rebuilt.
+	LossPct, FECParityPct float64
+	FECRepaired           uint64
+
+	AudioBufMs float64
+	// MicMuted, MicDevice and MicHint are as in Telemetry.
+	MicMuted  bool
+	MicDevice string
+	MicHint   string
+
+	Codec         encode.Codec
+	Chroma        encode.Chroma
+	BitDepth      int
+	Width, Height int
+	// EncoderGPU and EncoderAPI are the host's, from the profile; empty
+	// from a host that does not resolve streams.
+	EncoderGPU, EncoderAPI string
+	PathKind               discovery.PathKind
+	RTTMs                  float64
+	// DatagramBytes is the largest media datagram on the route.
+	DatagramBytes int
+	// Profile is what the host resolved the stream to, nil from a host
+	// that does not resolve streams.
+	Profile *defaults.ResolvedProfile
+	// HostPolicy is what the host's owner forces, which beats this
+	// client's overrides: a knob not auto here shows as Set by host.
+	HostPolicy defaults.UserOverrides
+}
+
+// ClipboardDirection is what a host shares of the clipboard.
+type ClipboardDirection string
+
+const (
+	ClipboardOff          ClipboardDirection = "off"
+	ClipboardBoth         ClipboardDirection = "both"
+	ClipboardHostToClient ClipboardDirection = "host-to-client"
+	ClipboardClientToHost ClipboardDirection = "client-to-host"
+)
+
+// HostPorts are a host's UDP ports. Control and Media 0 pick a free one;
+// Discovery 0 turns LAN discovery off.
+type HostPorts struct {
+	Control, Media, Discovery int
+}
+
+// PortStatus is TestPorts' answer for each port: "" when this machine
+// can host on it, else why not.
+type PortStatus struct {
+	Control, Media, Discovery string
+}
+
+// HostSettings are what this machine does when other devices stream from
+// it, kept in host.json.
+type HostSettings struct {
+	// Name is what clients see; empty is the machine's name.
+	Name string
+	// Encoder is the GPU it encodes on, by EncoderInfo.GPU; empty lets the
+	// host choose.
+	Encoder string
+	// Display is the display it captures, by DisplayInfo.ID; empty is the
+	// primary one.
+	Display string
+	// Policy is what clients cannot go above: a knob not auto here beats
+	// every client's override.
+	Policy defaults.UserOverrides
+	// VDDPrimary makes a session's virtual display the primary one.
+	VDDPrimary bool
+	// FixedPIN is a pairing PIN that never changes; empty rotates a new
+	// one after each pairing.
+	FixedPIN string
+	// RequirePINForLAN pairs an unpaired device on the LAN only by the
+	// PIN; AllowTailscaleSameUser pairs a device of this machine's own
+	// tailnet user, on the tailnet, with none.
+	RequirePINForLAN       bool
+	AllowTailscaleSameUser bool
+	// AllowInput lets clients' keyboard, mouse and gamepad drive this
+	// machine.
+	AllowInput bool
+	Clipboard  ClipboardDirection
+	Ports      HostPorts
+}
+
+// DisplayInfo is a display of this machine.
+type DisplayInfo struct {
+	ID            string
+	Width, Height int
+	RefreshHz     int
+	Primary       bool
+}
+
+// PairedClient is a device this machine trusts to stream from it.
+type PairedClient struct {
+	Name string
+	// Fingerprint is the client certificate's SHA-256, hex encoded.
+	Fingerprint string
+	PairedAt    time.Time
+	// LastSeen is when it last connected; zero is never since pairing was
+	// recorded.
+	LastSeen time.Time
+	// TrustedViaTailnet is set for a device paired by its Tailscale
+	// identity, without the PIN.
+	TrustedViaTailnet bool
+	// Connected is set while it streams from this machine.
+	Connected bool
+}
+
 // Settings are the client's preferences other than the stream's format,
 // which the overrides hold. SaveSettings applies them to a live stream.
 type Settings struct {
 	AudioEnabled bool
-	// ClipboardSend shares this device's clipboard with the other end of
-	// a stream; ClipboardReceive applies the other end's here.
+	// ClipboardSend shares this device's clipboard with the host it
+	// streams from; ClipboardReceive applies the host's here. What this
+	// machine shares while hosting is HostSettings.Clipboard.
 	ClipboardSend     bool
 	ClipboardReceive  bool
 	SystemKeysCapture bool
@@ -212,6 +372,15 @@ type HostingState struct {
 	// "M5 Pro VideoToolbox".
 	Encoder string
 	Err     string
+	// PIN is the pairing PIN to show while On, and Fingerprint the host
+	// certificate's SHA-256, hex encoded, which clients check.
+	PIN         string
+	Fingerprint string
+	// Using are the ports bound while On: Media 0 while each session
+	// picks one, Discovery 0 with discovery off.
+	Using HostPorts
+	// Client names the device streaming from this machine, if any.
+	Client string
 }
 
 // TailnetStatus is the local Tailscale client as LocalAPI reports it.
@@ -241,6 +410,11 @@ type PairState struct {
 	// Fingerprint is the host certificate's SHA-256, hex encoded.
 	Fingerprint string
 	Error       string
+	// Address is the host's control address, and PathKind and RTTMs the
+	// route to it as discovery found it; RTTMs 0 is not measured.
+	Address  string
+	PathKind discovery.PathKind
+	RTTMs    float64
 }
 
 // Backend is what the client UI drives. The UI reads its state on the
@@ -262,17 +436,52 @@ type Backend interface {
 	// name and its stream overrides, and its card at once. A host still
 	// announcing itself comes back, unpaired.
 	RemoveHost(id string) error
-	// Connect streams from target, a HostInfo.ID or an address typed in
-	// Quick Connect, returning once the stream runs or fails.
+	// Connect streams from target, a HostInfo.ID or what was typed in
+	// Quick Connect, returning once the stream runs or fails. Quick
+	// Connect takes an IP or host:port, a host's name or alias, a
+	// Tailscale MagicDNS name, a host certificate fingerprint, or a
+	// planck.gg/j/ share link. A host to pair with returns
+	// ErrPairingRequired; text that names no host returns ErrUnknownHost
+	// or ErrShareLink.
 	Connect(ctx context.Context, target string) error
 	Disconnect()
 	Telemetry() Telemetry
+	// SessionStats are the stream's statistics now; Live is false without
+	// one.
+	SessionStats() SessionStats
+	// LastSession is the final sample of the last stream that ended,
+	// false before one has.
+	LastSession() (SessionStats, bool)
 	RequestKeyframe()
 	// SetMicMuted mutes or unmutes this client's microphone on the host.
 	SetMicMuted(muted bool) error
 
 	Hosting() HostingState
 	SetHosting(ctx context.Context, on bool) error
+	// HostSettings are this machine's hosting settings; SetHostSettings
+	// keeps them, and restarts hosting, ending its stream, when a change
+	// needs it (anything but the name).
+	HostSettings() HostSettings
+	SetHostSettings(s HostSettings) error
+	// Displays lists this machine's displays, to capture while hosting.
+	Displays() []DisplayInfo
+	// MeasureEncoder encodes a short synthetic stream on gpu, an
+	// EncoderInfo.GPU, and returns its p50 encode time in milliseconds,
+	// which Encoders then reports. It takes about a second.
+	MeasureEncoder(ctx context.Context, gpu string) (float64, error)
+	// TestPorts checks whether this machine can host on p; the ports
+	// hosting holds now pass.
+	TestPorts(p HostPorts) PortStatus
+	// PairedClients lists the devices this machine trusts, newest first.
+	// RevokeClient forgets one by fingerprint and RevokeAllClients every
+	// one, ending a stream to it; they pair again with the PIN.
+	PairedClients() []PairedClient
+	RevokeClient(fingerprint string) error
+	RevokeAllClients() error
+	// ClientName is the name hosts pair this device under, and
+	// SetClientName keeps another; empty goes back to the machine's name.
+	ClientName() string
+	SetClientName(name string) error
 
 	Tailnet() TailnetStatus
 	Encoders() []EncoderInfo

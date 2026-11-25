@@ -35,7 +35,6 @@ const statsEvery = 250 * time.Millisecond
 // session.Host.
 type backend struct {
 	dir    string
-	name   string
 	finder *finder
 	ts     session.PathInfoer
 	// openSink makes the video sink of each stream: the window's GPU
@@ -57,19 +56,31 @@ type backend struct {
 	onCursorShape func(wire.CursorShape)
 	// onSystemKeys hears immersive mode turned on or off.
 	onSystemKeys func(on bool)
+	// measure times an encoder, and displays lists this machine's.
+	measure  func(ctx context.Context, gpu string) (session.Latency, error)
+	displays func() []defaults.HostDisplay
 
 	mu       sync.Mutex
 	onChange func()
+	// name is the name hosts pair this device under.
+	name     string
 	settings ui.Settings
-	client   *session.Client
-	target   session.Target
-	pinned   map[string]config.PinnedHost
-	tel      ui.Telemetry
-	pair     ui.PairState
-	pairTo   session.Target
-	host     *session.Host
-	hosting  ui.HostingState
-	aliases  map[string]string
+	// hostStored is host.json as this backend last read or wrote it.
+	hostStored config.HostConfig
+	// stats is the stream's last sample, from started; last is the final
+	// sample of the stream before.
+	stats   ui.SessionStats
+	started time.Time
+	last    *ui.SessionStats
+	client  *session.Client
+	target  session.Target
+	pinned  map[string]config.PinnedHost
+	tel     ui.Telemetry
+	pair    ui.PairState
+	pairTo  session.Target
+	host    *session.Host
+	hosting ui.HostingState
+	aliases map[string]string
 	// connected is the pin key of the host streaming now.
 	connected string
 	// stored are client.json's overrides: for every host, and by host ID.
@@ -102,6 +113,10 @@ type backendConfig struct {
 	onCursorShape func(wire.CursorShape)
 	// onSystemKeys hears immersive mode turned on or off, at once.
 	onSystemKeys func(on bool)
+	// measure replaces session.MeasureEncoder, and displays
+	// session.LocalDisplays.
+	measure  func(ctx context.Context, gpu string) (session.Latency, error)
+	displays func() []defaults.HostDisplay
 }
 
 func newBackend(c backendConfig) (*backend, error) {
@@ -117,14 +132,24 @@ func newBackend(c backendConfig) (*backend, error) {
 	if err != nil {
 		return nil, err
 	}
-	b := &backend{dir: dir, name: c.name, finder: c.finder, ts: c.tailscale, openSink: c.openSink, hostConfig: c.hostConfig,
+	b := &backend{dir: dir, name: cmp.Or(c.name, stored.DeviceName, config.Hostname()), finder: c.finder, ts: c.tailscale, openSink: c.openSink, hostConfig: c.hostConfig,
 		encoders: c.encoders, logf: c.logf, routeConfig: c.route, overrides: c.overrides, viewSize: c.viewSize, display: c.display, onCursor: c.onCursor, onCursorShape: c.onCursorShape, onSystemKeys: c.onSystemKeys, settings: settingsFrom(stored), pinned: stored.PinnedHosts, aliases: stored.HostAliases,
-		storedAll: stored.Overrides, storedHosts: stored.HostOverrides, layout: layoutFrom(stored.Overlay), self: map[string]bool{}}
+		storedAll: stored.Overrides, storedHosts: stored.HostOverrides, layout: layoutFrom(stored.Overlay), self: map[string]bool{},
+		measure: c.measure, displays: c.displays}
+	if b.measure == nil {
+		b.measure = func(ctx context.Context, gpu string) (session.Latency, error) {
+			return session.MeasureEncoder(ctx, nil, gpu, measureFrames)
+		}
+	}
+	if b.displays == nil {
+		b.displays = session.LocalDisplays
+	}
 	host, err := config.LoadHostConfig(dir)
 	if err != nil {
 		return nil, err
 	}
-	b.settings.HostName = host.Name
+	b.hostStored = host
+	b.settings.HostName, b.settings.Encoder = host.Name, host.Adapter
 	b.self[host.HostID] = true
 	if cert, err := tls.LoadX509KeyPair(host.CertPath, host.KeyPath); err == nil && len(cert.Certificate) > 0 {
 		b.self[config.CertFingerprint(cert.Certificate[0])] = true
@@ -267,7 +292,7 @@ func (b *backend) Hosts() []ui.HostInfo {
 			RTTMs: float64(v.Best.RTT) / 1e6, Online: v.Online, Paired: paired, TailscaleSameUser: v.SameUser,
 			Address:    v.controlAddr(v.Best),
 			LANAddress: v.controlAddr(v.LAN), TailscaleAddress: v.controlAddr(v.Tailscale),
-			LANReachable: v.LANOnline, TailscaleReachable: v.TailscaleOnline,
+			LANReachable: v.LANOnline, TailscaleReachable: v.TailscaleOnline, Fingerprint: strings.ToLower(v.Beacon.CertFingerprint),
 		}
 		if h.LANAddress == "" {
 			h.LANAddress = p.LastLANAddr
@@ -301,7 +326,7 @@ func (b *backend) Hosts() []ui.HostInfo {
 			name = strings.TrimPrefix(key, "addr:")
 		}
 		out = append(out, ui.HostInfo{ID: key, AdvertisedName: name, Paired: true, Address: p.LastAddr,
-			LANAddress: p.LastLANAddr, TailscaleAddress: p.LastTailscaleAddr})
+			LANAddress: p.LastLANAddr, TailscaleAddress: p.LastTailscaleAddr, Fingerprint: strings.ToLower(p.CertFingerprint)})
 	}
 	for i := range out {
 		h := &out[i]
@@ -480,12 +505,24 @@ func (b *backend) resolveTarget(ctx context.Context, id string) (session.Target,
 	return t, cmp.Or(alias, name)
 }
 
-func (b *backend) Connect(ctx context.Context, id string) error {
+func (b *backend) Connect(ctx context.Context, target string) error {
+	id, err := b.quickConnect(target)
+	if err != nil {
+		return err
+	}
 	t, name := b.resolveTarget(ctx, id)
-	err := b.dial(ctx, t, "")
+	err = b.dial(ctx, t, "")
 	if errors.Is(err, transport.ErrAuthDenied) {
+		var denied *session.HostDeniedError
+		if errors.As(err, &denied) && t.Fingerprint == "" {
+			// The PIN then pairs only with the certificate the user checked.
+			t.Fingerprint = denied.Fingerprint
+		}
 		b.mu.Lock()
-		b.pair = ui.PairState{Status: ui.PairPending, HostName: name, Fingerprint: t.Fingerprint, TailscaleSameUser: b.sameUser(t)}
+		b.pair = ui.PairState{Status: ui.PairPending, HostName: name, Fingerprint: t.Fingerprint, TailscaleSameUser: b.sameUser(t), Address: t.Addr}
+		if v, ok := b.finder.lookup(t.HostID); ok {
+			b.pair.Address, b.pair.PathKind, b.pair.RTTMs = v.controlAddr(v.Best), v.Best.Kind, float64(v.Best.RTT)/1e6
+		}
 		b.pairTo = t
 		b.mu.Unlock()
 		b.changed()
@@ -507,14 +544,17 @@ func (b *backend) sameUser(t session.Target) bool {
 // until it ends.
 func (b *backend) dial(ctx context.Context, t session.Target, pin string) error {
 	b.mu.Lock()
-	s := b.settings
+	s, name := b.settings, b.name
 	old := b.client
 	b.client = nil
+	if old != nil {
+		b.endSessionLocked()
+	}
 	b.mu.Unlock()
 	if old != nil {
 		old.Close()
 	}
-	err := b.dialNew(ctx, t, pin, s)
+	err := b.dialNew(ctx, t, pin, s, name)
 	if err != nil && old != nil {
 		// The stream this one replaced is gone; its telemetry must go too.
 		b.mu.Lock()
@@ -527,14 +567,14 @@ func (b *backend) dial(ctx context.Context, t session.Target, pin string) error 
 	return err
 }
 
-func (b *backend) dialNew(ctx context.Context, t session.Target, pin string, s ui.Settings) error {
+func (b *backend) dialNew(ctx context.Context, t session.Target, pin string, s ui.Settings, name string) error {
 	ov := b.overridesFor(targetKey(t))
 	routes, err := routeAllowed(t, ov.RoutePolicy)
 	if err != nil {
 		return err
 	}
 	c, err := session.NewClient(session.ClientConfig{
-		ConfigDir: b.dir, Name: b.name, PIN: pin, NoAudio: !s.AudioEnabled, Quality: legacyQuality(ov), Overrides: ov,
+		ConfigDir: b.dir, Name: name, PIN: pin, NoAudio: !s.AudioEnabled, Quality: legacyQuality(ov), Overrides: ov,
 		OpenSink: b.openSink, Tailscale: b.ts, Logf: b.logf, Route: b.route(ov), ViewSize: b.viewSize, Clipboard: clipboardOf(s),
 		OnCursor: b.onCursor, OnCursorShape: b.onCursorShape, Capabilities: b.capabilities,
 	})
@@ -559,6 +599,8 @@ func (b *backend) dialNew(ctx context.Context, t session.Target, pin string, s u
 	b.client, b.target = c, t
 	b.connected = hostKey(st)
 	b.tel = telemetry(st)
+	b.started = time.Now()
+	b.stats = sessionStats(st, b.started)
 	b.mu.Unlock()
 	b.changed()
 	if b.viewSize != nil {
@@ -670,7 +712,11 @@ func (b *backend) follow(c *session.Client) {
 				b.mu.Unlock()
 				return
 			}
-			b.tel = telemetry(c.Stats())
+			st := c.Stats()
+			b.tel = telemetry(st)
+			if st.Connected {
+				b.stats = sessionStats(st, b.started)
+			}
 			b.mu.Unlock()
 			b.changed()
 		}
@@ -678,6 +724,7 @@ func (b *backend) follow(c *session.Client) {
 	b.mu.Lock()
 	if b.client == c {
 		b.client, b.tel, b.connected = nil, ui.Telemetry{}, ""
+		b.endSessionLocked()
 	}
 	b.mu.Unlock()
 	b.changed()
@@ -719,6 +766,7 @@ func (b *backend) Disconnect() {
 	b.mu.Lock()
 	c := b.client
 	b.client, b.tel, b.connected = nil, ui.Telemetry{}, ""
+	b.endSessionLocked()
 	b.mu.Unlock()
 	if c != nil {
 		go c.Close()
@@ -800,26 +848,32 @@ func (b *backend) SendInput(ev input.Event) {
 	}
 }
 
+// Hosting reads the PIN, which rotates, and the client live.
 func (b *backend) Hosting() ui.HostingState {
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.hosting
+	st, h := b.hosting, b.host
+	b.mu.Unlock()
+	if h != nil {
+		st.PIN = h.PIN()
+		if fp := h.ConnectedClient(); fp != "" {
+			st.Client = h.PairedClients()[fp].Name
+		}
+	}
+	return st
 }
 
 func (b *backend) SetHosting(ctx context.Context, on bool) error {
 	b.mu.Lock()
 	h, s := b.host, b.settings
+	state := ui.HostingState{Encoder: encoderLabel(s.Encoder, b.encoders)}
 	b.host = nil
 	b.mu.Unlock()
 	if h != nil {
 		h.Stop()
 	}
-	state := ui.HostingState{Encoder: encoderLabel(s.Encoder, b.encoders)}
 	var err error
 	if on {
-		cfg := b.hostConfig(s)
-		cfg.Clipboard = clipboardOf(s)
-		h, err = session.NewHost(cfg)
+		h, err = session.NewHost(b.hostConfig(s))
 		if err == nil {
 			err = h.Start(context.Background())
 		}
@@ -827,7 +881,7 @@ func (b *backend) SetHosting(ctx context.Context, on bool) error {
 			state.Err = hostingError(err)
 			h = nil
 		} else {
-			state.On = true
+			state.On, state.Fingerprint, state.Using = true, h.Fingerprint(), hostPorts(h)
 			b.logf("planck: hosting as %q on %v; pairing PIN %s, fingerprint %s", h.Name(), h.Addr(), h.PIN(), h.Fingerprint())
 		}
 	}
@@ -839,6 +893,18 @@ func (b *backend) SetHosting(ctx context.Context, on bool) error {
 	b.mu.Unlock()
 	b.changed()
 	return err
+}
+
+// hostPorts are the ports h holds.
+func hostPorts(h *session.Host) ui.HostPorts {
+	p := ui.HostPorts{Media: h.MediaPort()}
+	if a, ok := h.Addr().(*net.UDPAddr); ok {
+		p.Control = a.Port
+	}
+	if a, ok := h.DiscoveryAddr().(*net.UDPAddr); ok {
+		p.Discovery = a.Port
+	}
+	return p
 }
 
 // hostingError is what the hosting card says of a failure to host.
@@ -884,7 +950,11 @@ func (b *backend) Tailnet() ui.TailnetStatus {
 	return ui.TailnetStatus{Running: true, User: st.Self.UserLogin}
 }
 
-func (b *backend) Encoders() []ui.EncoderInfo { return slices.Clone(b.encoders) }
+func (b *backend) Encoders() []ui.EncoderInfo {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return slices.Clone(b.encoders)
+}
 
 func (b *backend) Settings() ui.Settings {
 	b.mu.Lock()
@@ -903,6 +973,21 @@ func (b *backend) SaveSettings(s ui.Settings) error {
 	if s.HostName != before.HostName {
 		if err := b.renameLocalHost(h, s.HostName); err != nil {
 			return err
+		}
+	}
+	if s.Encoder != before.Encoder {
+		if err := config.UpdateHostConfig(b.dir, func(c *config.HostConfig) error {
+			c.Adapter = s.Encoder
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+	if s.HostName != before.HostName || s.Encoder != before.Encoder {
+		if stored, err := config.LoadHostConfig(b.dir); err == nil {
+			b.mu.Lock()
+			b.hostStored = stored
+			b.mu.Unlock()
 		}
 	}
 	err := config.UpdateClientConfig(b.dir, func(stored *config.ClientConfig) error {
@@ -928,15 +1013,10 @@ func (b *backend) SaveSettings(s ui.Settings) error {
 	b.mu.Lock()
 	before = b.settings
 	b.settings = s
-	c, h := b.client, b.host
+	c := b.client
 	b.mu.Unlock()
-	if clipboardOf(before) != clipboardOf(s) {
-		if c != nil {
-			c.SetClipboard(clipboardOf(s))
-		}
-		if h != nil {
-			h.SetClipboard(clipboardOf(s))
-		}
+	if clipboardOf(before) != clipboardOf(s) && c != nil {
+		c.SetClipboard(clipboardOf(s))
 	}
 	if before.SystemKeysCapture != s.SystemKeysCapture && b.onSystemKeys != nil {
 		b.onSystemKeys(s.SystemKeysCapture)

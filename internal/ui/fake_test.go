@@ -48,6 +48,14 @@ type fakeBackend struct {
 	ovErr         error
 	layout        OverlayLayout
 	layoutSaves   int
+	stats         SessionStats
+	last          *SessionStats
+	hostSettings  HostSettings
+	displays      []DisplayInfo
+	ports         PortStatus
+	paired        []PairedClient
+	revokes       []string
+	clientName    string
 }
 
 func newFake() *fakeBackend {
@@ -175,6 +183,65 @@ func (f *fakeBackend) TrustTailscalePeer(ctx context.Context) error {
 	defer f.lock()()
 	f.trusts++
 	f.pair.Status = PairPaired
+	return nil
+}
+
+func (f *fakeBackend) SessionStats() SessionStats { defer f.lock()(); return f.stats }
+
+func (f *fakeBackend) LastSession() (SessionStats, bool) {
+	defer f.lock()()
+	if f.last == nil {
+		return SessionStats{}, false
+	}
+	return *f.last, true
+}
+
+func (f *fakeBackend) HostSettings() HostSettings { defer f.lock()(); return f.hostSettings }
+
+func (f *fakeBackend) SetHostSettings(s HostSettings) error {
+	defer f.lock()()
+	f.hostSettings = s
+	return nil
+}
+
+func (f *fakeBackend) Displays() []DisplayInfo { defer f.lock()(); return f.displays }
+
+func (f *fakeBackend) MeasureEncoder(ctx context.Context, gpu string) (float64, error) {
+	defer f.lock()()
+	for _, e := range f.encoders {
+		if e.GPU == gpu {
+			return e.EncodeMs, nil
+		}
+	}
+	return 0, errors.New("no such encoder")
+}
+
+func (f *fakeBackend) TestPorts(HostPorts) PortStatus { defer f.lock()(); return f.ports }
+
+func (f *fakeBackend) PairedClients() []PairedClient {
+	defer f.lock()()
+	return append([]PairedClient(nil), f.paired...)
+}
+
+func (f *fakeBackend) RevokeClient(fp string) error {
+	defer f.lock()()
+	f.revokes = append(f.revokes, fp)
+	f.paired = slices.DeleteFunc(f.paired, func(c PairedClient) bool { return c.Fingerprint == fp })
+	return nil
+}
+
+func (f *fakeBackend) RevokeAllClients() error {
+	defer f.lock()()
+	f.revokes = append(f.revokes, "*")
+	f.paired = nil
+	return nil
+}
+
+func (f *fakeBackend) ClientName() string { defer f.lock()(); return f.clientName }
+
+func (f *fakeBackend) SetClientName(name string) error {
+	defer f.lock()()
+	f.clientName = name
 	return nil
 }
 

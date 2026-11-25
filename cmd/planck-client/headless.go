@@ -192,7 +192,7 @@ func headless(ctx context.Context, o options, d headlessDeps) (Summary, error) {
 	var sinkMu sync.Mutex
 	var sink *countingSink
 	cfg := session.ClientConfig{
-		ConfigDir: o.configDir, Name: o.name, PIN: o.pin, NoAudio: o.noAudio, Tailscale: ts, Logf: logf,
+		ConfigDir: o.configDir, Name: deviceName(o.configDir, o.name), PIN: o.pin, NoAudio: o.noAudio, Tailscale: ts, Logf: logf,
 		HandshakeTimeout: o.timeout,
 		Quality:          session.Quality{Codec: o.codec, Chroma: o.chroma, FPS: o.fps, BitrateKbps: o.bitrateKbps, Slices: o.slices},
 		Overrides:        o.overrides,

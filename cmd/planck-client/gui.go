@@ -39,13 +39,8 @@ func runGUI(o options) error {
 	defer sys.streamEnded()
 	b, err := newBackend(backendConfig{
 		dir: o.configDir, name: o.name, finder: f, tailscale: ts, openSink: video.open,
-		hostConfig: func(s ui.Settings) session.HostConfig {
-			c := session.DefaultHostConfig()
-			c.ConfigDir, c.Adapter, c.InjectInput, c.Logf = o.configDir, s.Encoder, true, logf
-			c.DiscoveryAddr = fmt.Sprintf(":%d", o.discoveryPort)
-			return c
-		},
-		encoders: localEncoders(), logf: logf, overrides: o.overrides, viewSize: video.liveSize, display: video.display, onCursor: ptr.setHost, onCursorShape: ptr.setShape,
+		hostConfig: appHostConfig(o.configDir, logf),
+		encoders:   localEncoders(), logf: logf, overrides: o.overrides, viewSize: video.liveSize, display: video.display, onCursor: ptr.setHost, onCursorShape: ptr.setShape,
 		onSystemKeys: sys.setEnabled,
 	})
 	if err != nil {
