@@ -154,7 +154,7 @@ func (b *backend) SetHostSettings(s ui.HostSettings) error {
 	return nil
 }
 
-func (b *backend) VirtualAudio() ui.VirtualAudioStatus {
+func (b *backend) loadVirtualAudio() ui.VirtualAudioStatus {
 	st, err := audio.VirtualAudio()
 	if err != nil {
 		b.logf("planck: virtual audio: %v", err)
@@ -162,7 +162,7 @@ func (b *backend) VirtualAudio() ui.VirtualAudioStatus {
 	return st
 }
 
-func (b *backend) Displays() []ui.DisplayInfo {
+func (b *backend) loadDisplays() []ui.DisplayInfo {
 	var out []ui.DisplayInfo
 	for _, d := range b.displays() {
 		out = append(out, ui.DisplayInfo{ID: d.ID, Width: d.Width, Height: d.Height, RefreshHz: d.RefreshHz, Primary: d.Primary})
@@ -235,10 +235,7 @@ func (b *backend) PairedClients() []ui.PairedClient {
 	if h != nil {
 		all, connected = h.PairedClients(), h.ConnectedClient()
 	} else {
-		var err error
-		if all, err = session.LoadPairedClients(b.dir); err != nil {
-			b.logf("planck: paired clients: %v", err)
-		}
+		all = b.caches.paired.load(b.dir, b.logf)
 	}
 	out := make([]ui.PairedClient, 0, len(all))
 	for fp, c := range all {
@@ -268,6 +265,7 @@ func (b *backend) revoke(fps []string) error {
 	default:
 		err = session.RevokePairedClients(b.dir, fps)
 	}
+	b.caches.paired.invalidate()
 	if errors.Is(err, session.ErrNotPaired) {
 		return errors.New("that device is not paired")
 	}

@@ -217,7 +217,7 @@ func (b *backend) KickClient() error {
 	return nil
 }
 
-func (b *backend) AudioDevices() ui.AudioDevices {
+func (b *backend) loadAudioDevices() ui.AudioDevices {
 	conv := func(list func() ([]audio.Device, error)) []ui.AudioDevice {
 		devs, err := list()
 		if err != nil {
@@ -233,8 +233,8 @@ func (b *backend) AudioDevices() ui.AudioDevices {
 	return ui.AudioDevices{Outputs: conv(b.audioOutputs), Inputs: conv(b.audioInputs)}
 }
 
-// RunningApps names each running app once, sorted.
-func (b *backend) RunningApps() []string {
+// loadRunningApps names each running app once, sorted.
+func (b *backend) loadRunningApps() []string {
 	apps, err := b.runningApps()
 	if err != nil {
 		b.logf("planck: running apps: %v", err)
@@ -249,8 +249,6 @@ func (b *backend) RunningApps() []string {
 	slices.SortFunc(names, func(x, y string) int { return strings.Compare(strings.ToLower(x), strings.ToLower(y)) })
 	return names
 }
-
-func (b *backend) PrivacyModeProblem() string { return session.PrivacyModeProblem() }
 
 // swapInput trades Cmd and Ctrl in ev when the user asked and the host's
 // OS differs from this one's on them.

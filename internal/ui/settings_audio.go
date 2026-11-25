@@ -46,7 +46,7 @@ func deviceChoices(devs []AudioDevice, cur, first, gone string) (values, labels 
 }
 
 func (a *App) outputDeviceRow(c *mui.Context, f *settingsFrame) {
-	values, labels := deviceChoices(a.backend.AudioDevices().Outputs, f.s.OutputDevice, "System default", "Unplugged, plays on the default")
+	values, labels := deviceChoices(f.audioDevices(a).Outputs, f.s.OutputDevice, "System default", "Unplugged, plays on the default")
 	f.laneRow(c, "Output device", 124, func() {
 		dropdown(c, "Output device", &f.s.OutputDevice, values, labels, 0)
 	})
@@ -54,7 +54,7 @@ func (a *App) outputDeviceRow(c *mui.Context, f *settingsFrame) {
 }
 
 func (a *App) micDeviceRow(c *mui.Context, f *settingsFrame) {
-	values, labels := deviceChoices(a.backend.AudioDevices().Inputs, f.s.MicDevice, "System default", "Unplugged, records from the default")
+	values, labels := deviceChoices(f.audioDevices(a).Inputs, f.s.MicDevice, "System default", "Unplugged, records from the default")
 	f.laneRow(c, "Microphone device", 124, func() {
 		dropdown(c, "Microphone device", &f.s.MicDevice, values, labels, 0)
 	})
@@ -73,7 +73,7 @@ func (a *App) hostCaptureRow(c *mui.Context, f *settingsFrame) {
 		})
 		return
 	}
-	values, labels := deviceChoices(a.backend.AudioDevices().Outputs, f.hs.AudioDevice, "Everything this PC plays", "Unplugged, streams everything")
+	values, labels := deviceChoices(f.audioDevices(a).Outputs, f.hs.AudioDevice, "Everything this PC plays", "Unplugged, streams everything")
 	f.laneRow(c, "Capture device", 124, func() {
 		dropdown(c, "Capture device", &f.hs.AudioDevice, values, labels, 0)
 	})
@@ -82,7 +82,7 @@ func (a *App) hostCaptureRow(c *mui.Context, f *settingsFrame) {
 // virtualMicRow picks where a client's microphone plays on this machine.
 func (a *App) virtualMicRow(c *mui.Context, f *settingsFrame) {
 	values, labels := []string{""}, []string{"Auto (find a virtual mic)"}
-	for _, d := range a.backend.AudioDevices().Outputs {
+	for _, d := range f.audioDevices(a).Outputs {
 		values = append(values, d.ID)
 		labels = append(labels, d.Name)
 	}

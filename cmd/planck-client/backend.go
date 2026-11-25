@@ -65,6 +65,7 @@ type backend struct {
 	// devices and processes.
 	audioOutputs, audioInputs func() ([]audio.Device, error)
 	runningApps               func() ([]audio.App, error)
+	caches                    probeCaches
 	// onKeys hears the hotkeys and the never-send list change; heldMods is
 	// what modifiers the host holds for this device, as HID bits. The GUI
 	// sets both before the first stream.
@@ -181,6 +182,7 @@ func newBackend(c backendConfig) (*backend, error) {
 	if b.displays == nil {
 		b.displays = session.LocalDisplays
 	}
+	b.initCaches()
 	host, err := config.LoadHostConfig(dir)
 	if err != nil {
 		return nil, err
@@ -916,6 +918,7 @@ func (b *backend) SetHosting(ctx context.Context, on bool) error {
 	if h != nil {
 		h.Stop()
 	}
+	b.caches.paired.invalidate()
 	var err error
 	if on {
 		h, err = session.NewHost(b.hostConfig(s))

@@ -73,6 +73,16 @@ type settingsFrame struct {
 	stats                  SessionStats
 	searching              bool
 	firstHit, firstHitDone bool
+	// devices is the backend's AudioDevices, asked once a frame.
+	devices *AudioDevices
+}
+
+func (f *settingsFrame) audioDevices(a *App) AudioDevices {
+	if f.devices == nil {
+		d := a.backend.AudioDevices()
+		f.devices = &d
+	}
+	return *f.devices
 }
 
 // settingEntry is one searchable setting: its words and how it draws.
