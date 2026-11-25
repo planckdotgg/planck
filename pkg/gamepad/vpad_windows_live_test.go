@@ -45,32 +45,32 @@ func TestLiveVirtualPadLoopback(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	slot := -1
-	for deadline := time.Now().Add(5 * time.Second); slot < 0 && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+	// Other software can add XInput devices of its own as a pad appears
+	// (Steam Input mirrors the controllers it sees), so look for the new
+	// slot that reads what was sent.
+	slot, others := -1, map[int]State{}
+	for deadline := time.Now().Add(5 * time.Second); slot < 0 && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
 		for _, s := range slotsNow() {
-			if !slices.Contains(before, s) {
+			if slices.Contains(before, s) {
+				continue
+			}
+			var raw RawState
+			if capture.Read(s, &raw) != nil {
+				continue
+			}
+			m := capture.DefaultMapping(s)
+			if got := m.Apply(&raw); got == want {
 				slot = s
+			} else {
+				others[s] = got
 			}
 		}
 	}
 	if slot < 0 {
-		t.Fatalf("no new XInput controller after plugging in (before %v)", before)
+		t.Fatalf("no new XInput controller reads %+v (before %v, other new slots %v)", want, before, others)
 	}
-	m := capture.DefaultMapping(slot)
-	var got State
-	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-		var raw RawState
-		if err := capture.Read(slot, &raw); err != nil {
-			t.Fatal(err)
-		}
-		if got = m.Apply(&raw); got == want {
-			break
-		}
-	}
-	if got != want {
-		t.Fatalf("XInput slot %d reads %+v, want %+v", slot, got, want)
-	}
-	t.Logf("virtual Xbox 360 pad is XInput slot %d: %+v", slot, got)
+	delete(others, slot)
+	t.Logf("virtual Xbox 360 pad is XInput slot %d; other new slots %v", slot, others)
 
 	if err := capture.Rumble(slot, 200, 90); err != nil {
 		t.Fatal(err)
