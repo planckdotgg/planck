@@ -51,7 +51,7 @@ func pageHeader(c *mui.Context, title, sub string, trailing func()) {
 		mui.Column(c).Gap(pageHeaderGap).Grow(1).Children(func() {
 			heading(c, title, theme.TextReadout).FixedLineHeight(pageTitleLine)
 			if sub != "" {
-				secondary(c, sub).FixedLineHeight(pageSubLine)
+				secondary(c, sub).SingleLine().FixedLineHeight(pageSubLine)
 			}
 		})
 		if trailing != nil {

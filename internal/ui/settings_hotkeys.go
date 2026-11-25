@@ -10,7 +10,7 @@ import (
 )
 
 func (a *App) inputPage(c *mui.Context, f *settingsFrame) {
-	settingsHeader(c, "Input & Hotkeys", "Planck keeps its chords on "+a.chordWord()+" so "+a.hostKeysWord()+" keys reach the host. Every chord below is yours to change.", nil)
+	settingsHeader(c, "Input & Hotkeys", "Chords stay on "+a.chordWord()+" so "+a.hostKeysWord()+" keys reach the host. All are yours to change.", nil)
 	columns(c, 568, 320, func() {
 		setPanel(c, "Hotkeys", func() { a.resetAllLink(c) }, func() { a.entries(c, f, "input.hotkeys") })
 	}, func() {

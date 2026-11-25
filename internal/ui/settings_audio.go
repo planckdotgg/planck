@@ -10,7 +10,7 @@ import (
 )
 
 func (a *App) audioPage(c *mui.Context, f *settingsFrame) {
-	settingsHeader(c, "Audio", "What this "+machineWord(a.goos)+" plays from a host, its microphone, and the sound it sends while hosting.", nil)
+	settingsHeader(c, "Audio", "What this "+machineWord(a.goos)+" plays, its microphone, and the sound it sends.", nil)
 	columns(c, 1, 1, func() {
 		setPanel(c, "Stream audio", nil, func() { a.entries(c, f, "audio.stream", "audio.volume", "audio.mute", "audio.output") })
 		setPanel(c, "Microphone", nil, func() { a.entries(c, f, "audio.mic", "audio.micDevice") })

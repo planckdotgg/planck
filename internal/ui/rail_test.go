@@ -2,10 +2,12 @@ package ui
 
 import (
 	"image"
+	"strings"
 	"testing"
 	"time"
 
 	mui "github.com/egoist/mygo/ui"
+	"github.com/planckdotgg/planck/internal/ui/theme"
 )
 
 // TestHostingTooltipShowsOnce: the hosting button's status card is its
@@ -176,5 +178,64 @@ func TestRailHostsAlignsWithFirstRow(t *testing.T) {
 	}
 	if ic, bc := in.Y+in.H/2, btn.Y+btn.H/2; ic != bc {
 		t.Errorf("quick-connect row centre %.1f, Hosts button centre %.1f", ic, bc)
+	}
+}
+
+// TestSettingsHeaderStaysOneLineAtMinimumWindow: at the 960x600 minimum
+// every Settings category keeps its one-line header (24..76, centre 50),
+// so the rail logo stays centred, and its first panel and the sidebar's
+// search field both start at 100, centred on the Hosts button.
+func TestSettingsHeaderStaysOneLineAtMinimumWindow(t *testing.T) {
+	for _, goos := range []string{"windows", "darwin"} {
+		for cat := settingsCategory(0); cat < numCategories; cat++ {
+			name := goos + "-" + categoryNames[cat]
+			f := newFake()
+			if err := theme.RegisterFonts(); err != nil {
+				t.Fatal(err)
+			}
+			a := NewApp(f)
+			a.goos = goos
+			tt := mui.NewTester(a.View, 960, 600)
+			a.screen, a.set.cat = ScreenSettings, cat
+			a.Notify()
+			tt.Frame()
+			snapshot(t, tt, "minimum-"+goos+"-"+strings.NewReplacer(" ", "", "&", "").Replace(categoryNames[cat]))
+
+			var sub string
+			for _, s := range tt.Texts() {
+				if sub == "" && strings.HasSuffix(s, ".") && (strings.HasPrefix(s, "This ") || strings.HasPrefix(s, "How ") || strings.HasPrefix(s, "What ") || strings.HasPrefix(s, "Controllers ") || strings.HasPrefix(s, "Chords ")) {
+					sub = s
+				}
+			}
+			r, ok := tt.Find(sub)
+			if !ok || sub == "" {
+				t.Fatalf("%s: no subtitle found", name)
+			}
+			if r.H < pageSubLine || r.H > pageSubLine+1 || r.Y+r.H < pagePadTop+pageHeaderH || r.Y+r.H > pagePadTop+pageHeaderH+1 {
+				t.Errorf("%s: subtitle %.2f..%.2f (wrapped or moved), want bottom %d, height %d", name, r.Y, r.Y+r.H, pagePadTop+pageHeaderH, pageSubLine)
+			}
+			img := tt.Image()
+			pg := img.RGBAAt(int(r.X)-8, 2)
+			bg := [4]uint8{pg.R, pg.G, pg.B, pg.A}
+			y0 := int(r.Y+r.H) + 1
+			row := firstInk(img, int(r.X)+10, y0, bg)
+			sb := img.RGBAAt(144, y0)
+			side := firstInk(img, 144, y0, [4]uint8{sb.R, sb.G, sb.B, sb.A})
+			if row != pageRowTop || side != pageRowTop {
+				t.Errorf("%s: first panel top %d, search field top %d, want %d", name, row, side, pageRowTop)
+			}
+			btn, _ := tt.Find("Hosts")
+			if bc := float64(btn.Y + btn.H/2); bc != float64(pageRowTop+pageFirstRowH/2) {
+				t.Errorf("%s: Hosts button centre %.1f, want %d", name, bc, pageRowTop+pageFirstRowH/2)
+			}
+			rl := img.RGBAAt(4, 2)
+			top, bot, ok := inkSpan(img, image.Rect(20, 0, 68, 90), [4]uint8{rl.R, rl.G, rl.B, rl.A})
+			if !ok {
+				t.Fatalf("%s: no logo ink", name)
+			}
+			if d := float64(top+bot)/2 - float64(pagePadTop+pageHeaderH/2); d > 1 || d < -1 {
+				t.Errorf("%s: logo centre off the header centre by %.1f", name, d)
+			}
+		}
 	}
 }

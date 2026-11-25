@@ -318,7 +318,7 @@ func settingsHeader(c *mui.Context, title, sub string, trailing func()) {
 	mui.Row(c).FillWidth().AlignItems(mui.End).Gap(theme.Space4).Margin(0, 0, pageRowGap-18).Children(func() {
 		mui.Column(c).Grow(1).Shrink(1).Gap(pageHeaderGap).Children(func() {
 			heading(c, title, theme.TextReadout).FixedLineHeight(pageTitleLine)
-			secondary(c, sub).FixedLineHeight(pageSubLine)
+			secondary(c, sub).SingleLine().FixedLineHeight(pageSubLine)
 		})
 		if trailing != nil {
 			trailing()

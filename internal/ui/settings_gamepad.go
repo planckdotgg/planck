@@ -23,7 +23,7 @@ type gamepadEdit struct {
 }
 
 func (a *App) gamepadPage(c *mui.Context, f *settingsFrame) {
-	settingsHeader(c, "Gamepad", "Controllers on this "+machineWord(a.goos)+", and what clients’ controllers become while it hosts.", nil)
+	settingsHeader(c, "Gamepad", "Controllers on this "+machineWord(a.goos)+", and what clients’ controllers become.", nil)
 	columns(c, 1, 1, func() {
 		setPanel(c, "Connected controllers", nil, func() {
 			if len(f.gamepads(a)) == 0 {

@@ -15,7 +15,7 @@ import (
 var resolutionLabels = []string{"Auto", "1920×1080", "2560×1440", "3840×2160", "Custom…"}
 
 func (a *App) videoPage(c *mui.Context, f *settingsFrame) {
-	settingsHeader(c, "Video & Display", "What this "+machineWord(a.goos)+" asks a remote host for. Where the host’s policy disagrees, the host wins and says so.", nil)
+	settingsHeader(c, "Video & Display", "What this "+machineWord(a.goos)+" asks a remote host for. The host’s policy wins.", nil)
 	a.scopeBar(c, f.e)
 	e := f.e
 	columns(c, 1, 1, func() {

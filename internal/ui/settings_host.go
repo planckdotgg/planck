@@ -14,7 +14,7 @@ import (
 )
 
 func (a *App) hostPage(c *mui.Context, f *settingsFrame) {
-	settingsHeader(c, "Host", "This "+machineWord(a.goos)+", when other devices connect to it. Nothing here changes what you ask of remote hosts.", func() {
+	settingsHeader(c, "Host", "This "+machineWord(a.goos)+", when other devices connect to it.", func() {
 		a.hostingCapsule(c, f)
 	})
 	columns(c, 1, 1, func() {
