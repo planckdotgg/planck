@@ -131,6 +131,7 @@ func runGUI(o options) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go f.run(ctx)
+	mygo.App.SetName("Planck")
 	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { streams.quitting = true })
 	mygo.App.OnQuitCanceled(func() { streams.quitting = false })
 	mygo.App.WhenReady(func() {
