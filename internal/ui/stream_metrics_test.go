@@ -31,7 +31,7 @@ func TestMetricsOpensTopRightCompactKeepsCorner(t *testing.T) {
 	snapshot(t, tt, "metrics-expanded")
 	click(t, tt, "Compact metrics")
 	if c := bounds(t, tt, "Metrics"); c.X+c.W != m.X+m.W || c.Y != m.Y || c.W != compactW || c.H != compactH {
-		t.Fatalf("compact at %+v, want 196 x 36 with its top-right corner at %v, %v", c, m.X+m.W, m.Y)
+		t.Fatalf("compact at %+v, want compactW x compactH with its top-right corner at %v, %v", c, m.X+m.W, m.Y)
 	}
 	snapshot(t, tt, "metrics-compact")
 	click(t, tt, "Expand metrics")
@@ -200,5 +200,48 @@ func TestSparklineAllocatesNothing(t *testing.T) {
 	w.sparkPath(r, 0)
 	if n := testing.AllocsPerRun(100, func() { w.sparkPath(r, 0) }); n != 0 {
 		t.Fatalf("sparkline allocates %.1f times a draw", n)
+	}
+}
+
+// TestMetricsCompactFitsEveryPath: in the compact bar, every figure and
+// label sits inside the window, in order and clear of its neighbours, for
+// each path and for the widest readings; the expand button works on each.
+func TestMetricsCompactFitsEveryPath(t *testing.T) {
+	paths := []discovery.PathKind{discovery.PathLANDirect, discovery.PathTailscaleDirect, discovery.PathTailscaleDERP, discovery.PathKind(99)}
+	for _, k := range paths {
+		f := streamFake()
+		f.tel.PathKind, f.tel.TotalMs, f.tel.FPS = k, 124.5, 240
+		_, tt, _ := newStreamTester(t, f)
+		showMetrics(t, tt)
+		click(t, tt, "Compact metrics")
+		win := bounds(t, tt, "Metrics")
+		if win.W != compactW || win.H != compactH {
+			t.Fatalf("path %v: compact window %+v, want %v x %v", k, win, compactW, compactH)
+		}
+		route := pathShort(k)
+		names := []string{"124.5", "ms", "240", "fps", route, "Expand metrics"}
+		var prev mui.Rect
+		for i, n := range names {
+			r, ok := tt.Find(n)
+			if !ok {
+				t.Fatalf("path %v: no %q in %q", k, n, tt.Texts())
+			}
+			t.Logf("path %v %-14q x=%.1f..%.1f y=%.1f h=%.1f (window %.1f..%.1f)", k, n, r.X, r.X+r.W, r.Y, r.H, win.X, win.X+win.W)
+			if r.X < win.X || r.X+r.W > win.X+win.W || r.Y < win.Y || r.Y+r.H > win.Y+win.H {
+				t.Errorf("path %v: %q at %+v leaves the window %+v", k, n, r, win)
+			}
+			if i > 0 && r.X < prev.X+prev.W {
+				t.Errorf("path %v: %q at %+v overlaps the one before at %+v", k, n, r, prev)
+			}
+			prev = r
+		}
+		x, _ := tt.Find("Expand metrics")
+		if win.X+win.W-(x.X+x.W) < 6 {
+			t.Errorf("path %v: expand button %.1f px from the right edge", k, win.X+win.W-(x.X+x.W))
+		}
+		click(t, tt, "Expand metrics")
+		if e := bounds(t, tt, "Metrics"); e.W != metricsW || e.H != metricsH {
+			t.Errorf("path %v: expand left the window at %+v", k, e)
+		}
 	}
 }

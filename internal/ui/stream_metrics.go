@@ -12,7 +12,7 @@ import (
 
 const (
 	metricsW, metricsH = 300, 361
-	compactW, compactH = 196, 36
+	compactW, compactH = 258, 36
 	// metricsInset holds the window inside the view; it stays
 	// metricsKeepOut from the edge the button is docked to.
 	metricsInset   = 12
