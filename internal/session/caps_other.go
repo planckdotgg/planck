@@ -19,5 +19,6 @@ func (*vddManager) close() error { return nil }
 
 const (
 	clientPresent10Bit  = false
+	clientPresentHDR10  = false
 	clientDirectDisplay = false
 )

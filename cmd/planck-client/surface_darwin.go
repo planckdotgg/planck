@@ -24,9 +24,10 @@ type surfaceHost struct {
 	scale float64
 }
 
-// newSurfaceHost runs on the main thread.
-func newSurfaceHost(w *mygo.Window) (*surfaceHost, error) {
-	surf, err := gpusurface.New(gpusurface.Options{Window: w.NativeHandle(), Composite: true})
+// newSurfaceHost runs on the main thread. An hdr10 surface presents the
+// stream's BT.2020 PQ pictures as HDR.
+func newSurfaceHost(w *mygo.Window, hdr10 bool) (*surfaceHost, error) {
+	surf, err := gpusurface.New(gpusurface.Options{Window: w.NativeHandle(), Composite: true, HDR10: hdr10})
 	if err != nil {
 		return nil, err
 	}

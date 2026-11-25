@@ -52,6 +52,9 @@ type Config struct {
 	// depth, and the transport shard size its chunks are framed in.
 	Chroma   encode.Chroma
 	ChunkLen int
+	// HDR10 says the pictures are BT.2020 PQ, for the sink that shows
+	// them; decoders ignore it.
+	HDR10 bool
 }
 
 // Decoder turns access units into GPU pictures.

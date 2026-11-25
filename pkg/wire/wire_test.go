@@ -39,6 +39,7 @@ func allMessages() []Message {
 		&CursorState{Visible: true, Captured: true, HasPos: true, X: 32768, Y: 65535},
 		&Stream{Epoch: 3, Profile: []byte(`{"route":1,"codec":2,"width":5120,"height":1440}`)},
 		&CursorShape{ID: 0x0123456789abcdef, Width: 2, Height: 1, HotX: 1, DPI: 144, RGBA: []byte{0, 0, 0, 255, 255, 255, 255, 128}},
+		&SwitchDisplay{DisplayID: `\\.\DISPLAY2`},
 	}
 }
 
@@ -376,5 +377,18 @@ func TestResizeDisplay(t *testing.T) {
 	}
 	if all&FeatureResizeDisplay != 0 {
 		t.Errorf("FeatureResizeDisplay %#x shares a bit", FeatureResizeDisplay)
+	}
+}
+
+// TestSwitchDisplayNeedsAnID: an empty display ID is no request.
+func TestSwitchDisplayNeedsAnID(t *testing.T) {
+	if _, err := DecodeMessage([]byte{byte(MsgSwitchDisplay), 0, 0}); !errors.Is(err, ErrMalformed) {
+		t.Errorf("empty ID: %v, want ErrMalformed", err)
+	}
+	for _, f := range []uint32{FeatureLANDatagram, FeatureInputDedup, FeatureCapabilities, FeatureResize, FeaturePeerState, FeatureMic,
+		FeatureClipboard, FeatureHostStats, FeatureCursorState, FeatureStreamSwitch, FeatureResizeDisplay, FeatureCursorShape} {
+		if f&FeatureSwitchDisplay != 0 {
+			t.Errorf("FeatureSwitchDisplay %#x shares a bit with %#x", FeatureSwitchDisplay, f)
+		}
 	}
 }

@@ -67,6 +67,7 @@ func Resolve(host HostCapabilities, client ClientCapabilities, route RouteInfo, 
 	r.sizeAndFPS()
 	r.codec()
 	r.depthAndChroma()
+	r.hdr10()
 	r.bitrate()
 	r.splitAndSlices()
 	r.present()
@@ -161,15 +162,33 @@ func vendorRank(v gpu.Vendor) int {
 	return 4
 }
 
-func (r *resolver) captureDisplay() *HostDisplay {
-	ds := r.host.Displays
-	if r.host.PinnedDisplay != "" {
-		for i := range ds {
-			if ds[i].ID == r.host.PinnedDisplay {
-				return &ds[i]
-			}
+// hostDisplay is the host display with this ID, nil without one.
+func (r *resolver) hostDisplay(id string) *HostDisplay {
+	for i := range r.host.Displays {
+		if id != "" && r.host.Displays[i].ID == id {
+			return &r.host.Displays[i]
 		}
 	}
+	return nil
+}
+
+// pickedDisplay is the display the overrides name when the host has it
+// and does not pin one of its own.
+func (r *resolver) pickedDisplay() *HostDisplay {
+	if r.host.PinnedDisplay != "" {
+		return nil
+	}
+	return r.hostDisplay(r.o.Display)
+}
+
+func (r *resolver) captureDisplay() *HostDisplay {
+	if d := r.hostDisplay(r.host.PinnedDisplay); d != nil {
+		return d
+	}
+	if d := r.pickedDisplay(); d != nil {
+		return d
+	}
+	ds := r.host.Displays
 	for i := range ds {
 		if ds[i].Primary {
 			return &ds[i]
@@ -182,7 +201,7 @@ func (r *resolver) captureDisplay() *HostDisplay {
 }
 
 func (r *resolver) vddPossible() bool {
-	return r.o.VirtualDisplay != ToggleOff && r.host.VDD.Available && r.host.PinnedDisplay == ""
+	return r.o.VirtualDisplay != ToggleOff && r.host.VDD.Available && r.host.PinnedDisplay == "" && r.pickedDisplay() == nil
 }
 
 func (r *resolver) vddOnAdapter(a gpu.Adapter) bool {
@@ -293,10 +312,13 @@ func (r *resolver) virtualDisplay() {
 		case !r.host.VDD.Available:
 		case r.host.PinnedDisplay != "":
 			why = "the host pins display " + r.host.PinnedDisplay
+		case r.pickedDisplay() != nil:
+			why = "the client picked display " + r.o.Display
 		default:
 			why = "the driver cannot render on " + r.enc.Adapter.Name
 		}
 		r.fallback("virtualDisplay", "on", value, why)
+		r.displayDecision()
 		return
 	}
 	why := "renders at the client's size"
@@ -304,6 +326,8 @@ func (r *resolver) virtualDisplay() {
 	case src != SourceAuto:
 		why = "override"
 	case on:
+	case r.pickedDisplay() != nil:
+		why = "the client picked display " + r.o.Display
 	case r.host.PinnedDisplay != "":
 		why = "the host pins display " + r.host.PinnedDisplay
 	case !r.host.VDD.Available:
@@ -312,6 +336,32 @@ func (r *resolver) virtualDisplay() {
 		why = "the driver cannot render on " + r.enc.Adapter.Name
 	}
 	r.decide("virtualDisplay", value, src, why)
+	r.displayDecision()
+}
+
+// displayDecision says which host display the stream captures, and why a
+// display the client picked is not the one.
+func (r *resolver) displayDecision() {
+	src := r.source(func(o UserOverrides) string { return o.Display })
+	picked := !isAuto(r.o.Display)
+	switch {
+	case r.p.VirtualDisplay:
+		r.decide("display", "virtual", SourceAuto, "a virtual display at the client's size")
+	case r.display == nil:
+		if picked {
+			r.fallback("display", strconv.Quote(r.o.Display), "none", "the host lists no displays")
+		}
+	case picked && r.display.ID == r.o.Display:
+		r.decide("display", r.display.ID, src, "override")
+	case picked && r.host.PinnedDisplay != "":
+		r.fallback("display", strconv.Quote(r.o.Display), r.display.ID, "the host pins display "+r.host.PinnedDisplay)
+	case picked:
+		r.fallback("display", strconv.Quote(r.o.Display), r.display.ID, "the host has no such display")
+	case r.host.PinnedDisplay != "":
+		r.decide("display", r.display.ID, SourceHost, "the host pins it")
+	default:
+		r.decide("display", r.display.ID, SourceAuto, "the host's primary display")
+	}
 }
 
 func (r *resolver) widthAt(lines int) int {
@@ -686,6 +736,56 @@ func (r *resolver) depthAndChroma() {
 		r.p.Chroma444 = auto444
 		r.decide("chroma", value(auto444), SourceAuto, why)
 	}
+}
+
+// hdrWhyNot is why the stream cannot be HDR10, "" when it can.
+func (r *resolver) hdrWhyNot() string {
+	switch {
+	case !r.client.Display.HDR:
+		return "the client display is not in HDR"
+	case !r.client.PresentHDR10:
+		return "the client cannot present HDR10"
+	case r.p.VirtualDisplay:
+		return "the virtual display is SDR"
+	case r.display == nil || !r.display.HDR:
+		return "the host desktop is not in HDR"
+	case r.p.Codec != CodecHEVC && r.p.Codec != CodecAV1:
+		return "HDR10 needs HEVC or AV1, not " + r.p.Codec.String()
+	}
+	ec, _ := r.encCap(r.p.Codec)
+	dc, _ := r.decCap(r.p.Codec)
+	if !ec.TenBit || !dc.TenBit {
+		return "10-bit " + r.p.Codec.String() + " not on both ends"
+	}
+	if r.o.BitDepth == "8" {
+		return "bit depth 8 is set"
+	}
+	return ""
+}
+
+// 7b. HDR10: a 10-bit BT.2020 PQ stream of an HDR desktop, where both ends
+// and the codec carry it. It raises an auto bit depth to 10.
+func (r *resolver) hdr10() {
+	src := r.source(func(o UserOverrides) string { return string(o.HDR10) })
+	if r.o.HDR10 == ToggleOff {
+		r.decide("hdr10", "off", src, "override")
+		return
+	}
+	why := r.hdrWhyNot()
+	if why != "" {
+		r.decide("hdr10", "off", SourceAuto, why)
+		return
+	}
+	r.p.HDR10 = true
+	if r.p.BitDepth != 10 {
+		r.p.BitDepth = 10
+		for i := range r.p.Decisions {
+			if d := &r.p.Decisions[i]; d.Knob == "bitDepth" {
+				d.Value, d.Why = "10", "HDR10 needs 10-bit"
+			}
+		}
+	}
+	r.decide("hdr10", "on", SourceAuto, "HDR desktop and HDR client display")
 }
 
 func (r *resolver) ceilingKbps() int {

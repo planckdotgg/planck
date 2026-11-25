@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"maps"
 	"runtime"
 	"slices"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"github.com/planckdotgg/planck/internal/ui"
 	"github.com/planckdotgg/planck/pkg/audio"
 	"github.com/planckdotgg/planck/pkg/config"
+	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/input"
 )
 
@@ -192,13 +195,99 @@ func (b *backend) ctrlAltDel(c *session.Client) []input.Event {
 	return input.CtrlAltDel(held)
 }
 
-// SwitchDisplay has nothing to switch to while a host streams one
-// display, as every host does.
+// SwitchDisplay moves the stream to the host display after the one it
+// is on, the first after the last or a virtual display, and keeps it as
+// the host's display.
 func (b *backend) SwitchDisplay() error {
-	if b.current() == nil {
+	c := b.current()
+	if c == nil {
 		return session.ErrNotConnected
 	}
-	return ui.ErrOneDisplay
+	next, ok := nextDisplay(c.HostDisplays(), c.StreamedDisplay())
+	if !ok {
+		return ui.ErrOneDisplay
+	}
+	return b.SelectHostDisplay(next)
+}
+
+// nextDisplay is the display after cur in ds, the first when cur is the
+// last or none of them ("" on a virtual display); false when ds holds no
+// display but cur.
+func nextDisplay(ds []defaults.HostDisplay, cur string) (string, bool) {
+	i := slices.IndexFunc(ds, func(d defaults.HostDisplay) bool { return d.ID == cur })
+	if len(ds) == 0 || len(ds) == 1 && i == 0 {
+		return "", false
+	}
+	return ds[(i+1)%len(ds)].ID, true
+}
+
+// SelectHostDisplay asks the streaming host for its display id and keeps
+// id as the display that host's streams start on, without restarting the
+// stream: the host moves it in place.
+func (b *backend) SelectHostDisplay(id string) error {
+	c := b.current()
+	if c == nil {
+		return session.ErrNotConnected
+	}
+	if !slices.ContainsFunc(c.HostDisplays(), func(d defaults.HostDisplay) bool { return d.ID == id }) {
+		return fmt.Errorf("the host has no display %q", id)
+	}
+	switch err := c.SwitchDisplay(id); {
+	case errors.Is(err, session.ErrNoDisplaySwitch):
+		return ui.ErrNoDisplaySwitch
+	case err != nil:
+		return err
+	}
+	b.mu.Lock()
+	hostID := b.target.HostID
+	b.mu.Unlock()
+	if hostID == "" {
+		return nil
+	}
+	return b.keepHostDisplay(hostID, id)
+}
+
+// keepHostDisplay stores id as host hostID's display in its overrides.
+func (b *backend) keepHostDisplay(hostID, id string) error {
+	return config.UpdateClientConfig(b.dir, func(stored *config.ClientConfig) error {
+		if stored.HostOverrides == nil {
+			stored.HostOverrides = map[string]defaults.UserOverrides{}
+		}
+		o := stored.HostOverrides[hostID]
+		o.Display = id
+		stored.HostOverrides[hostID] = o
+		b.mu.Lock()
+		b.storedHosts = maps.Clone(stored.HostOverrides)
+		b.mu.Unlock()
+		return nil
+	})
+}
+
+// HostDisplays are hostID's displays as it advertised them this run.
+func (b *backend) HostDisplays(hostID string) []ui.DisplayInfo {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return slices.Clone(b.hostDisplays[hostID])
+}
+
+// noteHostDisplaysLocked keeps the displays the streaming host
+// advertised, by its key, as HostDisplays reads them.
+func (b *backend) noteHostDisplaysLocked(st session.ClientStats) {
+	if st.HostDisplays == nil {
+		return
+	}
+	if b.hostDisplays == nil {
+		b.hostDisplays = map[string][]ui.DisplayInfo{}
+	}
+	b.hostDisplays[hostKey(st)] = displayInfos(st.HostDisplays)
+}
+
+func displayInfos(ds []defaults.HostDisplay) []ui.DisplayInfo {
+	out := make([]ui.DisplayInfo, len(ds))
+	for i, d := range ds {
+		out[i] = ui.DisplayInfo{ID: d.ID, Name: d.Name, Width: d.Width, Height: d.Height, RefreshHz: d.RefreshHz, Primary: d.Primary, HDR: d.HDR}
+	}
+	return out
 }
 
 func (b *backend) KickClient() error {

@@ -162,6 +162,11 @@ type ClientConfig struct {
 	// OpenFullscreen is whether a stream's window opens in full screen;
 	// nil is on (StreamsOpenFullscreen).
 	OpenFullscreen *bool `json:"openFullscreen,omitempty"`
+	// OpenEveryHostDisplay opens a window for each host display, at most
+	// StreamWindows of them, where the host streams several at once.
+	OpenEveryHostDisplay bool `json:"openEveryHostDisplay,omitempty"`
+	// MaxStreamWindows is StreamWindows as set; 0 is the default.
+	MaxStreamWindows int `json:"maxStreamWindows,omitempty"`
 
 	// Hotkeys are the hotkeys the user changed, by HotkeyAction, as
 	// chords; "" is unbound. The rest keep their defaults (Hotkey).
@@ -183,6 +188,22 @@ type ClientConfig struct {
 // screen: on unless the user turned it off.
 func (c ClientConfig) StreamsOpenFullscreen() bool {
 	return c.OpenFullscreen == nil || *c.OpenFullscreen
+}
+
+// The bounds and default of ClientConfig.StreamWindows.
+const (
+	MinStreamWindows     = 2
+	MaxStreamWindows     = 4
+	DefaultStreamWindows = 2
+)
+
+// StreamWindows is the most stream windows Open every host display opens:
+// MaxStreamWindows as set, in bounds, or the default.
+func (c ClientConfig) StreamWindows() int {
+	if c.MaxStreamWindows == 0 {
+		return DefaultStreamWindows
+	}
+	return min(max(c.MaxStreamWindows, MinStreamWindows), MaxStreamWindows)
 }
 
 // OverlayLayout places the stream overlay's button and metrics window,

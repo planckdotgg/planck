@@ -34,8 +34,9 @@ type surfaceHost struct {
 	surf *gpusurface.Surface
 }
 
-// newSurfaceHost runs on the main thread.
-func newSurfaceHost(w *mygo.Window) (*surfaceHost, error) {
+// newSurfaceHost runs on the main thread. It presents SDR only: a Windows
+// client does not offer HDR10 (ClientCapabilities.PresentHDR10).
+func newSurfaceHost(w *mygo.Window, _ bool) (*surfaceHost, error) {
 	class, _ := syscall.UTF16PtrFromString("MyGoSurface")
 	content, _, _ := procFindWindowExW.Call(w.NativeHandle(), 0, uintptr(unsafe.Pointer(class)), 0)
 	if content == 0 {

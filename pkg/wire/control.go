@@ -61,6 +61,9 @@ const (
 	// carries FeatureCursorShape: as a stream starts and whenever the
 	// host's cursor changes shape.
 	MsgCursorShape MsgType = 19
+	// MsgSwitchDisplay goes client to host, only to a host whose Hello
+	// carries FeatureSwitchDisplay, from a client with FeatureStreamSwitch.
+	MsgSwitchDisplay MsgType = 20
 )
 
 // Message is a control-stream message. The set is closed: only types in this
@@ -123,6 +126,10 @@ const (
 	FeatureResizeDisplay uint32 = 1 << 11
 	// FeatureCursorShape, from a client, says it reads CursorShape.
 	FeatureCursorShape uint32 = 1 << 12
+	// FeatureSwitchDisplay, from a host, says it takes SwitchDisplay: it
+	// moves the stream to another of its displays and announces it in a
+	// Stream message.
+	FeatureSwitchDisplay uint32 = 1 << 13
 )
 
 type AuthMethod uint8
@@ -261,6 +268,13 @@ type ResizeDisplay struct {
 	HDR           bool
 }
 
+// SwitchDisplay asks the host to stream its display with this ID, one of
+// the HostCapabilities displays. The host answers with a Stream once the
+// stream moved, and ignores an ID it does not have.
+type SwitchDisplay struct {
+	DisplayID string
+}
+
 // PeerState is what one side does with the session's optional flows.
 type PeerState struct {
 	// ClipboardSend: this side sends its clipboard changes.
@@ -334,6 +348,7 @@ func (*PeerState) Type() MsgType     { return MsgPeerState }
 func (*HostStats) Type() MsgType     { return MsgHostStats }
 func (*CursorState) Type() MsgType   { return MsgCursorState }
 func (*Stream) Type() MsgType        { return MsgStream }
+func (*SwitchDisplay) Type() MsgType { return MsgSwitchDisplay }
 
 func (m *Hello) appendBody(b []byte) []byte {
 	b = binary.BigEndian.AppendUint16(b, m.Version)
@@ -501,6 +516,15 @@ func (m *Resize) decodeBody(d *decoder) {
 	}
 }
 
+func (m *SwitchDisplay) appendBody(b []byte) []byte { return appendString(b, m.DisplayID) }
+
+func (m *SwitchDisplay) decodeBody(d *decoder) {
+	m.DisplayID = d.str()
+	if m.DisplayID == "" {
+		d.bad = true
+	}
+}
+
 func (m *PeerState) appendBody(b []byte) []byte {
 	b = append(b, boolByte(m.ClipboardSend), boolByte(m.ClipboardRecv))
 	b = appendString(b, m.MicDevice)
@@ -658,6 +682,8 @@ func newMessage(t MsgType) Message {
 		return &Stream{}
 	case MsgCursorShape:
 		return &CursorShape{}
+	case MsgSwitchDisplay:
+		return &SwitchDisplay{}
 	}
 	return nil
 }

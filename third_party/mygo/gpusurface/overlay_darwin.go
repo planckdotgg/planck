@@ -51,7 +51,7 @@ vertex OOut overlay_vs(uint vid [[vertex_id]], uint iid [[instance_id]],
 	return o;
 }
 constexpr sampler atlasSmp(filter::linear, address::clamp_to_edge);
-fragment float4 overlay_fs(OOut in [[stage_in]], texture2d<float> atlas [[texture(0)]]) {
+static float4 overlay_color(OOut in, texture2d<float> atlas) {
 	float a;
 	if (in.glyph > 0.5) {
 		a = atlas.sample(atlasSmp, in.uv).r;
@@ -62,6 +62,25 @@ fragment float4 overlay_fs(OOut in [[stage_in]], texture2d<float> atlas [[textur
 	}
 	a *= in.color.a;
 	return float4(in.color.rgb * a, a);
+}
+fragment float4 overlay_fs(OOut in [[stage_in]], texture2d<float> atlas [[texture(0)]]) {
+	return overlay_color(in, atlas);
+}
+// overlay_fs_pq is overlay_fs on an HDR10 drawable: the sRGB colour, made
+// linear, moved to BT.2020 primaries and set at 203 nits for white (ITU-R
+// BT.2408 reference white), then PQ encoded.
+fragment float4 overlay_fs_pq(OOut in [[stage_in]], texture2d<float> atlas [[texture(0)]]) {
+	float4 c = overlay_color(in, atlas);
+	if (c.a <= 0.0) {
+		return c;
+	}
+	float3 srgb = c.rgb / c.a;
+	float3 lin = select(pow((srgb + 0.055) / 1.055, 2.4), srgb / 12.92, srgb <= 0.04045);
+	float3x3 to2020 = float3x3(float3(0.6274, 0.0691, 0.0164), float3(0.3293, 0.9195, 0.0880), float3(0.0433, 0.0114, 0.8956));
+	float3 y = clamp(to2020 * lin * (203.0 / 10000.0), 0.0, 1.0);
+	float3 ym = pow(y, 0.1593017578125);
+	float3 pq = pow((0.8359375 + 18.8515625 * ym) / (1.0 + 18.6875 * ym), 78.84375);
+	return float4(pq * c.a, c.a);
 }
 `
 
@@ -141,7 +160,11 @@ func (s *Surface) drawOverlay(enc uintptr, rects []OverlayRect, dw, dh uintptr) 
 	s.overlayFrame++
 	copy(unsafe.Slice((*OverlayRect)(s.overlayMem[i]), MaxOverlayRects), rects)
 	s.overlaySize = [2]float32{float32(dw), float32(dh)}
-	msg1(enc, selSetPipeline, s.overlayPipe)
+	pipe := s.overlayPipe
+	if s.hdr.Load() {
+		pipe = s.overlayPQPipe
+	}
+	msg1(enc, selSetPipeline, pipe)
 	msg3(enc, selSetVertexBuffer, s.overlayBufs[i], 0, 0)
 	msg3(enc, selSetVertexBytes, uintptr(unsafe.Pointer(&s.overlaySize)), unsafe.Sizeof(s.overlaySize), 1)
 	s.atlasMu.Lock()

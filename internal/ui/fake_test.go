@@ -64,6 +64,9 @@ type fakeBackend struct {
 	ctrlAltDels    int
 	switches       int
 	switchErr      error
+	hostDisplays   map[string][]DisplayInfo
+	selected       []string
+	selectErr      error
 	kicks          int
 	audioDevices   AudioDevices
 	virtualAudio   VirtualAudioStatus
@@ -300,6 +303,27 @@ func (f *fakeBackend) SwitchDisplay() error {
 	defer f.lock()()
 	f.switches++
 	return f.switchErr
+}
+
+func (f *fakeBackend) HostDisplays(hostID string) []DisplayInfo {
+	defer f.lock()()
+	return slices.Clone(f.hostDisplays[hostID])
+}
+
+// SelectHostDisplay moves the fake stream to id, as a host's new Stream
+// would.
+func (f *fakeBackend) SelectHostDisplay(id string) error {
+	defer f.lock()()
+	f.selected = append(f.selected, id)
+	if f.selectErr != nil {
+		return f.selectErr
+	}
+	if f.tel.Profile != nil {
+		p := *f.tel.Profile
+		p.VirtualDisplay, p.CaptureDisplay = false, id
+		f.tel.Profile = &p
+	}
+	return nil
 }
 
 func (f *fakeBackend) KickClient() error { defer f.lock()(); f.kicks++; return nil }

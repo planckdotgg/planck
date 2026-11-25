@@ -235,12 +235,18 @@ type Surface struct {
 	pass, attachment     uintptr
 	pixelFormat          uintptr
 	rgbPipeline, yuvPipe uintptr
-	cache                [wrapCache]frameTextures
-	nextSlot             int
-	pending              [pendingRing]pending
-	timings              timings
-	onPresented          atomic.Pointer[func(tag, submitted, presented int64)]
-	scale                float64
+	// yuv2020Pipe and overlayPQPipe draw while hdr is on; sdrSpace is the
+	// layer's colour space before, retained, which SetHDR10(false) gives
+	// back.
+	yuv2020Pipe, overlayPQPipe uintptr
+	hdr                        atomic.Bool
+	sdrSpace                   uintptr
+	cache                      [wrapCache]frameTextures
+	nextSlot                   int
+	pending                    [pendingRing]pending
+	timings                    timings
+	onPresented                atomic.Pointer[func(tag, submitted, presented int64)]
+	scale                      float64
 
 	// size is the drawables' size, width << 32 | height. sizeMu orders
 	// the changes of it and of direct mode; viewW and viewH are the size
@@ -294,6 +300,13 @@ fragment float4 fs_yuv(VOut in [[stage_in]], texture2d<float> y [[texture(0)]], 
 	// BT.709
 	return float4(l + 1.5748 * uv.y, l - 0.1873 * uv.x - 0.4681 * uv.y, l + 1.8556 * uv.x, 1);
 }
+fragment float4 fs_yuv2020(VOut in [[stage_in]], texture2d<float> y [[texture(0)]], texture2d<float> c [[texture(1)]],
+		constant YUVParams &p [[buffer(0)]]) {
+	float l = (y.sample(smp, in.uv).r - p.yOffset) * p.yScale;
+	float2 uv = (c.sample(smp, in.uv).rg - p.cOffset) * p.cScale;
+	// BT.2020 non-constant luminance; the result stays PQ encoded.
+	return float4(l + 1.4746 * uv.y, l - 0.16455 * uv.x - 0.57135 * uv.y, l + 1.8814 * uv.x, 1);
+}
 ` + overlayShaderSource
 
 // New makes a surface filling opts.Window, an NSWindow*, on the main
@@ -306,7 +319,7 @@ func New(opts Options) (s *Surface, err error) {
 		return nil, errors.New("gpusurface: no window")
 	}
 	s = &Surface{window: opts.Window, pixelFormat: pixelFormatBGRA8Unorm, fit: [4]float32{1, 1, 0, 0}}
-	if opts.Drawable10Bit {
+	if opts.Drawable10Bit || opts.HDR10 {
 		s.pixelFormat = pixelFormatBGR10A2Unorm
 	}
 	s.overlay.init()
@@ -315,9 +328,11 @@ func New(opts Options) (s *Surface, err error) {
 	defer runtime.UnlockOSThread()
 	pool, _, _ := purego.SyscallN(lib.poolPush)
 	defer purego.SyscallN(lib.poolPop, pool)
+	// A failed New returns a nil surface: close the one being built.
+	built := s
 	defer func() {
 		if err != nil {
-			s.Close()
+			built.Close()
 			s = nil
 		}
 	}()
@@ -380,6 +395,12 @@ func New(opts Options) (s *Surface, err error) {
 	}
 	send(class("CATransaction"), "flush")
 	s.layer = layer
+	s.sdrSpace = retainSpace(send(layer, "colorspace"))
+	if opts.HDR10 {
+		if err = s.SetHDR10(true); err != nil {
+			return nil, err
+		}
+	}
 	surfaces.Store(layer, s)
 	return s, nil
 }
@@ -427,7 +448,16 @@ func (s *Surface) makePipelines() error {
 	if s.yuvPipe, err = pipeline("vs", "fs_yuv", false); err != nil {
 		return err
 	}
-	s.overlayPipe, err = pipeline("overlay_vs", "overlay_fs", true)
+	if s.overlayPipe, err = pipeline("overlay_vs", "overlay_fs", true); err != nil {
+		return err
+	}
+	if s.pixelFormat != pixelFormatBGR10A2Unorm {
+		return nil
+	}
+	if s.yuv2020Pipe, err = pipeline("vs", "fs_yuv2020", false); err != nil {
+		return err
+	}
+	s.overlayPQPipe, err = pipeline("overlay_vs", "overlay_fs_pq", true)
 	return err
 }
 
@@ -538,7 +568,11 @@ func (s *Surface) PresentTagged(surface uintptr, tag int64) error {
 		msg1(enc, selSetPipeline, s.rgbPipeline)
 		msg2(enc, selSetFragmentTex, f.tex[0], 0)
 	} else {
-		msg1(enc, selSetPipeline, s.yuvPipe)
+		yuv := s.yuvPipe
+		if s.hdr.Load() {
+			yuv = s.yuv2020Pipe
+		}
+		msg1(enc, selSetPipeline, yuv)
 		msg2(enc, selSetFragmentTex, f.tex[0], 0)
 		msg2(enc, selSetFragmentTex, f.tex[1], 1)
 		msg3(enc, selSetFragmentBytes, uintptr(unsafe.Pointer(f.params)), unsafe.Sizeof(*f.params), 0)
@@ -693,7 +727,8 @@ func (s *Surface) Close() {
 		release(&s.cache[i].tex[1])
 	}
 	s.closeOverlay()
-	for _, p := range []*uintptr{&s.host, &s.layer, &s.pass, &s.rgbPipeline, &s.yuvPipe, &s.overlayPipe, &s.queue, &s.device} {
+	for _, p := range []*uintptr{&s.host, &s.layer, &s.pass, &s.rgbPipeline, &s.yuvPipe, &s.overlayPipe, &s.yuv2020Pipe, &s.overlayPQPipe, &s.queue, &s.device} {
 		release(p)
 	}
+	releaseSpace(&s.sdrSpace)
 }

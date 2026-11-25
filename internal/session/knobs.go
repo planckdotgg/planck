@@ -13,7 +13,9 @@ import (
 type Knobs struct {
 	Codec, Chroma, BitDepth, Resolution, FPS, Slices string
 	VDD, VDDGPU, Split, Direct, VSync, Route         string
-	BitrateMbps                                      int
+	// Display picks a host display by ID, and HDR10 is auto or off.
+	Display, HDR10 string
+	BitrateMbps    int
 }
 
 // Overrides turns the knobs into overrides; "auto" leaves a knob to the
@@ -82,6 +84,8 @@ func (k Knobs) Overrides() (defaults.UserOverrides, error) {
 	o.MetalDirectDisplay = defaults.Toggle(lower(k.Direct))
 	o.VSyncMode = defaults.Toggle(lower(k.VSync))
 	o.RoutePolicy = defaults.RoutePref(lower(k.Route))
+	o.Display = strings.TrimSpace(k.Display)
+	o.HDR10 = defaults.Toggle(lower(k.HDR10))
 	o = o.Normalize()
 	return o, o.Validate()
 }

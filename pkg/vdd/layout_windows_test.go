@@ -49,6 +49,8 @@ func TestLayouts(t *testing.T) {
 		{"deviceInfoHeader.ID", unsafe.Offsetof(h.ID), 16},
 		{"sourceDeviceName", unsafe.Sizeof(sn), 84},
 		{"adapterName", unsafe.Sizeof(adapterName{}), 276},
+		{"targetDeviceName", unsafe.Sizeof(targetDeviceName{}), 420},
+		{"targetDeviceName.MonitorFriendlyDeviceName", unsafe.Offsetof(targetDeviceName{}.MonitorFriendlyDeviceName), 36},
 		{"advancedColorInfo", unsafe.Sizeof(advancedColorInfo{}), 32},
 		{"setAdvancedColorState", unsafe.Sizeof(setAdvancedColorState{}), 24},
 	}

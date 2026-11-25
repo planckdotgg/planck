@@ -85,12 +85,17 @@ const (
 )
 
 type HostDisplay struct {
-	ID        string   `json:"id"` // GDI name or CGDirectDisplayID
+	ID string `json:"id"` // GDI name or CGDirectDisplayID
+	// Name is what the host's OS calls the display, "" when it has no name.
+	Name      string   `json:"name,omitempty"`
 	Width     int      `json:"width"`
 	Height    int      `json:"height"`
 	RefreshHz int      `json:"refreshHz"`
 	Adapter   gpu.LUID `json:"adapter"`
 	Primary   bool     `json:"primary"`
+	// HDR: the desktop on this display is in HDR10 (BT.2020 PQ), which
+	// capture can take as 10-bit.
+	HDR bool `json:"hdr,omitempty"`
 }
 
 type VDDCap struct {
@@ -132,7 +137,10 @@ type ClientCapabilities struct {
 	// Present10Bit: the client surface can show BGR10A2 (WS2).
 	Present10Bit  bool `json:"present10Bit"`
 	DirectDisplay bool `json:"directDisplay"` // the platform has a full-screen direct path (macOS WS2)
-	Link          Link `json:"link"`
+	// PresentHDR10: the client presents BT.2020 PQ pictures as HDR on a
+	// display whose HDR is set (macOS EDR).
+	PresentHDR10 bool `json:"presentHDR10,omitempty"`
+	Link         Link `json:"link"`
 }
 
 type RouteInfo struct {

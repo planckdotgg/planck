@@ -34,6 +34,7 @@ const (
 	sdcAllowChanges           = 0x400
 
 	infoGetSourceName         = 1
+	infoGetTargetName         = 2
 	infoGetAdapterName        = 4
 	infoGetAdvancedColorInfo  = 9
 	infoSetAdvancedColorState = 10
@@ -91,6 +92,17 @@ type deviceInfoHeader struct { // DISPLAYCONFIG_DEVICE_INFO_HEADER, 20 bytes
 type sourceDeviceName struct { // 84 bytes
 	Header        deviceInfoHeader
 	GDIDeviceName [32]uint16
+}
+
+type targetDeviceName struct { // DISPLAYCONFIG_TARGET_DEVICE_NAME, 420 bytes
+	Header                    deviceInfoHeader
+	Flags                     uint32
+	OutputTechnology          uint32
+	EDIDManufactureID         uint16
+	EDIDProductCodeID         uint16
+	ConnectorInstance         uint32
+	MonitorFriendlyDeviceName [64]uint16
+	MonitorDevicePath         [128]uint16
 }
 
 type adapterName struct { // 276 bytes
@@ -175,6 +187,33 @@ func adapterDevicePath(l windows.LUID) (string, error) {
 		return "", err
 	}
 	return windows.UTF16ToString(n.AdapterDevicePath[:]), nil
+}
+
+// DisplayNames maps each active display's GDI name to its monitor's
+// friendly name, as Windows's display settings show it ("LG ULTRAGEAR").
+// A monitor that reports no name is left out.
+func DisplayNames() (map[string]string, error) {
+	c, err := queryActive()
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for i := range c.paths {
+		p := &c.paths[i]
+		gdi, err := gdiName(p)
+		if err != nil {
+			continue
+		}
+		n := new(targetDeviceName)
+		n.Header = deviceInfoHeader{Type: infoGetTargetName, Size: uint32(unsafe.Sizeof(*n)), AdapterID: p.Target.AdapterID, ID: p.Target.ID}
+		if getDeviceInfo(&n.Header) != nil {
+			continue
+		}
+		if name := windows.UTF16ToString(n.MonitorFriendlyDeviceName[:]); name != "" {
+			out[gdi] = name
+		}
+	}
+	return out, nil
 }
 
 // findPath returns the active path to this IddCx target, if Windows shows it.

@@ -311,3 +311,11 @@ func TestClientDeviceName(t *testing.T) {
 		t.Fatalf("device name %q, %v", c.DeviceName, err)
 	}
 }
+
+func TestStreamWindows(t *testing.T) {
+	for _, c := range []struct{ set, want int }{{0, DefaultStreamWindows}, {1, MinStreamWindows}, {3, 3}, {9, MaxStreamWindows}} {
+		if got := (ClientConfig{MaxStreamWindows: c.set}).StreamWindows(); got != c.want {
+			t.Errorf("MaxStreamWindows %d: %d windows, want %d", c.set, got, c.want)
+		}
+	}
+}

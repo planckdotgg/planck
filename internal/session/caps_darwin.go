@@ -5,6 +5,7 @@ package session
 import (
 	"errors"
 	"math"
+	"strconv"
 	"sync"
 
 	"github.com/ebitengine/purego"
@@ -59,9 +60,32 @@ func hostDisplays(cfg HostConfig) []defaults.HostDisplay {
 	if err != nil {
 		return nil
 	}
+	names := screenNames()
 	var out []defaults.HostDisplay
 	for _, d := range all {
-		out = append(out, defaults.HostDisplay{ID: d.ID, Width: d.Width, Height: d.Height, RefreshHz: int(math.Round(d.Refresh)), Primary: d.Primary})
+		out = append(out, defaults.HostDisplay{ID: d.ID, Name: names[d.ID], Width: d.Width, Height: d.Height, RefreshHz: int(math.Round(d.Refresh)), Primary: d.Primary})
+	}
+	return out
+}
+
+// screenNames maps each screen's CGDirectDisplayID, in decimal, to its
+// localizedName ("Built-in Retina Display").
+func screenNames() map[string]string {
+	out := map[string]string{}
+	cls := objc.ID(objc.GetClass("NSScreen"))
+	if cls == 0 {
+		return out
+	}
+	screens := cls.Send(objc.RegisterName("screens"))
+	for i := range objc.Send[uint](screens, objc.RegisterName("count")) {
+		scr := screens.Send(objc.RegisterName("objectAtIndex:"), i)
+		id, ok := screenDisplayID(scr)
+		if !ok {
+			continue
+		}
+		if n := scr.Send(objc.RegisterName("localizedName")); n != 0 {
+			out[strconv.FormatUint(uint64(id), 10)] = objc.Send[string](n, objc.RegisterName("UTF8String"))
+		}
 	}
 	return out
 }
@@ -115,6 +139,8 @@ func screenDisplay(scr objc.ID) defaults.ClientDisplay {
 			d.MaxHz = hz
 		}
 		d.Scale = objc.Send[float64](scr, objc.RegisterName("backingScaleFactor"))
+		// EDR headroom above SDR white: an XDR display, or one in HDR mode.
+		d.HDR = objc.Send[float64](scr, objc.RegisterName("maximumPotentialExtendedDynamicRangeColorComponentValue")) > 1
 	}
 	if d.MaxHz <= 0 {
 		d.MaxHz = 60
@@ -163,4 +189,5 @@ func clientDecoders() []defaults.CodecCap {
 const (
 	clientPresent10Bit  = false
 	clientDirectDisplay = true
+	clientPresentHDR10  = true
 )

@@ -161,10 +161,22 @@ func hostDisplays(cfg HostConfig) []defaults.HostDisplay {
 	if err != nil {
 		return nil
 	}
+	// A session's own virtual display is no display to switch to: the
+	// switch would close it.
+	virtual := map[string]bool{}
+	if ms, err := vdd.Monitors(); err == nil {
+		for _, m := range ms {
+			virtual[m.GDIName] = true
+		}
+	}
+	names, _ := vdd.DisplayNames()
 	var out []defaults.HostDisplay
 	for _, d := range all {
-		out = append(out, defaults.HostDisplay{ID: d.ID, Width: d.Width, Height: d.Height,
-			RefreshHz: int(math.Round(d.Refresh)), Adapter: d.Adapter.LUID, Primary: d.Primary})
+		if virtual[d.ID] {
+			continue
+		}
+		out = append(out, defaults.HostDisplay{ID: d.ID, Name: names[d.ID], Width: d.Width, Height: d.Height,
+			RefreshHz: int(math.Round(d.Refresh)), Adapter: d.Adapter.LUID, Primary: d.Primary, HDR: d.HDR})
 	}
 	return out
 }
@@ -256,5 +268,6 @@ func clientDecoders() []defaults.CodecCap {
 
 const (
 	clientPresent10Bit  = false
+	clientPresentHDR10  = false
 	clientDirectDisplay = false
 )

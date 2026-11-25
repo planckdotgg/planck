@@ -92,7 +92,21 @@ type Config struct {
 	// ChunkLen is the transport shard size PyroWave packets are framed in
 	// (Session.ShardSize); PyroWave needs at least 256.
 	ChunkLen int
+	// HDR10 says the Source holds BT.2020 PQ (an HDR desktop's
+	// RGB10A2): the bitstream signals HDR10Color, and the conversion to
+	// YUV uses the BT.2020 matrix. It needs a 10-bit Chroma.
+	HDR10 bool
 }
+
+// ColorDescription is a bitstream's colour signalling, as ITU-T H.273
+// code points: HEVC VUI and the AV1 sequence header carry the same values.
+type ColorDescription struct {
+	Primaries, Transfer, Matrix uint8
+}
+
+// HDR10Color is BT.2020 primaries, SMPTE ST 2084 (PQ) transfer and the
+// BT.2020 non-constant luminance matrix.
+var HDR10Color = ColorDescription{Primaries: 9, Transfer: 16, Matrix: 9}
 
 // Split is a choice of split-frame encode: each picture divided between a
 // GPU's encode engines finishes sooner, at about a third more bits for the
@@ -157,6 +171,8 @@ func (c Config) Validate() error {
 		return errors.New("encode: slices and intra refresh period must not be negative")
 	case c.SubFrame && c.Slices < 2:
 		return errors.New("encode: sub-frame output needs at least 2 slices")
+	case c.HDR10 && (!c.Chroma.TenBit() || c.Codec == H264 || c.Codec == PyroWave):
+		return fmt.Errorf("encode: HDR10 needs 10-bit HEVC or AV1, not %s %s", c.Codec, c.Chroma)
 	case c.Codec == PyroWave:
 		return c.validatePyroWave()
 	}

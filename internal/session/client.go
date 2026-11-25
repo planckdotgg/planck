@@ -219,7 +219,10 @@ type ClientStats struct {
 	FrameTimesMs []float64
 	// HostPolicy is what the host's owner forces on clients, which beats
 	// this client's overrides; all auto from a host that sent none.
-	HostPolicy    defaults.UserOverrides
+	HostPolicy defaults.UserOverrides
+	// HostDisplays are the displays the host advertised, which
+	// SwitchDisplay moves the stream between; nil from an older host.
+	HostDisplays  []defaults.HostDisplay
 	AudioBufferMs float64
 	AudioPackets  uint64
 	InputSent     uint64
@@ -241,6 +244,8 @@ type Client struct {
 	clip   *clipSync
 	// gain is the playback volume, a float64's bits.
 	gain atomic.Uint64
+	// beforeLive, for tests, runs as connect is about to make its route live.
+	beforeLive func(*conn, *route)
 }
 
 // NewClient prepares a client; the identity is created on first Connect.
@@ -281,6 +286,9 @@ type conn struct {
 	// policy is what the host's owner forces on its clients, from its
 	// capabilities; nil from a host that sent none.
 	policy atomic.Pointer[defaults.UserOverrides]
+	// displays are the host's displays, from its capabilities; set before
+	// the conn is shared, and never changed.
+	displays []defaults.HostDisplay
 	// openSink makes the sink of each stream.
 	openSink SinkOpener
 	// asked is the window last offered the host, at the connect or a
@@ -350,6 +358,12 @@ type route struct {
 	// bye is set when the host said goodbye: it ended the stream, or gave
 	// it to another client, and the stream must not come back.
 	bye atomic.Bool
+	// mu orders the route going live with the stream updates the host
+	// sends on it first: those wait in pending, as the stream it describes
+	// may be the one the connect opens its sink for.
+	mu      sync.Mutex
+	isLive  bool
+	pending []wire.Message
 }
 
 func (cc *conn) session() *transport.Session { return cc.live.Load().sess }
@@ -442,8 +456,15 @@ func (c *Client) connect(ctx context.Context, t Target) (*conn, error) {
 	cc.stream.Store(&streamState{sink: dcfg})
 	cc.profile.Store(prof)
 	cc.policy.Store(hostPolicy(sess))
+	if caps := hostCaps(sess); caps != nil {
+		cc.displays = caps.Displays
+	}
+	if c.beforeLive != nil {
+		c.beforeLive(cc, rt)
+	}
 	// The receive goroutine reads the stream once the route is live.
-	cc.live.Store(rt)
+	cc.goLive(rt, c.logf)
+	dcfg = cc.stream.Load().sink
 	cc.openSink = cfg.OpenSink
 	if cc.openSink == nil {
 		cc.openSink = OpenDecodeSink
@@ -504,6 +525,11 @@ func (c *Client) dialRoute(ctx context.Context, cc *conn, r resolved) (*route, e
 		// for: the host resolves per route, and takes the stream over
 		// from the old session before this client can refuse the new one.
 		cfg.Overrides = defaults.Merge(cfg.Overrides, decoderFormat(p))
+		if !p.VirtualDisplay && p.CaptureDisplay != "" {
+			// And the host display it streams, which a switch may have
+			// moved it to.
+			cfg.Overrides.Display = p.CaptureDisplay
+		}
 	}
 	stored, err := config.LoadClientConfig(c.dir)
 	if err != nil {
@@ -577,10 +603,8 @@ func (c *Client) dialRoute(ctx context.Context, cc *conn, r resolved) (*route, e
 				switch m := m.(type) {
 				case *wire.Goodbye:
 					rt.bye.Store(true)
-				case *wire.Profile:
-					cc.resized(m.JSON, c.logf)
-				case *wire.Stream:
-					cc.switchStream(rt, m, c.logf)
+				case *wire.Profile, *wire.Stream:
+					cc.streamUpdate(rt, m, c.logf)
 				case *wire.HostStats:
 					cc.mu.Lock()
 					cc.host = *m
@@ -745,7 +769,7 @@ func (c *Client) streamConfig(sess *transport.Session) (decode.Config, *defaults
 	}
 	dcfg := decode.Config{Codec: codec, Width: int(acc.Width), Height: int(acc.Height), FPS: int(acc.FPS)}
 	if prof != nil {
-		dcfg.Chroma = streamChroma(prof)
+		dcfg.Chroma, dcfg.HDR10 = streamChroma(prof), prof.HDR10
 		for _, w := range prof.Warnings {
 			c.logf("planck: profile: %s", w)
 		}
@@ -784,7 +808,7 @@ func (c *Client) capabilities(cfg ClientConfig, addr string, path discovery.Path
 // decoders.
 func ProbeClientCapabilities() defaults.ClientCapabilities {
 	return defaults.ClientCapabilities{OS: runtime.GOOS, Display: clientDisplay(), Decoders: clientDecoders(),
-		Present10Bit: clientPresent10Bit, DirectDisplay: clientDirectDisplay}
+		Present10Bit: clientPresent10Bit, DirectDisplay: clientDirectDisplay, PresentHDR10: clientPresentHDR10}
 }
 
 // from is r on the path a race won.
@@ -977,7 +1001,7 @@ func (c *Client) switchRoute(cc *conn, r resolved) error {
 	if cc.jb != nil {
 		cc.jb.Restart()
 	}
-	old := cc.live.Swap(rt)
+	old := cc.goLive(rt, c.logf)
 	cc.switches.Add(1)
 	c.logf("planck: stream moved from %s %s to %s %s (%d-byte datagrams)", old.kind, old.addr, rt.kind, rt.addr, rt.sess.MaxDatagram())
 	old.sess.Close()
@@ -1298,6 +1322,7 @@ func (cc *conn) stats() ClientStats {
 	if p := cc.policy.Load(); p != nil {
 		s.HostPolicy = *p
 	}
+	s.HostDisplays = cc.displays
 	return s
 }
 
@@ -1409,6 +1434,54 @@ func (c *Client) RequestKeyframe() error {
 		return ErrNotConnected
 	}
 	return cc.session().SendControl(&wire.PLI{})
+}
+
+// ErrNoDisplaySwitch is SwitchDisplay's answer from a host that cannot
+// move a stream to another display.
+var ErrNoDisplaySwitch = errors.New("session: this host cannot switch displays")
+
+// HostDisplays lists the displays the host streaming now advertised, nil
+// without a stream or from an older host.
+func (c *Client) HostDisplays() []defaults.HostDisplay {
+	c.mu.Lock()
+	cc := c.conn
+	c.mu.Unlock()
+	if cc == nil {
+		return nil
+	}
+	return cc.displays
+}
+
+// StreamedDisplay is the ID of the host display streaming now, "" on a
+// virtual display or without a stream.
+func (c *Client) StreamedDisplay() string {
+	c.mu.Lock()
+	cc := c.conn
+	c.mu.Unlock()
+	if cc == nil {
+		return ""
+	}
+	if p := cc.profile.Load(); p != nil && !p.VirtualDisplay {
+		return p.CaptureDisplay
+	}
+	return ""
+}
+
+// SwitchDisplay asks the host to stream its display id, one of
+// HostDisplays, in this session. The host answers with a new stream
+// (switchStream), which shows from its first keyframe.
+func (c *Client) SwitchDisplay(id string) error {
+	c.mu.Lock()
+	cc := c.conn
+	c.mu.Unlock()
+	if cc == nil {
+		return ErrNotConnected
+	}
+	sess := cc.session()
+	if sess.PeerFeatures()&wire.FeatureSwitchDisplay == 0 {
+		return ErrNoDisplaySwitch
+	}
+	return sess.SendControl(&wire.SwitchDisplay{DisplayID: id})
 }
 
 // SetQuality changes the requested stream. Protocol v1 fixes the config at
@@ -1626,6 +1699,41 @@ func offerOf(d defaults.ClientDisplay, window bool) *viewOffer {
 
 func packView(w, h int) uint64 { return uint64(uint32(w))<<32 | uint64(uint32(h)) }
 
+// streamUpdate takes a Profile or Stream the host sent on rt, holding it
+// until rt is live.
+func (cc *conn) streamUpdate(rt *route, m wire.Message, logf func(string, ...any)) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if !rt.isLive {
+		rt.pending = append(rt.pending, m)
+		return
+	}
+	cc.applyUpdate(rt, m, logf)
+}
+
+func (cc *conn) applyUpdate(rt *route, m wire.Message, logf func(string, ...any)) {
+	switch m := m.(type) {
+	case *wire.Profile:
+		cc.resized(m.JSON, logf)
+	case *wire.Stream:
+		cc.switchStream(rt, m, logf)
+	}
+}
+
+// goLive makes rt cc's route, then applies what the host sent on it before.
+// It returns the route rt replaces.
+func (cc *conn) goLive(rt *route, logf func(string, ...any)) *route {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	old := cc.live.Swap(rt)
+	rt.isLive = true
+	for _, m := range rt.pending {
+		cc.applyUpdate(rt, m, logf)
+	}
+	rt.pending = nil
+	return old
+}
+
 // resized takes a Profile the host sent after a Resize. The decoder
 // rebuilds for the new size on the next keyframe, as at the start.
 func (cc *conn) resized(js []byte, logf func(string, ...any)) {
@@ -1655,7 +1763,7 @@ func (cc *conn) switchStream(rt *route, m *wire.Stream, logf func(string, ...any
 	old := rt.sess.Config()
 	acc.AudioSampleRate, acc.AudioChannels = old.AudioSampleRate, old.AudioChannels
 	rt.sess.SetStream(acc, 0, 0, transport.ParityProfile{})
-	dcfg := decode.Config{Codec: encode.Codec(p.Codec), Width: p.Width, Height: p.Height, FPS: p.FPS, Chroma: streamChroma(p)}
+	dcfg := decode.Config{Codec: encode.Codec(p.Codec), Width: p.Width, Height: p.Height, FPS: p.FPS, Chroma: streamChroma(p), HDR10: p.HDR10}
 	if dcfg.Codec == encode.PyroWave {
 		dcfg.ChunkLen = rt.sess.ShardSize()
 	}

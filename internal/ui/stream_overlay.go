@@ -728,6 +728,13 @@ func (a *App) toastView(c *mui.Context, now time.Time) {
 	})
 }
 
+// ShowDisplayNotice says title over the stream, with how to move it to
+// another host display. Call it on the main thread.
+func (a *App) ShowDisplayNotice(title string) {
+	a.showToast(toast{title: title, lead: "switch with", key: HotkeySwitchDisplay, tail: "or the stream menu"})
+	a.Notify()
+}
+
 func (a *App) showToast(t toast) {
 	t.at = a.frameNow
 	a.ovl.toast = t

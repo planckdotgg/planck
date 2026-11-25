@@ -42,6 +42,20 @@ Phase 1B polish added:
 | `gpusurface/gpusurface_windows.go` | With `Composite`: `CreateSwapChainForComposition` at the window's client size (flip-discard, `DXGI_ALPHA_MODE_IGNORE`, the tearing flag kept when the factory takes it, else dropped), on a `DCompositionCreateDevice` device of the surface's own, as the root visual of `CreateTargetForHwnd(hwnd, FALSE)`: a target that is not topmost, under the topmost one a MyGo `Transparent` window draws its UI through, the pattern of `internal/windows/webview_embed.go`. `Resize(0, 0)` takes the client size itself (a composition swap chain has no window), and `Close` detaches the visual. Pass the `MyGoSurface` child window, where MyGo's target is, not the top-level `NativeHandle()`: a target on the top-level window does not show under the child. |
 | `gpusurface/gpusurface_windows_test.go` | `TestComposite`: a composite surface takes the client size, follows a resize, and its frames reach the screen (`GetPixel` on the desktop DC). |
 
+v0.4 Phase 3A (HDR10 output) added:
+
+| File | What |
+|---|---|
+| `gpusurface/gpusurface.go` | `Options.HDR10` (macOS; Windows ignores it). |
+| `gpusurface/hdr_darwin.go` | New file. `SetHDR10(on)` and `HDR10()`: on, the `CAMetalLayer` gets `wantsExtendedDynamicRangeContent = YES` and `colorspace` = `CGColorSpaceCreateWithName(kCGColorSpaceITUR_2100_PQ)` (CoreGraphics, loaded with purego); off gives back the colour space the layer had when the surface was made (retained at `New`, NULL on a new layer) and standard range. It needs BGR10A2 drawables (`ErrHDRNeeds10Bit` otherwise). Call it from the presenting thread, between presents. |
+| `gpusurface/gpusurface_darwin.go` | `Options.HDR10` makes BGR10A2 drawables and calls `SetHDR10(true)`. A BGR10A2 surface also compiles `fs_yuv2020` (BT.2020 non-constant-luminance YUV to R'G'B', left PQ encoded) and the overlay's `overlay_fs_pq`; `Present` draws YUV frames with the first while HDR10 is on. `Close` releases them and the kept colour space. A `New` that fails now closes the surface it was building (it called `Close` on the nil result before, a crash on any setup error). |
+| `gpusurface/overlay_darwin.go` | `overlay_fs_pq`: the overlay's sRGB colour made linear, moved to BT.2020 primaries, set at 203 nits for white (ITU-R BT.2408 reference white) and PQ encoded, premultiplied after. The overlay's coverage moved into `overlay_color`, which both fragment functions call: Metal does not let one fragment function call another. |
+| `gpusurface/hdr_darwin_test.go` | `TestHDR10Layer`: the layer's EDR and colour space on, off and on again, the HDR pipelines built, presents with an overlay, and an 8-bit surface refusing HDR10. |
+
+SDR presentation is unchanged: the layer keeps no colour space, as before,
+so SDR frames show as they did. HDR10 metadata (mastering display, MaxCLL)
+is not set on the layer: the stream carries none yet.
+
 ### API
 
 ```go
@@ -51,6 +65,7 @@ s.PresentSlice(tex, slice, w, h) // Windows: one slice of a decoder's texture ar
 s.Resize(w, h)   // after the window's size changed
 s.Close()
 s.Timings()      // per frame: Submitted, Encoded, Presented (ns, gpusurface.Now's clock)
+s.SetHDR10(on)   // macOS: BT.2020 PQ in an EDR layer, or back to SDR
 ```
 
 macOS also has `Device()` and `Queue()`; Windows `Device()`, `Context()`,

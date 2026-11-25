@@ -49,11 +49,14 @@ var (
 	knobVSync = knob{id: "vsyncMode", title: "VSync", desc: "Off shows each frame at once and may tear. Auto is off.",
 		values: []string{"auto", "off", "on"}, labels: []string{"Auto", "Off", "On"},
 		field: func(o *defaults.UserOverrides) *string { return (*string)(&o.VSyncMode) }}
+	knobHDR = knob{id: "hdr10", title: "HDR10 output", desc: "Auto streams 10-bit BT.2020 PQ when the host desktop and this display are both in HDR.",
+		values: []string{"auto", "off"}, labels: []string{"Auto", "Off"},
+		field: func(o *defaults.UserOverrides) *string { return (*string)(&o.HDR10) }}
 	knobRoute = knob{id: "routePolicy", title: "Route", desc: "Auto uses the LAN when it reaches the host, and Tailscale when not.",
 		values: []string{"auto", "lan", "tailscale"}, labels: []string{"Auto", "LAN", "Tailscale"},
 		field: func(o *defaults.UserOverrides) *string { return (*string)(&o.RoutePolicy) }}
 
-	allKnobs = []knob{knobCodec, knobChroma, knobBitDepth, knobResolution, knobFPS, knobVDD, knobSlices, knobSplit, knobDirect, knobVSync, knobRoute}
+	allKnobs = []knob{knobCodec, knobChroma, knobBitDepth, knobResolution, knobFPS, knobVDD, knobSlices, knobSplit, knobDirect, knobVSync, knobHDR, knobRoute}
 )
 
 const (

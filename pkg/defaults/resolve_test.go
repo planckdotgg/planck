@@ -390,7 +390,7 @@ func TestResolveDecisionsCoverEveryKnob(t *testing.T) {
 	for _, d := range p.Decisions {
 		knobs = append(knobs, d.Knob)
 	}
-	want := []string{"encodeAdapter", "virtualDisplay", "resolution", "fps", "codec", "bitDepth", "chroma", "bitrate", "split", "slices", "directDisplay", "vsync"}
+	want := []string{"encodeAdapter", "virtualDisplay", "display", "resolution", "fps", "codec", "bitDepth", "chroma", "hdr10", "bitrate", "split", "slices", "directDisplay", "vsync"}
 	if !slices.Equal(knobs, want) {
 		t.Fatalf("decision order %v, want %v", knobs, want)
 	}

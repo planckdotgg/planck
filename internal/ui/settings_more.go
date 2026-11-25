@@ -224,14 +224,10 @@ var settingEntries = []settingEntry{
 		build: func(a *App, c *mui.Context, f *settingsFrame) {
 			f.knobRow(c, knobVSync, "VSync — smoother, one frame slower", "")
 		}},
-	{id: "video.hdr", cat: catVideo, title: "HDR10 out", aliases: "hdr",
-		build: func(a *App, c *mui.Context, f *settingsFrame) {
-			f.unavailableRow(c, "HDR10 out", "Comes with HDR output in a later build.")
-		}},
-	{id: "video.multi", cat: catVideo, title: "Open every host display", aliases: "monitor multi-monitor displays",
-		build: func(a *App, c *mui.Context, f *settingsFrame) {
-			f.unavailableRow(c, "Open every host display", "One window per host display comes in a later build.")
-		}},
+	{id: "video.hdr", cat: catVideo, title: "HDR10 output", aliases: "hdr hdr10 pq bt.2020 2020 edr",
+		build: (*App).hdrRow},
+	{id: "video.multi", cat: catVideo, title: "Open all host displays", aliases: "monitor multi-monitor displays every windows",
+		build: (*App).multiDisplayRows},
 	{id: "video.slices", cat: catVideo, title: "Sub-frame slices", aliases: "slice latency advanced",
 		build: func(a *App, c *mui.Context, f *settingsFrame) {
 			f.knobRow(c, knobSlices, "Sub-frame slices", "The first slice leaves the host sooner.")
