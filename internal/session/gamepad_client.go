@@ -268,12 +268,17 @@ func (p *GamepadPump) source() GamepadSource {
 func (p *GamepadPump) run() {
 	src := p.source()
 	var (
-		pads     []gamepad.ControllerInfo
-		raws     []gamepad.RawState
-		scanned  time.Time
-		out      [input.MaxGamepads]padOut
+		pads    []gamepad.ControllerInfo
+		raws    []gamepad.RawState
+		scanned time.Time
+		out     [input.MaxGamepads]padOut
+		// played is the host rumble each slot's motors play, and motors
+		// the speeds sent for it, so a calibration change reaches running
+		// motors.
 		played   [input.MaxGamepads]*wire.Rumble
+		motors   [input.MaxGamepads][2]uint8
 		sending  func(input.Event) error
+		attached uint64
 		notified time.Time
 	)
 	stopAll := func() {
@@ -288,6 +293,7 @@ func (p *GamepadPump) run() {
 				}
 				played[i] = nil
 			}
+			motors[i] = [2]uint8{}
 		}
 	}
 	for {
@@ -306,17 +312,19 @@ func (p *GamepadPump) run() {
 			return
 		}
 		send, profile, learn, watching := p.send, p.profile, p.learn, now.Before(p.watchUntil)
-		rumble := p.rumble
+		rumble, attach := p.rumble, p.attach
 		p.mu.Unlock()
 		if src == nil {
 			p.idle(learn)
 			time.Sleep(padScanEvery)
 			continue
 		}
-		if sending != nil && send == nil {
+		// A replacing stream has heard nothing yet: the old one lets go,
+		// and the new one gets every state at once, not on its next change.
+		if sending != nil && (send == nil || attach != attached) {
 			stopAll()
 		}
-		sending = send
+		sending, attached = send, attach
 
 		if now.Sub(scanned) >= padScanEvery {
 			pads, scanned = src.Controllers(), now
@@ -345,13 +353,14 @@ func (p *GamepadPump) run() {
 						o.at = now
 						_ = send(gamepadEvent(slot, st))
 					}
-					if r := rumble[slot]; r != played[slot] {
-						var large, small uint8
-						if r != nil {
-							large, small = profile.Calibration.ScaleRumble(r.Low, r.High)
-						}
-						if err := src.Rumble(info.ID, large, small); err == nil {
-							played[slot] = r
+					r := rumble[slot]
+					var m [2]uint8
+					if r != nil {
+						m[0], m[1] = profile.Calibration.ScaleRumble(r.Low, r.High)
+					}
+					if r != played[slot] || m != motors[slot] {
+						if err := src.Rumble(info.ID, m[0], m[1]); err == nil {
+							played[slot], motors[slot] = r, m
 						}
 					}
 				}

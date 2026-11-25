@@ -52,6 +52,9 @@ var ErrNoVirtualPads = errors.New("session: no virtual controllers are plugged i
 // hostPads is a host's gamepad settings and, once a client controller has
 // plugged one in, its injector's virtual controllers.
 type hostPads struct {
+	// gate is held across a gamepad event's injection and a settings
+	// change; mu, taken inside it, guards the fields.
+	gate  sync.Mutex
 	mu    sync.Mutex
 	set   GamepadHostSettings
 	slots VirtualPadSlots
@@ -115,6 +118,8 @@ func (h *Host) GamepadSettings() GamepadHostSettings {
 // each client controller plugs in again, as the new type, on its next
 // input.
 func (h *Host) SetGamepadSettings(s GamepadHostSettings) error {
+	h.pads.gate.Lock()
+	defer h.pads.gate.Unlock()
 	h.pads.mu.Lock()
 	before, slots := h.pads.set, h.pads.slots
 	h.pads.set = s
@@ -165,7 +170,19 @@ func (h *Host) releasePads() {
 	}
 }
 
-// dropGamepad reports whether ev is gamepad input the settings refuse.
-func (h *Host) dropGamepad(ev input.Event) bool {
-	return ev.Type == input.TypeGamepad && !h.pads.allowed()
+// injectGamepad plugs ev into a virtual controller unless the settings
+// refuse gamepads, which drops it. gate keeps SetGamepadSettings from
+// unplugging between the check and the plug, which would leave a pad
+// plugged in with gamepads off.
+func (h *Host) injectGamepad(ev input.Event) (dropped bool, err error) {
+	h.pads.gate.Lock()
+	defer h.pads.gate.Unlock()
+	if !h.pads.allowed() {
+		return true, nil
+	}
+	if err := h.inject.Inject(ev); err != nil {
+		return false, err
+	}
+	h.injectedGamepad()
+	return false, nil
 }

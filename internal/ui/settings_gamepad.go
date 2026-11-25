@@ -381,6 +381,8 @@ func (a *App) virtualPadStatusLine(c *mui.Context, f *settingsFrame) {
 	case st.Installed:
 	case st.DriverName != "":
 		bars, col, text, hint = 0, theme.RoleText3, st.DriverName+" is not installed.", st.InstallHint
+	case st.InstallHint == "":
+		bars, col, text = 0, theme.RoleText3, "Checking for a virtual gamepad driver…"
 	default:
 		bars, col, text = 0, theme.RoleText3, st.InstallHint
 	}

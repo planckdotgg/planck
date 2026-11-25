@@ -62,6 +62,19 @@ func (c *ttlCache[T]) get() T {
 	return c.val
 }
 
+// peek is get for a load too slow for the caller even once: a cold peek
+// returns the last answer, or T's zero value before the first, and loads
+// in the background, calling onUpdate when the answer arrives.
+func (c *ttlCache[T]) peek() T {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if (!c.valid || c.now().Sub(c.at) >= c.ttl) && !c.refreshing {
+		c.refreshing = true
+		go c.refresh(c.gen)
+	}
+	return c.val
+}
+
 func (c *ttlCache[T]) refresh(gen uint64) {
 	v := c.load()
 	c.mu.Lock()
@@ -69,8 +82,8 @@ func (c *ttlCache[T]) refresh(gen uint64) {
 		c.mu.Unlock()
 		return
 	}
-	same := c.equal(c.val, v)
-	c.val, c.at, c.refreshing = v, c.now(), false
+	same := c.valid && c.equal(c.val, v)
+	c.val, c.at, c.valid, c.refreshing = v, c.now(), true, false
 	c.mu.Unlock()
 	if !same && c.onUpdate != nil {
 		c.onUpdate()

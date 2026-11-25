@@ -242,7 +242,10 @@ func (b *backend) TestGamepadRumble(id string) error {
 	return nil
 }
 
-func (b *backend) VirtualPadStatus() ui.VirtualPadStatus { return b.caches.virtualPads.get() }
+// VirtualPadStatus never waits for the driver probe, a device enumeration
+// that can stall: until the first probe ends it is the zero status, and
+// the UI redraws when the probe answers.
+func (b *backend) VirtualPadStatus() ui.VirtualPadStatus { return b.caches.virtualPads.peek() }
 
 func samePadStatus(x, y ui.VirtualPadStatus) bool {
 	return x.Installed == y.Installed && x.DriverName == y.DriverName && x.InstallHint == y.InstallHint &&

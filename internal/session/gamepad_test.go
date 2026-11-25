@@ -395,3 +395,94 @@ func TestGamepadPumpLearn(t *testing.T) {
 	}
 	waitFor(t, "the wait to end", func() bool { s := pump.Watch(); return len(s) == 1 && !s[0].IsLearning })
 }
+
+// pausedInjector holds each gamepad event inside Inject until proceed.
+type pausedInjector struct {
+	*padInjector
+	entered, proceed chan struct{}
+}
+
+func (p *pausedInjector) Inject(ev input.Event) error {
+	close(p.entered)
+	<-p.proceed
+	return p.padInjector.Inject(ev)
+}
+
+// TestGamepadDisableDuringInject: turning gamepads off while the first
+// gamepad event is inside Inject leaves no virtual controller plugged in.
+func TestGamepadDisableDuringInject(t *testing.T) {
+	inj := &pausedInjector{newPadInjector(), make(chan struct{}), make(chan struct{})}
+	h := &Host{inject: inj}
+	h.pads.set = GamepadHostSettings{Allow: true, Type: gamepad.PadXbox360}
+	ev, err := toWire(gamepadEvent(0, gamepad.State{Buttons: gamepad.ButtonA}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	injected := make(chan struct{})
+	go func() { h.onInput(ev); close(injected) }()
+	select {
+	case <-inj.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("injection did not start")
+	}
+	disabled := make(chan error, 1)
+	go func() { disabled <- h.SetGamepadSettings(GamepadHostSettings{Allow: false, Type: gamepad.PadXbox360}) }()
+	time.Sleep(20 * time.Millisecond)
+	close(inj.proceed)
+	<-injected
+	if err := <-disabled; err != nil {
+		t.Fatal(err)
+	}
+	if got := h.GamepadSlots(); got != [gamepad.MaxVirtualPads]int{-1, -1, -1, -1} {
+		t.Fatalf("slots after disabling = %v, want all free", got)
+	}
+}
+
+// TestGamepadPumpReplacementGetsHeldState: a stream that replaces another
+// gets a held button at once, though the old one sent its last repeat.
+func TestGamepadPumpReplacementGetsHeldState(t *testing.T) {
+	src := newFakePads(1)
+	p := NewGamepadPump(func() (GamepadSource, error) { return src, nil }, nil, t.Logf)
+	t.Cleanup(p.Close)
+	src.set(10, func(r *gamepad.RawState) { r.Buttons[0] = true })
+	old, next := &recordSends{}, &recordSends{}
+	id := p.Attach(old.send)
+	waitFor(t, "the old stream's repeats", func() bool { return len(old.all()) == 1+padRepeats })
+	time.Sleep(3 * padRepeatEvery)
+	p.Attach(next.send)
+	p.Detach(id)
+	deadline := time.Now().Add(time.Second)
+	for len(next.all()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the replacing stream heard nothing of the held A")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := next.all()[0]; got.Buttons&gamepad.ButtonA == 0 {
+		t.Fatalf("replacing stream's first state = %+v, want A held", got)
+	}
+}
+
+// TestGamepadPumpRumbleOffStopsMotors: turning rumble off stops motors a
+// host rumble started, without another rumble packet.
+func TestGamepadPumpRumbleOffStopsMotors(t *testing.T) {
+	src := newFakePads(1)
+	p := NewGamepadPump(func() (GamepadSource, error) { return src, nil }, nil, t.Logf)
+	t.Cleanup(p.Close)
+	p.Attach((&recordSends{}).send)
+	p.Rumble(wire.Rumble{Pad: 0, Seq: 1, Low: 65535})
+	waitFor(t, "the motor to start", func() bool { return src.lastRumble() == [3]int{10, 255, 0} })
+	cal := gamepad.DefaultCalibration()
+	cal.RumbleStrength = 50
+	p.SetProfile(GamepadProfile{Calibration: cal})
+	waitFor(t, "the motor at half strength", func() bool { return src.lastRumble() == [3]int{10, 128, 0} })
+	cal.RumbleOff = true
+	p.SetProfile(GamepadProfile{Calibration: cal})
+	deadline := time.Now().Add(time.Second)
+	for src.lastRumble() != [3]int{10, 0, 0} {
+		if time.Now().After(deadline) {
+			t.Fatalf("motor after rumble off = %v, want stopped", src.lastRumble())
+		}
+		time.Sleep(time.Millisecond)
+	}
+}

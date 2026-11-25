@@ -796,16 +796,19 @@ func (h *Host) onInput(in wire.Input) {
 		h.cfg.OnInput(ev)
 	}
 	if h.inject != nil {
-		if h.dropGamepad(ev) {
-			return
-		}
 		h.secureAttention(ev)
-		if err := h.inject.Inject(ev); err != nil {
+		var err error
+		if ev.Type == input.TypeGamepad {
+			var dropped bool
+			if dropped, err = h.injectGamepad(ev); dropped {
+				return
+			}
+		} else {
+			err = h.inject.Inject(ev)
+		}
+		if err != nil {
 			h.inputErr.Add(1)
 			return
-		}
-		if ev.Type == input.TypeGamepad {
-			h.injectedGamepad()
 		}
 		h.held.Note(ev)
 		if ev.Type == input.TypeMouseMoveAbs {

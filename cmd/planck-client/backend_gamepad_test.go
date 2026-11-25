@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/planckdotgg/planck/internal/session"
 	"github.com/planckdotgg/planck/internal/ui"
@@ -166,6 +167,13 @@ func TestVirtualPadStatusCached(t *testing.T) {
 		probes.Add(1)
 		return ui.VirtualPadStatus{Installed: true, DriverName: "ViGEmBus", SupportedTypes: []gamepad.PadType{gamepad.PadXbox360}}
 	})
+	deadline := time.Now().Add(5 * time.Second)
+	for !b.VirtualPadStatus().Installed {
+		if time.Now().After(deadline) {
+			t.Fatal("the probe never answered")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	for range 200 {
 		if !b.VirtualPadStatus().Installed {
 			t.Fatal("status lost")
@@ -204,5 +212,43 @@ func TestHostGamepadSlotsWhileHosting(t *testing.T) {
 	}
 	if got := b.runningHost().GamepadSettings(); got != (session.GamepadHostSettings{Allow: false, Type: gamepad.PadDS4}) {
 		t.Fatalf("host's gamepad settings: %+v", got)
+	}
+}
+
+// TestVirtualPadStatusColdDoesNotWait: the first status, drawn on the UI
+// thread, does not wait for a stalled driver probe, and the probe's answer
+// is served, with a redraw, once it comes.
+func TestVirtualPadStatusColdDoesNotWait(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	b := newPadBackend(t, t.TempDir(), newOnePad(), func() ui.VirtualPadStatus {
+		close(entered)
+		<-release
+		return ui.VirtualPadStatus{Installed: true, DriverName: "ViGEmBus"}
+	})
+	var redraws atomic.Int32
+	b.Subscribe(func() { redraws.Add(1) })
+	returned := make(chan ui.VirtualPadStatus, 1)
+	go func() { returned <- b.VirtualPadStatus() }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the probe never started")
+	}
+	select {
+	case st := <-returned:
+		if st.Installed {
+			t.Fatalf("cold status = %+v before the probe answered", st)
+		}
+	case <-time.After(time.Second):
+		close(release)
+		t.Fatal("the cold status waited for the probe")
+	}
+	close(release)
+	deadline := time.Now().Add(5 * time.Second)
+	for !b.VirtualPadStatus().Installed || redraws.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("probe answer not served: redraws %d", redraws.Load())
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
