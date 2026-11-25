@@ -262,3 +262,43 @@ func TestBackendAudioDevicesAndApps(t *testing.T) {
 		t.Errorf("stored devices %q %q, %v", stored.AudioOutputDevice, stored.MicDevice, err)
 	}
 }
+
+// TestCtrlAltDelIgnoresSwap: Send Ctrl+Alt+Del is Ctrl+Alt+Del on the host
+// with the Cmd/Ctrl swap on, over the modifiers the host holds.
+func TestCtrlAltDelIgnoresSwap(t *testing.T) {
+	b, _ := newTestBackend(t, t.TempDir(), nil)
+	c, err := session.NewClient(session.ClientConfig{ConfigDir: t.TempDir(), Logf: t.Logf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := "darwin"
+	if runtime.GOOS == "darwin" {
+		other = "windows"
+	}
+	b.hostOSOf, b.hostOS = c, other
+	s := b.Settings()
+	s.SwapCmdCtrl = true
+	if err := b.SaveSettings(s); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name           string
+		held, hostHeld uint8
+	}{
+		{"nothing held", 0, 0},
+		{"this device's Ctrl held, the host's GUI key", input.ModLeftControl, input.ModLeftGUI},
+		{"this device's Cmd held, the host's Ctrl", input.ModLeftGUI, input.ModLeftControl},
+	} {
+		b.heldMods = func() uint8 { return tc.held }
+		var got, want []input.KeyEvent
+		for _, ev := range b.ctrlAltDel(c) {
+			got = append(got, ev.Key)
+		}
+		for _, ev := range input.CtrlAltDel(tc.hostHeld) {
+			want = append(want, ev.Key)
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("%s: sent %+v, want %+v", tc.name, got, want)
+		}
+	}
+}

@@ -146,13 +146,27 @@ func (b *backend) hostAction(a ui.HotkeyAction) func() {
 // SendCtrlAltDel presses and lets go of Ctrl+Alt+Del on the host, leaving
 // the modifiers the host holds for this device down.
 func (b *backend) SendCtrlAltDel() {
+	c := b.current()
+	if c == nil {
+		return
+	}
+	for _, ev := range b.ctrlAltDel(c) {
+		_ = c.SendInput(ev)
+	}
+}
+
+// ctrlAltDel is the key events of Ctrl+Alt+Del as the host takes them,
+// past the Cmd/Ctrl swap: the swap is for keys pressed here, and the host
+// holds this device's Ctrl as its GUI key when it swaps.
+func (b *backend) ctrlAltDel(c *session.Client) []input.Event {
 	var held uint8
 	if b.heldMods != nil {
 		held = b.heldMods()
 	}
-	for _, ev := range input.CtrlAltDel(held) {
-		b.SendInput(ev)
+	if b.swaps(c) {
+		held = input.SwapCmdCtrl(input.Event{Type: input.TypeKey, Key: input.KeyEvent{Modifiers: held}}).Key.Modifiers
 	}
+	return input.CtrlAltDel(held)
 }
 
 // SwitchDisplay has nothing to switch to while a host streams one
@@ -218,8 +232,15 @@ func (b *backend) PrivacyModeProblem() string { return session.PrivacyModeProble
 // swapInput trades Cmd and Ctrl in ev when the user asked and the host's
 // OS differs from this one's on them.
 func (b *backend) swapInput(c *session.Client, ev input.Event) input.Event {
-	if ev.Type != input.TypeKey || !b.swap.Load() {
+	if ev.Type != input.TypeKey || !b.swaps(c) {
 		return ev
+	}
+	return input.SwapCmdCtrl(ev)
+}
+
+func (b *backend) swaps(c *session.Client) bool {
+	if !b.swap.Load() {
+		return false
 	}
 	b.mu.Lock()
 	if b.hostOSOf != c {
@@ -227,8 +248,5 @@ func (b *backend) swapInput(c *session.Client, ev input.Event) input.Event {
 	}
 	hostOS := b.hostOS
 	b.mu.Unlock()
-	if input.SwapsCmdCtrl(runtime.GOOS, hostOS) {
-		return input.SwapCmdCtrl(ev)
-	}
-	return ev
+	return input.SwapsCmdCtrl(runtime.GOOS, hostOS)
 }
