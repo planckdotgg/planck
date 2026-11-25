@@ -32,8 +32,13 @@ type Capturer interface {
 type CaptureOptions struct {
 	// ExcludePIDs are more processes to leave out, such as a voice chat
 	// app. The macOS process tap honours them; Windows process loopback
-	// takes a single process tree, so there they are not supported.
+	// takes a single process tree, so there they are not supported
+	// (CanExcludeProcesses).
 	ExcludePIDs []int
+	// DeviceID records what one output device plays, by Device ID, Planck
+	// included, on Windows; empty, or a device that is gone, records
+	// everything but Planck. macOS records every device.
+	DeviceID string
 }
 
 // Capture paths a capturer's Mode reports.

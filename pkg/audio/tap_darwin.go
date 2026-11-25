@@ -58,6 +58,9 @@ type SystemCapturer struct {
 	tapErr error
 }
 
+// CanExcludeProcesses is whether CaptureOptions.ExcludePIDs works here.
+const CanExcludeProcesses = true
+
 func NewCapturer(opts CaptureOptions) (*SystemCapturer, error) {
 	return &SystemCapturer{opts: opts}, nil
 }

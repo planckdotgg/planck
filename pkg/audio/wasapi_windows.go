@@ -226,8 +226,11 @@ func NewCapturer(opts CaptureOptions) (*WASAPICapturer, error) {
 	if len(opts.ExcludePIDs) > 0 {
 		return nil, fmt.Errorf("audio: excluding more processes: %w (Windows process loopback excludes one process tree, Planck's)", ErrUnsupported)
 	}
-	return &WASAPICapturer{opts: opts}, nil
+	return &WASAPICapturer{opts: opts, deviceID: presentDevice(OutputDevices, opts.DeviceID)}, nil
 }
+
+// CanExcludeProcesses is whether CaptureOptions.ExcludePIDs works here.
+const CanExcludeProcesses = false
 
 // NewMicCapturer records the default capture endpoint.
 func NewMicCapturer() (MicCapturer, error) { return &WASAPICapturer{mic: true}, nil }
@@ -402,7 +405,7 @@ func (c *WASAPICapturer) openClient() (client *comObject, mode string, channels 
 		client, err = endpointClient(eCapture, c.deviceID)
 		return client, ModeMicrophone, MicChannels, false, err
 	}
-	if !c.endpointOnly {
+	if !c.endpointOnly && c.deviceID == "" {
 		client, err = processLoopbackClient(uint32(os.Getpid()))
 	}
 	if err == nil && client != nil {

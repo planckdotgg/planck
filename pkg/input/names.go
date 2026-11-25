@@ -79,3 +79,42 @@ func SwapCmdCtrl(ev Event) Event {
 	ev.Key.Modifiers = m&^(ctrl|gui) | (m&ModLeftControl)<<3 | (m&ModRightControl)<<3 | (m&ModLeftGUI)>>3 | (m&ModRightGUI)>>3
 	return ev
 }
+
+// IsSecureAttention reports whether ev is Delete going down with Ctrl and
+// Alt held, on either side: Ctrl+Alt+Del.
+func IsSecureAttention(ev Event) bool {
+	m := ev.Key.Modifiers
+	return ev.Type == TypeKey && ev.Key.Pressed && ev.Key.Usage == KeyDelete &&
+		m&(ModLeftControl|ModRightControl) != 0 && m&(ModLeftAlt|ModRightAlt) != 0
+}
+
+// CtrlAltDel is the key events of Ctrl+Alt+Del pressed and let go, over
+// what held already has down, which stays down.
+func CtrlAltDel(held uint8) []Event {
+	mods := held
+	var out []Event
+	key := func(u uint16, down bool) {
+		out = append(out, Event{Type: TypeKey, Key: KeyEvent{Usage: u, Pressed: down, Modifiers: mods}})
+	}
+	for _, m := range []struct {
+		usage uint16
+		bit   uint8
+	}{{KeyLeftControl, ModLeftControl}, {KeyLeftAlt, ModLeftAlt}} {
+		if held&m.bit == 0 {
+			mods |= m.bit
+			key(m.usage, true)
+		}
+	}
+	key(KeyDelete, true)
+	key(KeyDelete, false)
+	for _, m := range []struct {
+		usage uint16
+		bit   uint8
+	}{{KeyLeftAlt, ModLeftAlt}, {KeyLeftControl, ModLeftControl}} {
+		if held&m.bit == 0 {
+			mods &^= m.bit
+			key(m.usage, false)
+		}
+	}
+	return out
+}

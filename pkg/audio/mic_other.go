@@ -7,6 +7,8 @@ package audio
 // NewMicCapturer the default source, and FindVirtualMic/OpenMicSink a
 // module-null-sink whose monitor feeds a module-virtual-source.
 
+const CanExcludeProcesses = false
+
 func NewCapturer(CaptureOptions) (Capturer, error) { return nil, ErrUnsupported }
 func NewMicCapturer() (MicCapturer, error)         { return nil, ErrUnsupported }
 func OpenMicSink(VirtualMic) (MicSink, error)      { return nil, ErrUnsupported }
