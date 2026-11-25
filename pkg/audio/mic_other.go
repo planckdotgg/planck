@@ -12,3 +12,9 @@ func NewMicCapturer() (MicCapturer, error)         { return nil, ErrUnsupported 
 func OpenMicSink(VirtualMic) (MicSink, error)      { return nil, ErrUnsupported }
 func outputDevices() ([]VirtualMic, error)         { return nil, ErrUnsupported }
 func prepareVirtualMic(*VirtualMic) error          { return nil }
+
+func NewMicCapturerOn(string) (MicCapturer, error) { return nil, ErrUnsupported }
+func OutputDevices() ([]Device, error)             { return nil, ErrUnsupported }
+func InputDevices() ([]Device, error)              { return nil, ErrUnsupported }
+func MuteOutput() (func() error, error)            { return nil, ErrUnsupported }
+func RunningApps() ([]App, error)                  { return nil, ErrUnsupported }

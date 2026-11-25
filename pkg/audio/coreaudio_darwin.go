@@ -169,9 +169,10 @@ func processObject(pid int32) uint32 {
 	return obj
 }
 
-func monoInt16Format() streamBasicDescription {
+func int16Format(channels int) streamBasicDescription {
+	n := uint32(channels)
 	return streamBasicDescription{sampleRate: SampleRate, formatID: audioFormatLinearPCM, formatFlags: formatSignedInt | formatPacked,
-		bytesPerPacket: 2 * MicChannels, framesPerPacket: 1, bytesPerFrame: 2 * MicChannels, channelsPerFrame: MicChannels, bitsPerChannel: 16}
+		bytesPerPacket: 2 * n, framesPerPacket: 1, bytesPerFrame: 2 * n, channelsPerFrame: n, bitsPerChannel: 16}
 }
 
 // audioQueueBuffer is the head of AudioQueueBuffer.

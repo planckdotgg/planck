@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -123,7 +124,8 @@ func passthroughFormatErr(output, input string, outChannels, outRate, inChannels
 }
 
 // FindVirtualMic looks for a virtual input device among the output devices:
-// the one whose name contains want, or a known one when want is empty.
+// the one whose ID is want or whose name contains it, or a known one when
+// want is empty.
 func FindVirtualMic(want string) (VirtualMic, error) {
 	devs, err := outputDevices()
 	if err != nil {
@@ -133,7 +135,10 @@ func FindVirtualMic(want string) (VirtualMic, error) {
 	for i, d := range devs {
 		names[i] = d.Name
 	}
-	i := pickVirtualMic(names, want)
+	i := slices.IndexFunc(devs, func(d VirtualMic) bool { return want != "" && d.ID == want })
+	if i < 0 {
+		i = pickVirtualMic(names, want)
+	}
 	if i < 0 {
 		if want != "" {
 			return VirtualMic{}, fmt.Errorf("%w (no output device matches %q)", ErrNoVirtualMic, want)

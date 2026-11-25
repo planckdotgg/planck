@@ -232,6 +232,12 @@ func NewCapturer(opts CaptureOptions) (*WASAPICapturer, error) {
 // NewMicCapturer records the default capture endpoint.
 func NewMicCapturer() (MicCapturer, error) { return &WASAPICapturer{mic: true}, nil }
 
+// NewMicCapturerOn records the capture endpoint with this Device ID, or
+// the default one when id is empty or the endpoint is gone.
+func NewMicCapturerOn(id string) (MicCapturer, error) {
+	return &WASAPICapturer{mic: true, deviceID: presentDevice(InputDevices, id)}, nil
+}
+
 // Mode says which capture path Start opened.
 func (c *WASAPICapturer) Mode() string {
 	c.mu.Lock()
@@ -724,18 +730,39 @@ func prepareVirtualMic(dev *VirtualMic) error {
 // the input side's gain (Steam Streaming Microphone records at +30 dB), and
 // unmutes the endpoint while it is open.
 type wasapiSink struct {
-	dev    VirtualMic
-	ring   *pcmRing
-	cancel context.CancelFunc
-	done   chan struct{}
-	mu     sync.Mutex
-	closed bool
+	dev VirtualMic
+	// channels is what Write takes; mic unmutes the device while it plays
+	// and evens out its input side's gain.
+	channels int
+	mic      bool
+	ring     *pcmRing
+	cancel   context.CancelFunc
+	done     chan struct{}
+	mu       sync.Mutex
+	closed   bool
 }
 
 // OpenMicSink plays mic PCM into the playback side of dev, found with
 // FindVirtualMic.
 func OpenMicSink(dev VirtualMic) (MicSink, error) {
-	s := &wasapiSink{dev: dev, ring: newPCMRing(samplesForChannels(60*time.Millisecond, MicChannels)), done: make(chan struct{})}
+	s, err := openSink(dev, MicChannels, true)
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// openOutput plays stereo PCM on output device d.
+func openOutput(d Device) (Player, error) {
+	s, err := openSink(VirtualMic{ID: d.ID, Name: d.Name, Input: d.Name}, Channels, false)
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func openSink(dev VirtualMic, channels int, mic bool) (*wasapiSink, error) {
+	s := &wasapiSink{dev: dev, channels: channels, mic: mic, ring: newPCMRing(samplesForChannels(60*time.Millisecond, channels)), done: make(chan struct{})}
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
 	ready := make(chan error, 1)
@@ -785,13 +812,13 @@ func (s *wasapiSink) renderLoop(ctx context.Context, ready chan<- error) {
 		return
 	}
 	defer procCoUninit.Call()
-	if st, err := readEndpoint(s.dev.ID); err == nil && st.muted {
+	if st, err := readEndpoint(s.dev.ID); s.mic && err == nil && st.muted {
 		if setMute(s.dev.ID, false) == nil {
 			defer setMute(s.dev.ID, true)
 		}
 	}
 	gain := float32(1)
-	if s.dev.inputGainDB > 0 {
+	if s.mic && s.dev.inputGainDB > 0 {
 		gain = float32(math.Pow(10, -float64(s.dev.inputGainDB)/20))
 	}
 	client, err := endpointClient(eRender, s.dev.ID)
@@ -800,8 +827,9 @@ func (s *wasapiSink) renderLoop(ctx context.Context, ready chan<- error) {
 		return
 	}
 	defer client.release()
-	format := &waveFormatEx{formatTag: waveFormatFloat, channels: MicChannels, samplesPerSec: SampleRate,
-		avgBytesPerSec: SampleRate * MicChannels * 4, blockAlign: MicChannels * 4, bitsPerSample: 32}
+	ch := uint32(s.channels)
+	format := &waveFormatEx{formatTag: waveFormatFloat, channels: uint16(ch), samplesPerSec: SampleRate,
+		avgBytesPerSec: SampleRate * ch * 4, blockAlign: uint16(ch) * 4, bitsPerSample: 32}
 	const bufferDuration = 20 * time.Millisecond / 100
 	if err := hresult("Initialize", client.call(clientInitialize, shareModeShared, streamFlagsEvent|streamFlagsAutoConv|streamFlagsSRCDefault,
 		uintptr(bufferDuration), 0, uintptr(unsafe.Pointer(format)), 0)); err != nil {
@@ -842,14 +870,14 @@ func (s *wasapiSink) renderLoop(ctx context.Context, ready chan<- error) {
 
 	var padding uint32
 	var data unsafe.Pointer
-	scratch := make([]byte, int(bufFrames)*MicChannels*2)
+	scratch := make([]byte, int(bufFrames)*s.channels*2)
 	for ctx.Err() == nil {
 		syscall.WaitForSingleObject(syscall.Handle(event), 10)
 		if hresult("GetCurrentPadding", client.call1(clientGetCurrentPadding, uintptr(unsafe.Pointer(&padding)))) != nil {
 			continue
 		}
 		s.ring.mu.Lock()
-		queued := uint32(s.ring.n / MicChannels)
+		queued := uint32(s.ring.n / s.channels)
 		s.ring.mu.Unlock()
 		frames := min(bufFrames-padding, queued)
 		if frames == 0 {
@@ -858,8 +886,8 @@ func (s *wasapiSink) renderLoop(ctx context.Context, ready chan<- error) {
 		if hresult("GetBuffer", render.call2(renderGetBuffer, uintptr(frames), uintptr(unsafe.Pointer(&data)))) != nil {
 			continue
 		}
-		n := s.ring.read(scratch[:int(frames)*MicChannels*2]) / 2
-		out := unsafe.Slice((*float32)(data), int(frames)*MicChannels)
+		n := s.ring.read(scratch[:int(frames)*s.channels*2]) / 2
+		out := unsafe.Slice((*float32)(data), int(frames)*s.channels)
 		for i := range n {
 			out[i] = float32(int16(binary.LittleEndian.Uint16(scratch[2*i:]))) / 32768 * gain
 		}

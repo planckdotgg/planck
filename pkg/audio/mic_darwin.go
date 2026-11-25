@@ -43,13 +43,14 @@ func initQueueCallbacks() {
 	})
 }
 
-// newQueue makes an input or output audio queue of 48 kHz mono int16 with
-// its buffers, routed to owner.
-func newQueue(owner any, input bool) (aq, handle uintptr, bufs [queueBuffers]*audioQueueBuffer, err error) {
+// newQueue makes an input or output audio queue of 48 kHz int16 with its
+// buffers, routed to owner, on the device with uid, or the default device
+// when uid is empty.
+func newQueue(owner any, input bool, channels int, uid string) (aq, handle uintptr, bufs [queueBuffers]*audioQueueBuffer, err error) {
 	queueCallbacksOnce.Do(initQueueCallbacks)
 	handle = queueNext.Add(1)
 	queues.Store(handle, owner)
-	format := monoInt16Format()
+	format := int16Format(channels)
 	if input {
 		err = osStatus("AudioQueueNewInput", audioQueueNewInput(&format, inputCallback, handle, 0, 0, 0, &aq))
 	} else {
@@ -59,7 +60,17 @@ func newQueue(owner any, input bool) (aq, handle uintptr, bufs [queueBuffers]*au
 		queues.Delete(handle)
 		return 0, 0, bufs, err
 	}
-	size := uint32(FrameSamples(queueFrameTime) * MicChannels * 2)
+	if uid != "" {
+		s := apple.String(uid)
+		err = osStatus("set queue device", audioQueueSetProperty(aq, aqCurrentDevice, unsafe.Pointer(&s), uint32(unsafe.Sizeof(s))))
+		apple.CFRelease(s)
+		if err != nil {
+			audioQueueDispose(aq, true)
+			queues.Delete(handle)
+			return 0, 0, bufs, err
+		}
+	}
+	size := uint32(FrameSamples(queueFrameTime) * channels * 2)
 	for i := range bufs {
 		if err = osStatus("AudioQueueAllocateBuffer", audioQueueAllocateBuffer(aq, size, &bufs[i])); err != nil {
 			audioQueueDispose(aq, true)
@@ -70,9 +81,10 @@ func newQueue(owner any, input bool) (aq, handle uintptr, bufs [queueBuffers]*au
 	return aq, handle, bufs, nil
 }
 
-// aqMic records the default input device with an audio queue. macOS asks
-// the user for the Microphone permission the first time.
+// aqMic records an input device with an audio queue. macOS asks the user
+// for the Microphone permission the first time.
 type aqMic struct {
+	uid    string
 	mu     sync.Mutex
 	aq     uintptr
 	handle uintptr
@@ -84,6 +96,12 @@ type aqMic struct {
 // NewMicCapturer records the default input device.
 func NewMicCapturer() (MicCapturer, error) { return &aqMic{}, nil }
 
+// NewMicCapturerOn records the input device with this Device ID, or the
+// default one when id is empty or the device is gone.
+func NewMicCapturerOn(id string) (MicCapturer, error) {
+	return &aqMic{uid: presentDevice(InputDevices, id)}, nil
+}
+
 func (m *aqMic) Start(ctx context.Context, onPCM func(pcm []int16, pts int64)) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -91,7 +109,7 @@ func (m *aqMic) Start(ctx context.Context, onPCM func(pcm []int16, pts int64)) e
 		return errors.New("audio: capture already started")
 	}
 	m.onPCM = onPCM
-	aq, handle, bufs, err := newQueue(m, true)
+	aq, handle, bufs, err := newQueue(m, true, MicChannels, m.uid)
 	if err != nil {
 		return err
 	}
@@ -152,7 +170,7 @@ func (m *aqMic) Close() error {
 	return nil
 }
 
-// aqSink plays mono PCM into one output device with an audio queue.
+// aqSink plays PCM into one output device with an audio queue.
 type aqSink struct {
 	dev    VirtualMic
 	ring   *pcmRing
@@ -164,16 +182,26 @@ type aqSink struct {
 
 // OpenMicSink plays mic PCM into dev, found with FindVirtualMic.
 func OpenMicSink(dev VirtualMic) (MicSink, error) {
-	s := &aqSink{dev: dev, ring: newPCMRing(FrameSamples(60*time.Millisecond) * MicChannels)}
-	aq, handle, bufs, err := newQueue(s, false)
+	s, err := openQueueSink(dev, MicChannels)
 	if err != nil {
 		return nil, err
 	}
-	uid := apple.String(dev.ID)
-	defer apple.CFRelease(uid)
-	if err := osStatus("set queue device", audioQueueSetProperty(aq, aqCurrentDevice, unsafe.Pointer(&uid), uint32(unsafe.Sizeof(uid)))); err != nil {
-		audioQueueDispose(aq, true)
-		queues.Delete(handle)
+	return s, nil
+}
+
+// openOutput plays stereo PCM on output device d.
+func openOutput(d Device) (Player, error) {
+	s, err := openQueueSink(VirtualMic{ID: d.ID, Name: d.Name}, Channels)
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func openQueueSink(dev VirtualMic, channels int) (*aqSink, error) {
+	s := &aqSink{dev: dev, ring: newPCMRing(FrameSamples(60*time.Millisecond) * channels)}
+	aq, handle, bufs, err := newQueue(s, false, channels, dev.ID)
+	if err != nil {
 		return nil, fmt.Errorf("audio: open %s: %w", dev.Name, err)
 	}
 	s.aq, s.handle = aq, handle
