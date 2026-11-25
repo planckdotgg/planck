@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -150,6 +151,38 @@ func DefaultHostConfig() HostConfig {
 		Height:        1080,
 		Slices:        1,
 	}
+}
+
+// FromStored is c with the hosting settings host.json keeps: the ports
+// and discovery, the capture display, the encoding GPU, the virtual
+// display's primary flag, a fixed PIN and what clients may do. NewHost
+// reads the name, the policy and the trust settings itself.
+func (c HostConfig) FromStored(s config.HostConfig) HostConfig {
+	listenHost, _, err := net.SplitHostPort(c.ListenAddr)
+	if err != nil {
+		listenHost = ""
+	}
+	c.ListenAddr = net.JoinHostPort(listenHost, fmt.Sprint(s.ControlPort))
+	c.MediaPort = int(s.MediaPort)
+	c.DiscoveryAddr = "off"
+	if s.DiscoveryPort != 0 {
+		c.DiscoveryAddr = fmt.Sprintf(":%d", s.DiscoveryPort)
+	}
+	c.Display, c.VDDPrimary, c.PIN = s.Display, s.VDDPrimary, s.FixedPIN
+	if s.Adapter != "" {
+		c.Adapter = s.Adapter
+	}
+	c.InjectInput = c.InjectInput && !s.NoInput
+	c.Clipboard = ClipboardConfig{}
+	switch s.Clipboard {
+	case config.ClipboardBoth:
+		c.Clipboard = ClipboardConfig{Send: true, Receive: true}
+	case config.ClipboardHostToClient:
+		c.Clipboard.Send = true
+	case config.ClipboardClientToHost:
+		c.Clipboard.Receive = true
+	}
+	return c
 }
 
 // HostStats is a snapshot of the host and its current client.
@@ -351,6 +384,74 @@ func (h *Host) PIN() string {
 // PairedClients lists the trusted client certificates by fingerprint.
 func (h *Host) PairedClients() map[string]PairedClient { return h.pairs.list() }
 
+// ErrNotPaired is a revoke of a fingerprint the host does not trust.
+var ErrNotPaired = errors.New("session: no paired client has that fingerprint")
+
+// RevokeClient forgets the paired client with this certificate
+// fingerprint (hex) and ends its stream if it is connected; it needs the
+// PIN to pair again.
+func (h *Host) RevokeClient(fingerprint string) error {
+	return h.revoke([]string{strings.ToLower(fingerprint)})
+}
+
+// RevokeAllClients forgets every paired client and ends the stream.
+func (h *Host) RevokeAllClients() error { return h.revoke(nil) }
+
+func (h *Host) revoke(fps []string) error {
+	gone, err := h.pairs.remove(fps)
+	if err != nil {
+		return err
+	}
+	if fps != nil && len(gone) == 0 {
+		return ErrNotPaired
+	}
+	h.mu.Lock()
+	st := h.cur
+	if st != nil {
+		fp := st.sess.PeerFingerprint()
+		if slices.Contains(gone, hex.EncodeToString(fp[:])) {
+			h.cur = nil
+		} else {
+			st = nil
+		}
+	}
+	h.mu.Unlock()
+	if st != nil {
+		st.stop()
+	}
+	return nil
+}
+
+// LoadPairedClients reads the clients a host with config directory dir
+// trusts, for when it is not running.
+func LoadPairedClients(dir string) (map[string]PairedClient, error) {
+	p, err := loadPairings(filepath.Join(dir, PairedClientsFile))
+	if err != nil {
+		return nil, err
+	}
+	return p.list(), nil
+}
+
+// RevokePairedClients is Host.RevokeClient, or with fingerprints nil
+// RevokeAllClients, for a host that is not running.
+func RevokePairedClients(dir string, fingerprints []string) error {
+	p, err := loadPairings(filepath.Join(dir, PairedClientsFile))
+	if err != nil {
+		return err
+	}
+	for i, fp := range fingerprints {
+		fingerprints[i] = strings.ToLower(fp)
+	}
+	gone, err := p.remove(fingerprints)
+	if err == nil && fingerprints != nil && len(gone) == 0 {
+		return ErrNotPaired
+	}
+	return err
+}
+
+// MediaPort is the fixed UDP media port, or 0 when each session picks one.
+func (h *Host) MediaPort() int { return h.cfg.MediaPort }
+
 // Addr is the control listener's address once started.
 func (h *Host) Addr() net.Addr {
 	if h.srv == nil {
@@ -467,6 +568,11 @@ func (h *Host) acceptLoop(ctx context.Context) {
 			continue
 		case err != nil:
 			return
+		}
+		if _, ok := h.pairs.lookup(sess.PeerFingerprint()); !ok {
+			// Revoked between its handshake and here.
+			sess.Close()
+			continue
 		}
 		h.sessions.Add(1)
 		st := newStream(h, sess)
