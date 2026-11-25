@@ -6,6 +6,7 @@ import (
 
 	"github.com/egoist/mygo/gpusurface"
 	mui "github.com/egoist/mygo/ui"
+	"github.com/planckdotgg/planck/internal/ui"
 	"github.com/planckdotgg/planck/pkg/input"
 )
 
@@ -23,6 +24,8 @@ type inputForwarder struct {
 	// sys is immersive mode, whose hook takes the keyboard over while it
 	// captures; nil leaves the keyboard here.
 	sys *systemKeys
+	// local are the chords never sent to the host.
+	local *localKeys
 
 	keys []mui.Key
 	mods uint8
@@ -201,22 +204,11 @@ func (f *inputForwarder) sendButton(b int, pressed bool) bool {
 	return true
 }
 
-// overlayChord is the modifiers of the stream overlay's keys, which stay
-// with the client, even while it captures the system's keys.
-const overlayChord = mui.Ctrl | mui.Alt
-
-// overlayKey reports whether k with m is one of the overlay's keys.
-func overlayKey(k mui.Key, m mui.Modifiers) bool {
-	if m&overlayChord != overlayChord {
-		return false
-	}
-	switch k {
-	case mui.KeyO, mui.KeyP, mui.KeyH, mui.KeyM, mui.KeyU, mui.KeyF, mui.KeyI, mui.KeyG:
-		return true
-	case mui.KeyD:
-		return m&mui.Shift != 0
-	}
-	return false
+// localKey reports whether k with m stays on this device: a hotkey or a
+// chord never sent.
+func (f *inputForwarder) localKey(k mui.Key, m mui.Modifiers) bool {
+	u, ok := hidUsage[k]
+	return ok && f.local.has(m, u)
 }
 
 // keysFrame sends the keyboard's changes, unless immersive mode's hook has
@@ -245,12 +237,12 @@ func (f *inputForwarder) keyboard(held []mui.Key, m mui.Modifiers) {
 		}
 	}
 	for _, k := range held {
-		if !slices.Contains(f.keys, k) && !overlayKey(k, m) {
+		if !slices.Contains(f.keys, k) && !f.localKey(k, m) {
 			f.sendKey(k, true)
 		}
 	}
 	f.keys = append(f.keys[:0], held...)
-	f.keys = slices.DeleteFunc(f.keys, func(k mui.Key) bool { return overlayKey(k, m) })
+	f.keys = slices.DeleteFunc(f.keys, func(k mui.Key) bool { return f.localKey(k, m) })
 	for _, mk := range modifierKeys {
 		if mods&mk.bit == 0 && f.mods&mk.bit != 0 {
 			f.mods &^= mk.bit
@@ -297,27 +289,4 @@ func hidModifiers(m mui.Modifiers) uint8 {
 	return b
 }
 
-var hidUsage = func() map[mui.Key]uint16 {
-	m := map[mui.Key]uint16{
-		mui.KeyEnter: input.KeyEnter, mui.KeyEscape: input.KeyEscape, mui.KeyBackspace: input.KeyBackspace,
-		mui.KeyTab: input.KeyTab, mui.KeySpace: input.KeySpace, mui.KeyDelete: input.KeyDelete,
-		mui.KeyInsert: input.KeyInsert, mui.KeyHome: input.KeyHome, mui.KeyEnd: input.KeyEnd,
-		mui.KeyPageUp: input.KeyPageUp, mui.KeyPageDown: input.KeyPageDown,
-		mui.KeyLeft: input.KeyLeft, mui.KeyRight: input.KeyRight, mui.KeyUp: input.KeyUp, mui.KeyDown: input.KeyDown,
-		mui.KeyMinus: input.KeyMinus, mui.KeyEqual: input.KeyEqual, mui.KeyComma: input.KeyComma,
-		mui.KeyPeriod: input.KeyPeriod, mui.KeySlash: input.KeySlash, mui.KeySemicolon: input.KeySemicolon,
-		mui.KeyQuote: input.KeyQuote, mui.KeyBracketLeft: input.KeyLeftBracket, mui.KeyBracketRight: input.KeyRightBracket,
-		mui.KeyBackslash: input.KeyBackslash, mui.KeyBackquote: input.KeyGrave, mui.KeyContextMenu: input.KeyApplication,
-		mui.Key0: input.Key0,
-	}
-	for i, k := range []mui.Key{mui.KeyF1, mui.KeyF2, mui.KeyF3, mui.KeyF4, mui.KeyF5, mui.KeyF6, mui.KeyF7, mui.KeyF8, mui.KeyF9, mui.KeyF10, mui.KeyF11, mui.KeyF12} {
-		m[k] = input.KeyF1 + uint16(i)
-	}
-	for i, k := range []mui.Key{mui.Key1, mui.Key2, mui.Key3, mui.Key4, mui.Key5, mui.Key6, mui.Key7, mui.Key8, mui.Key9} {
-		m[k] = input.Key1 + uint16(i)
-	}
-	for i := range 26 {
-		m[mui.KeyA+mui.Key(i)] = input.KeyA + uint16(i)
-	}
-	return m
-}()
+var hidUsage = ui.HIDUsage

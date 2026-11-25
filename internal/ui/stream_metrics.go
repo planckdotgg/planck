@@ -469,9 +469,11 @@ func (a *App) metricsBody(c *mui.Context, tel Telemetry) {
 			foot += " · " + t.ceiling
 		}
 		mono(c, foot).FontSize(theme.TextMicro).TextColor(theme.RoleText3).Grow(1)
-		mui.Row(c).Height(16).PaddingX(4).AlignItems(mui.Center).Radius(3).Border(1, theme.RoleBorder).Children(func() {
-			mono(c, a.shortcut(false, "M")).FontSize(theme.TextMicro).TextColor(theme.RoleText3)
-		})
+		if k := a.keyLabel(HotkeyMetrics); k != "" {
+			mui.Row(c).Height(16).PaddingX(4).AlignItems(mui.Center).Radius(3).Border(1, theme.RoleBorder).Children(func() {
+				mono(c, k).FontSize(theme.TextMicro).TextColor(theme.RoleText3)
+			})
+		}
 	})
 }
 

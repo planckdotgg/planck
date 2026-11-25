@@ -43,7 +43,7 @@ func (a *App) clientNameRow(c *mui.Context, f *settingsFrame) {
 // starts: nothing, the compact readout, or the full window.
 func (a *App) metricsRow(c *mui.Context, f *settingsFrame) {
 	l := &f.layout
-	f.row(c, "Metrics at stream start", "The overlay remembers where you left it. "+a.shortcut(false, "H")+" cycles it while streaming.", func() {
+	f.row(c, "Metrics at stream start", "The overlay remembers where you left it. "+a.keyText(HotkeyCycleHUD)+" cycles it while streaming.", func() {
 		sel := 0
 		switch {
 		case l.Metrics && l.MetricsCompact:
@@ -101,48 +101,33 @@ func (a *App) hostKeysWord() string {
 	return "Windows"
 }
 
-// hotkey is one of the stream's bound chords.
-type hotkey struct {
-	action string
-	shift  bool
-	key    string
-}
-
-// hotkeys are the chords the stream view binds (stream_overlay.go).
-var hotkeys = []hotkey{
-	{"Stream menu", false, "O"},
-	{"Hide the overlay button", false, "P"},
-	{"Metrics window", false, "M"},
-	{"Cycle HUD mode", false, "H"},
-	{"Microphone", false, "U"},
-	{"Full screen", false, "F"},
-	{"Immersive mode (system keys)", false, "I"},
-	{"Lock the cursor to the stream", false, "G"},
-	{"Disconnect", true, "D"},
-}
-
 func (a *App) hotkeyTable(c *mui.Context, f *settingsFrame) {
 	mui.Column(c).FillWidth().Label("Hotkeys").Children(func() {
 		mui.Row(c).FillWidth().Height(28).AlignItems(mui.Center).Children(func() {
 			sectionLabel(c, "Action").Grow(1)
 			sectionLabel(c, "Shortcut").Width(150)
 		})
-		for _, h := range hotkeys {
-			if f.searching && !strings.Contains(strings.ToLower(h.action), f.query) && !strings.Contains("hotkeys shortcut", f.query) {
+		for _, h := range a.backend.Hotkeys() {
+			name := hotkeyNames[h.Action]
+			if f.searching && !strings.Contains(strings.ToLower(name), f.query) && !strings.Contains("hotkeys shortcut", f.query) {
 				continue
 			}
 			divider(c)
 			mui.Row(c).FillWidth().Height(32).AlignItems(mui.Center).Children(func() {
-				f.title(c, h.action, theme.RoleText)
+				f.title(c, name, theme.RoleText)
 				mui.Spacer(c)
+				label := chordLabel(a.goos, h.Chord)
+				if label == "" {
+					label = "Not set"
+				}
 				mui.Box(c).Size(150, 24).AlignItems(mui.Center).Justify(mui.Center).Radius(theme.RadiusXs).
 					Background(theme.RoleWell).Border(1, theme.RoleBorder).Children(func() {
-					mono(c, a.shortcut(h.shift, h.key)).FontSize(theme.TextCaption).LetterSpacing(0.06 * theme.TextCaption)
+					mono(c, label).FontSize(theme.TextCaption).LetterSpacing(0.06 * theme.TextCaption)
 				})
 			})
 		}
 		divider(c)
-		caption(c, "These are the defaults. Rebinding them comes in a later build.").Margin(theme.Space2, 0, 0)
+		caption(c, "Changing them here comes in a later build.").Margin(theme.Space2, 0, 0)
 	})
 }
 
@@ -223,7 +208,7 @@ var settingEntries = []settingEntry{
 		build: (*App).clientNameRow},
 	{id: "general.fullscreen", cat: catGeneral, title: "Open streams in full screen", aliases: "fullscreen window",
 		build: func(a *App, c *mui.Context, f *settingsFrame) {
-			f.switchRow(c, "Open streams in full screen", "Each stream opens in its own window. "+a.shortcut(false, "F")+" switches full screen while streaming.", &f.s.OpenFullscreen)
+			f.switchRow(c, "Open streams in full screen", "Each stream opens in its own window. "+a.keyText(HotkeyFullscreen)+" switches full screen while streaming.", &f.s.OpenFullscreen)
 		}},
 	{id: "general.metrics", cat: catGeneral, title: "Metrics at stream start", help: "The overlay remembers where you left it.", aliases: "hud overlay compact statistics",
 		build: (*App).metricsRow},
@@ -331,7 +316,7 @@ var settingEntries = []settingEntry{
 		}},
 	{id: "audio.mic", cat: catAudio, title: "Microphone", aliases: "mic voice",
 		build: func(a *App, c *mui.Context, f *settingsFrame) {
-			f.row(c, "Microphone", "Every stream starts with it muted. Turn it on from the stream menu or with "+a.shortcut(false, "U")+".", func() {})
+			f.row(c, "Microphone", "Every stream starts with it muted. Turn it on from the stream menu or with "+a.keyText(HotkeyMicrophone)+".", func() {})
 		}},
 
 	{id: "input.syskeys", cat: catInput, title: "Send system keys to the host", aliases: "immersive keyboard alt tab windows key",
@@ -342,7 +327,7 @@ var settingEntries = []settingEntry{
 		build: func(a *App, c *mui.Context, f *settingsFrame) {
 			f.switchRow(c, "Lock the mouse to the stream", "Relative motion, for games that turn the camera with the mouse.", &f.s.RelativeMouse)
 		}},
-	{id: "input.hotkeys", cat: catInput, title: "Hotkeys", aliases: "shortcut chord keys stream menu metrics hud microphone full screen immersive cursor disconnect",
+	{id: "input.hotkeys", cat: catInput, title: "Hotkeys", aliases: "shortcut chord keys stream menu metrics hud microphone full screen immersive cursor disconnect keyframe ctrl alt del display kick stop hosting",
 		build: (*App).hotkeyTable},
 
 	{id: "gamepad.status", cat: catGamepad, title: "Gamepads", aliases: "controller gamepad joystick xbox dualsense",

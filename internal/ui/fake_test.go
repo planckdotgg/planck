@@ -10,6 +10,7 @@ import (
 
 	mui "github.com/egoist/mygo/ui"
 	"github.com/planckdotgg/planck/internal/ui/theme"
+	"github.com/planckdotgg/planck/pkg/config"
 	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/encode"
@@ -58,10 +59,20 @@ type fakeBackend struct {
 	revokes       []string
 	measures      []string
 	clientName    string
+	// keys holds the hotkeys and the never-send list, with config's rules.
+	keys           config.ClientConfig
+	ctrlAltDels    int
+	switches       int
+	switchErr      error
+	kicks          int
+	audioDevices   AudioDevices
+	apps           []string
+	privacyProblem string
 }
 
 func newFake() *fakeBackend {
 	return &fakeBackend{
+		keys:          config.DefaultClientConfig(),
 		connectResult: make(chan error, 1),
 		settings:      Settings{AudioEnabled: true, AudioVolume: 0.8},
 		overrides:     map[string]defaults.UserOverrides{},
@@ -248,6 +259,55 @@ func (f *fakeBackend) SetClientName(name string) error {
 	f.clientName = name
 	return nil
 }
+
+func (f *fakeBackend) Hotkeys() []Hotkey {
+	defer f.lock()()
+	out := make([]Hotkey, 0, len(config.HotkeyDefs))
+	for _, d := range config.HotkeyDefs {
+		out = append(out, Hotkey{Action: d.Action, Chord: f.keys.Hotkey(d.Action).String(), Default: d.Default.String(), Global: d.Global})
+	}
+	return out
+}
+
+func (f *fakeBackend) SetHotkey(a HotkeyAction, chord string) error {
+	defer f.lock()()
+	return f.keys.SetHotkey(a, chord, "darwin")
+}
+
+func (f *fakeBackend) ResetHotkey(a HotkeyAction) error {
+	defer f.lock()()
+	return f.keys.ResetHotkey(a, "darwin")
+}
+
+func (f *fakeBackend) ResetAllHotkeys() error { defer f.lock()(); f.keys.ResetAllHotkeys(); return nil }
+
+func (f *fakeBackend) NeverSend() []string { defer f.lock()(); return slices.Clone(f.keys.NeverSend) }
+
+func (f *fakeBackend) AddNeverSend(chord string) error {
+	defer f.lock()()
+	return f.keys.AddNeverSend(chord)
+}
+
+func (f *fakeBackend) RemoveNeverSend(chord string) error {
+	defer f.lock()()
+	return f.keys.RemoveNeverSend(chord)
+}
+
+func (f *fakeBackend) SendCtrlAltDel() { defer f.lock()(); f.ctrlAltDels++ }
+
+func (f *fakeBackend) SwitchDisplay() error {
+	defer f.lock()()
+	f.switches++
+	return f.switchErr
+}
+
+func (f *fakeBackend) KickClient() error { defer f.lock()(); f.kicks++; return nil }
+
+func (f *fakeBackend) AudioDevices() AudioDevices { defer f.lock()(); return f.audioDevices }
+
+func (f *fakeBackend) RunningApps() []string { defer f.lock()(); return slices.Clone(f.apps) }
+
+func (f *fakeBackend) PrivacyModeProblem() string { defer f.lock()(); return f.privacyProblem }
 
 func (f *fakeBackend) set(fn func(f *fakeBackend)) {
 	f.mu.Lock()

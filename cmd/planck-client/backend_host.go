@@ -8,6 +8,7 @@ import (
 	"net"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/planckdotgg/planck/internal/session"
 	"github.com/planckdotgg/planck/internal/ui"
@@ -51,8 +52,25 @@ func hostSettingsFrom(c config.HostConfig) ui.HostSettings {
 		Name: c.Name, Encoder: c.Adapter, Display: c.Display, Policy: c.Policy.Normalize(), VDDPrimary: c.VDDPrimary,
 		FixedPIN: c.FixedPIN, RequirePINForLAN: c.RequirePINForLAN, AllowTailscaleSameUser: c.AllowTailscaleSameUser,
 		AllowInput: !c.NoInput, Clipboard: ui.ClipboardDirection(cmp.Or(c.Clipboard, config.ClipboardOff)),
-		Ports: ui.HostPorts{Control: int(c.ControlPort), Media: int(c.MediaPort), Discovery: int(c.DiscoveryPort)},
+		Ports:       ui.HostPorts{Control: int(c.ControlPort), Media: int(c.MediaPort), Discovery: int(c.DiscoveryPort)},
+		AudioDevice: c.AudioDevice, ExcludeApps: c.AudioExcludeApps, VirtualMic: c.VirtualMic,
+		StayAwake: c.StayAwake, LockOnDisconnect: c.LockOnDisconnect, MuteSpeakers: c.MuteSpeakers, PrivacyMode: c.PrivacyMode,
+		IdleTimeoutMinutes: c.IdleTimeoutMinutes,
 	}
+}
+
+// sessionSettingsOf are the settings a running host takes live.
+func sessionSettingsOf(s ui.HostSettings) session.SessionSettings {
+	return session.SessionSettings{StayAwake: s.StayAwake, LockOnDisconnect: s.LockOnDisconnect, MuteSpeakers: s.MuteSpeakers,
+		PrivacyMode: s.PrivacyMode, IdleTimeout: time.Duration(s.IdleTimeoutMinutes) * time.Minute}
+}
+
+// restartable is s without what a running host changes live: its name
+// and its session settings.
+func restartable(s ui.HostSettings) ui.HostSettings {
+	s.Name = ""
+	s.StayAwake, s.LockOnDisconnect, s.MuteSpeakers, s.PrivacyMode, s.IdleTimeoutMinutes = false, false, false, false, 0
+	return s
 }
 
 // applyHostSettings writes s over c; Validate checks the rest.
@@ -64,6 +82,9 @@ func applyHostSettings(c *config.HostConfig, s ui.HostSettings) error {
 	}
 	if len(s.Name) > session.MaxHostNameLen {
 		return fmt.Errorf("a host name is at most %d bytes", session.MaxHostNameLen)
+	}
+	if s.IdleTimeoutMinutes < 0 || s.IdleTimeoutMinutes > config.MaxIdleTimeoutMinutes {
+		return fmt.Errorf("idle timeout: want 0 to %d minutes", config.MaxIdleTimeoutMinutes)
 	}
 	policy := s.Policy.Normalize()
 	if err := policy.Validate(); err != nil {
@@ -77,6 +98,13 @@ func applyHostSettings(c *config.HostConfig, s ui.HostSettings) error {
 		c.Clipboard = ""
 	}
 	c.ControlPort, c.MediaPort, c.DiscoveryPort = uint16(s.Ports.Control), uint16(s.Ports.Media), uint16(s.Ports.Discovery)
+	c.AudioDevice, c.AudioExcludeApps = s.AudioDevice, config.NewAppList(s.ExcludeApps.Names()...)
+	c.VirtualMic = strings.TrimSpace(s.VirtualMic)
+	if strings.EqualFold(c.VirtualMic, "auto") {
+		c.VirtualMic = ""
+	}
+	c.StayAwake, c.LockOnDisconnect, c.MuteSpeakers, c.PrivacyMode = s.StayAwake, s.LockOnDisconnect, s.MuteSpeakers, s.PrivacyMode
+	c.IdleTimeoutMinutes = s.IdleTimeoutMinutes
 	return nil
 }
 
@@ -86,8 +114,9 @@ func (b *backend) HostSettings() ui.HostSettings {
 	return hostSettingsFrom(b.hostStored)
 }
 
-// SetHostSettings keeps s in host.json. While hosting, a new name goes to
-// clients at once, and any other change restarts hosting with it.
+// SetHostSettings keeps s in host.json. While hosting, a new name and the
+// session settings apply at once, and any other change restarts hosting
+// with it.
 func (b *backend) SetHostSettings(s ui.HostSettings) error {
 	s.Name, s.FixedPIN = strings.TrimSpace(s.Name), strings.TrimSpace(s.FixedPIN)
 	var stored config.HostConfig
@@ -117,10 +146,10 @@ func (b *backend) SetHostSettings(s ui.HostSettings) error {
 			return err
 		}
 	}
-	before.Name, after.Name = "", ""
-	if before != after {
+	if restartable(before) != restartable(after) {
 		return b.SetHosting(context.Background(), true)
 	}
+	h.SetSessionSettings(sessionSettingsOf(after))
 	return nil
 }
 

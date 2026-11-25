@@ -13,11 +13,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/planckdotgg/planck/internal/session"
 	"github.com/planckdotgg/planck/internal/ui"
+	"github.com/planckdotgg/planck/pkg/audio"
 	"github.com/planckdotgg/planck/pkg/config"
 	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/discovery"
@@ -59,6 +61,21 @@ type backend struct {
 	// measure times an encoder, and displays lists this machine's.
 	measure  func(ctx context.Context, gpu string) (session.Latency, error)
 	displays func() []defaults.HostDisplay
+	// audioOutputs, audioInputs and runningApps list this machine's sound
+	// devices and processes.
+	audioOutputs, audioInputs func() ([]audio.Device, error)
+	runningApps               func() ([]audio.App, error)
+	// onKeys hears the hotkeys and the never-send list change; heldMods is
+	// what modifiers the host holds for this device, as HID bits. The GUI
+	// sets both before the first stream.
+	onKeys   func(hotkeys []ui.Hotkey, never []string)
+	heldMods func() uint8
+	// globals takes the host's hotkeys while hosting; nil registers none.
+	globals    globalShortcuts
+	globalMu   sync.Mutex
+	registered []string
+	// swap is Settings.SwapCmdCtrl, for the input path.
+	swap atomic.Bool
 
 	mu       sync.Mutex
 	onChange func()
@@ -90,6 +107,11 @@ type backend struct {
 	// self holds this machine's own host ID and certificate fingerprint,
 	// which discovery finds while it hosts and the list leaves out.
 	self map[string]bool
+	// keys are client.json's hotkeys and never-send list.
+	keys config.ClientConfig
+	// hostOS is the OS of the host hostOSOf streams from.
+	hostOSOf *session.Client
+	hostOS   string
 }
 
 type backendConfig struct {
@@ -117,6 +139,10 @@ type backendConfig struct {
 	// session.LocalDisplays.
 	measure  func(ctx context.Context, gpu string) (session.Latency, error)
 	displays func() []defaults.HostDisplay
+	// audioOutputs, audioInputs and runningApps replace audio's.
+	audioOutputs, audioInputs func() ([]audio.Device, error)
+	runningApps               func() ([]audio.App, error)
+	globals                   globalShortcuts
 }
 
 func newBackend(c backendConfig) (*backend, error) {
@@ -135,7 +161,18 @@ func newBackend(c backendConfig) (*backend, error) {
 	b := &backend{dir: dir, name: cmp.Or(c.name, stored.DeviceName, config.Hostname()), finder: c.finder, ts: c.tailscale, openSink: c.openSink, hostConfig: c.hostConfig,
 		encoders: c.encoders, logf: c.logf, routeConfig: c.route, overrides: c.overrides, viewSize: c.viewSize, display: c.display, onCursor: c.onCursor, onCursorShape: c.onCursorShape, onSystemKeys: c.onSystemKeys, settings: settingsFrom(stored), pinned: stored.PinnedHosts, aliases: stored.HostAliases,
 		storedAll: stored.Overrides, storedHosts: stored.HostOverrides, layout: layoutFrom(stored.Overlay), self: map[string]bool{},
-		measure: c.measure, displays: c.displays}
+		measure: c.measure, displays: c.displays, audioOutputs: c.audioOutputs, audioInputs: c.audioInputs, runningApps: c.runningApps,
+		globals: c.globals, keys: config.ClientConfig{Hotkeys: stored.Hotkeys, NeverSend: stored.NeverSend}}
+	b.swap.Store(stored.SwapCmdCtrl)
+	if b.audioOutputs == nil {
+		b.audioOutputs = audio.OutputDevices
+	}
+	if b.audioInputs == nil {
+		b.audioInputs = audio.InputDevices
+	}
+	if b.runningApps == nil {
+		b.runningApps = audio.RunningApps
+	}
 	if b.measure == nil {
 		b.measure = func(ctx context.Context, gpu string) (session.Latency, error) {
 			return session.MeasureEncoder(ctx, nil, gpu, measureFrames)
@@ -165,7 +202,8 @@ func newBackend(c backendConfig) (*backend, error) {
 // start at their defaults each run.
 func settingsFrom(c config.ClientConfig) ui.Settings {
 	s := ui.Settings{AudioEnabled: c.AudioEnabled, ClipboardSend: c.ClipboardSend, ClipboardReceive: c.ClipboardReceive,
-		SystemKeysCapture: c.SystemKeysCapture, AudioVolume: 1, AudioMuted: c.AudioMuted, OpenFullscreen: c.StreamsOpenFullscreen()}
+		SystemKeysCapture: c.SystemKeysCapture, AudioVolume: 1, AudioMuted: c.AudioMuted, OpenFullscreen: c.StreamsOpenFullscreen(),
+		SwapCmdCtrl: c.SwapCmdCtrl, OutputDevice: c.AudioOutputDevice, MicDevice: c.MicDevice}
 	if c.AudioVolume != nil {
 		s.AudioVolume = min(max(*c.AudioVolume, 0), 1)
 	}
@@ -573,11 +611,18 @@ func (b *backend) dialNew(ctx context.Context, t session.Target, pin string, s u
 	if err != nil {
 		return err
 	}
-	c, err := session.NewClient(session.ClientConfig{
+	cfg := session.ClientConfig{
 		ConfigDir: b.dir, Name: name, PIN: pin, NoAudio: !s.AudioEnabled, Quality: legacyQuality(ov), Overrides: ov,
 		OpenSink: b.openSink, Tailscale: b.ts, Logf: b.logf, Route: b.route(ov), ViewSize: b.viewSize, Clipboard: clipboardOf(s),
 		OnCursor: b.onCursor, OnCursorShape: b.onCursorShape, Capabilities: b.capabilities,
-	})
+	}
+	if id := s.OutputDevice; id != "" {
+		cfg.OpenAudioPlayer = func() (audio.Player, error) { return audio.NewOutputPlayer(id) }
+	}
+	if id := s.MicDevice; id != "" {
+		cfg.OpenMic = func() (audio.MicCapturer, error) { return audio.NewMicCapturerOn(id) }
+	}
+	c, err := session.NewClient(cfg)
 	if err != nil {
 		return err
 	}
@@ -844,7 +889,7 @@ func (b *backend) resizeStream(w, h int) {
 // SendInput forwards one input event to the stream, if there is one.
 func (b *backend) SendInput(ev input.Event) {
 	if c := b.current(); c != nil {
-		_ = c.SendInput(ev)
+		_ = c.SendInput(b.swapInput(c, ev))
 	}
 }
 
@@ -891,6 +936,7 @@ func (b *backend) SetHosting(ctx context.Context, on bool) error {
 		b.self[h.HostID()], b.self[h.Fingerprint()] = true, true
 	}
 	b.mu.Unlock()
+	b.syncGlobals()
 	b.changed()
 	return err
 }
@@ -1005,6 +1051,7 @@ func (b *backend) SaveSettings(s ui.Settings) error {
 			off := false
 			stored.OpenFullscreen = &off
 		}
+		stored.SwapCmdCtrl, stored.AudioOutputDevice, stored.MicDevice = s.SwapCmdCtrl, s.OutputDevice, s.MicDevice
 		return nil
 	})
 	if err != nil {
@@ -1015,6 +1062,7 @@ func (b *backend) SaveSettings(s ui.Settings) error {
 	b.settings = s
 	c := b.client
 	b.mu.Unlock()
+	b.swap.Store(s.SwapCmdCtrl)
 	if clipboardOf(before) != clipboardOf(s) && c != nil {
 		c.SetClipboard(clipboardOf(s))
 	}

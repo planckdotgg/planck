@@ -41,7 +41,7 @@ func runGUI(o options) error {
 		dir: o.configDir, name: o.name, finder: f, tailscale: ts, openSink: video.open,
 		hostConfig: appHostConfig(o.configDir, logf),
 		encoders:   localEncoders(), logf: logf, overrides: o.overrides, viewSize: video.liveSize, display: video.display, onCursor: ptr.setHost, onCursorShape: ptr.setShape,
-		onSystemKeys: sys.setEnabled,
+		onSystemKeys: sys.setEnabled, globals: desktopShortcuts{},
 	})
 	if err != nil {
 		return err
@@ -53,7 +53,12 @@ func runGUI(o options) error {
 	sys.send, sys.changed = b.SendInput, app.Notify
 	sys.setEnabled(b.Settings().SystemKeysCapture)
 	app.SetSystemKeys(sys)
-	fwd := &inputForwarder{send: b.SendInput, video: video.videoSize, lock: ptr, sys: sys}
+	local := &localKeys{}
+	local.update(b.Hotkeys(), b.NeverSend())
+	sys.local, b.onKeys = local, local.update
+	fwd := &inputForwarder{send: b.SendInput, video: video.videoSize, lock: ptr, sys: sys, local: local}
+	// The UI asks for Ctrl+Alt+Del on the main thread, which fwd runs on.
+	b.heldMods = func() uint8 { return fwd.mods | sys.held.Modifiers() }
 	app.SetStreamView(fwd.view)
 	resizer := &viewResizer{delay: resizeSettle, send: b.resizeStream}
 
@@ -428,3 +433,12 @@ func (v *videoView) surfaceClosed() {
 		v.closed()
 	}
 }
+
+// desktopShortcuts are MyGo's global shortcuts, which fire while Planck
+// is not in front.
+type desktopShortcuts struct{}
+
+func (desktopShortcuts) Register(acc string, fn func()) error {
+	return mygo.GlobalShortcut.Register(acc, fn)
+}
+func (desktopShortcuts) Unregister(acc string) { mygo.GlobalShortcut.Unregister(acc) }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/planckdotgg/planck/pkg/config"
 	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/encode"
@@ -224,7 +225,100 @@ type HostSettings struct {
 	AllowInput bool
 	Clipboard  ClipboardDirection
 	Ports      HostPorts
+
+	// AudioDevice is the output whose sound streams, by AudioDevice.ID
+	// (Windows); empty is everything this machine plays but Planck.
+	AudioDevice string
+	// ExcludeApps are apps left out of the streamed sound, by name, such
+	// as "Discord" (macOS hosts; RunningApps lists candidates). It is an
+	// AppList so that HostSettings stays comparable.
+	ExcludeApps AppList
+	// VirtualMic is where a client's microphone plays: empty finds a
+	// virtual mic, "off" refuses it, anything else is an output's ID or
+	// part of its name.
+	VirtualMic string
+	// The session settings apply to the stream running at once, but for
+	// PrivacyMode, which applies from the next stream.
+	StayAwake        bool
+	LockOnDisconnect bool
+	MuteSpeakers     bool
+	// PrivacyMode turns this machine's displays off while a client streams
+	// from a virtual display; PrivacyModeProblem says why it cannot.
+	PrivacyMode bool
+	// IdleTimeoutMinutes disconnects a client idle that long; 0 is never.
+	IdleTimeoutMinutes int
 }
+
+// VirtualMicOff is HostSettings.VirtualMic for no microphone.
+const VirtualMicOff = config.VirtualMicOff
+
+// AppList holds app names; NewAppList makes one and Names reads it.
+type AppList = config.AppList
+
+// NewAppList keeps the names that are not blank, once each, trimmed.
+func NewAppList(names ...string) AppList { return config.NewAppList(names...) }
+
+// AudioDevice is a sound device of this machine.
+type AudioDevice struct {
+	// ID is stable across runs.
+	ID        string
+	Name      string
+	IsDefault bool
+}
+
+// AudioDevices are this machine's outputs and inputs.
+type AudioDevices struct {
+	Outputs, Inputs []AudioDevice
+}
+
+// HotkeyAction names what a hotkey does.
+type HotkeyAction = config.HotkeyAction
+
+// The hotkeys, in the order Settings lists them: the stream's, then the
+// host's, which are global.
+const (
+	HotkeyStreamMenu    = config.HotkeyStreamMenu
+	HotkeyHideButton    = config.HotkeyHideButton
+	HotkeyMetrics       = config.HotkeyMetrics
+	HotkeyCycleHUD      = config.HotkeyCycleHUD
+	HotkeyMicrophone    = config.HotkeyMicrophone
+	HotkeyFullscreen    = config.HotkeyFullscreen
+	HotkeyImmersive     = config.HotkeyImmersive
+	HotkeyCursorLock    = config.HotkeyCursorLock
+	HotkeySwitchDisplay = config.HotkeySwitchDisplay
+	HotkeyCtrlAltDel    = config.HotkeyCtrlAltDel
+	HotkeyKeyframe      = config.HotkeyKeyframe
+	HotkeyDisconnect    = config.HotkeyDisconnect
+	HotkeyStopHosting   = config.HotkeyStopHosting
+	HotkeyKickClient    = config.HotkeyKickClient
+)
+
+// Hotkey is one hotkey. Chords are written as "Ctrl+Alt+Shift+Super+K"
+// (Super is Cmd or the Windows key); ChordLabel shows one.
+type Hotkey struct {
+	Action HotkeyAction
+	// Chord is "" while unbound; Default is what ResetHotkey gives back.
+	Chord, Default string
+	// Global is a host action, which fires while Planck is not in front.
+	Global bool
+}
+
+// HotkeyError is a chord SetHotkey or AddNeverSend refused: errors.Is
+// tells ErrNoModifier, ErrReservedChord (Reason says what the system does
+// with it) and ErrChordInUse (Owner is the hotkey that has it, empty when
+// the never-send list does).
+type HotkeyError = config.HotkeyError
+
+var (
+	ErrBadChord      = config.ErrBadChord
+	ErrNoModifier    = config.ErrNoModifier
+	ErrReservedChord = config.ErrReservedChord
+	ErrChordInUse    = config.ErrChordInUse
+)
+
+// ErrOneDisplay is SwitchDisplay's answer while a host streams one
+// display, as every host does until multi-display streams.
+var ErrOneDisplay = errors.New("this host streams one display")
 
 // DisplayInfo is a display of this machine.
 type DisplayInfo struct {
@@ -273,6 +367,14 @@ type Settings struct {
 	AudioMuted  bool
 	// OpenFullscreen opens each stream's window in full screen.
 	OpenFullscreen bool
+	// SwapCmdCtrl trades Cmd and Ctrl in what goes to a host whose OS is
+	// macOS when this one's is not, or the other way.
+	SwapCmdCtrl bool
+	// OutputDevice and MicDevice are what a stream plays on and records
+	// from, by AudioDevice.ID; empty, or a device unplugged, is the
+	// system's default. A change applies from the next stream.
+	OutputDevice string
+	MicDevice    string
 }
 
 // DockEdge is the stream view's edge the overlay button is docked to.
@@ -503,4 +605,38 @@ type Backend interface {
 	SubmitPIN(ctx context.Context, pin string) error
 	TrustTailscalePeer(ctx context.Context) error
 	CancelPairing()
+
+	// Hotkeys lists every hotkey in order. SetHotkey binds one, or with
+	// "" unbinds it, returning a *HotkeyError for a chord it refuses;
+	// ResetHotkey gives one its default back and ResetAllHotkeys every
+	// one.
+	Hotkeys() []Hotkey
+	SetHotkey(action HotkeyAction, chord string) error
+	ResetHotkey(action HotkeyAction) error
+	ResetAllHotkeys() error
+	// NeverSend are chords never sent to the host, even in immersive
+	// mode, such as a voice chat's push-to-talk key; a bare key counts.
+	// AddNeverSend refuses a hotkey's chord with a *HotkeyError.
+	NeverSend() []string
+	AddNeverSend(chord string) error
+	RemoveNeverSend(chord string) error
+	// SendCtrlAltDel sends Ctrl+Alt+Del to the host, which a Windows host
+	// answers with its security screen where Windows lets it.
+	SendCtrlAltDel()
+	// SwitchDisplay moves the stream to the host's next display;
+	// ErrOneDisplay while hosts stream one.
+	SwitchDisplay() error
+
+	// KickClient disconnects the client streaming from this machine,
+	// which may connect again.
+	KickClient() error
+	// AudioDevices lists this machine's sound devices, for Settings'
+	// output, microphone and capture pickers.
+	AudioDevices() AudioDevices
+	// RunningApps names the apps running now, for the apps hosting leaves
+	// out of the sound.
+	RunningApps() []string
+	// PrivacyModeProblem is why privacy mode cannot work on this machine,
+	// "" when it can.
+	PrivacyModeProblem() string
 }
