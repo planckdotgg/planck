@@ -2,6 +2,8 @@ package session
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +16,7 @@ import (
 	"github.com/planckdotgg/planck/pkg/gpu"
 	"github.com/planckdotgg/planck/pkg/player"
 	"github.com/planckdotgg/planck/pkg/transport"
+	"github.com/planckdotgg/planck/pkg/wire"
 )
 
 // sdrSource delivers 8-bit BGRA frames at fps, as DXGI duplication does
@@ -149,6 +152,86 @@ func TestHDR10CaptureFallsBackToSDR(t *testing.T) {
 
 	c, sinks = connect(defaults.UserOverrides{Display: display2})
 	check("started", c, sinks)
+}
+
+// TestHDR10FallbackBeforeRouteLive: the host's SDR stream can reach the
+// client before its connect makes the route live (here held there until
+// it has). The client still follows it: its first sink opens SDR, and it
+// shows the SDR frames, none as PQ.
+func TestHDR10FallbackBeforeRouteLive(t *testing.T) {
+	settled := make(chan struct{})
+	var once sync.Once
+	h, err := NewHost(HostConfig{
+		ConfigDir: t.TempDir(), Name: "hdr-host", ListenAddr: "127.0.0.1:0", DiscoveryAddr: "off",
+		NoTailscale: true, NoAudio: true, Capabilities: twoDisplayCaps(false),
+		Logf: func(f string, a ...any) {
+			if line := fmt.Sprintf(f, a...); strings.Contains(line, "as the encoder settled") {
+				once.Do(func() { close(settled) })
+			}
+			t.Logf(f, a...)
+		},
+		OpenVideo: func(p VideoParams) (VideoPipe, error) {
+			src := &sdrSource{w: p.Width, h: p.Height, fps: p.FPS}
+			return &sourcePipe{src: src, params: p, openEnc: (&encoderLog{}).open, info: VideoInfo{Width: p.Width, Height: p.Height, FPS: p.FPS, Source: "sdr"}}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(h.Stop)
+
+	caps := testClientCaps()
+	caps.Display.HDR, caps.PresentHDR10 = true, true
+	sinks := &hdrSinks{}
+	c, err := NewClient(ClientConfig{
+		ConfigDir: t.TempDir(), Name: "hdr-client", PIN: h.PIN(), NoAudio: true, Overrides: defaults.UserOverrides{Display: display2},
+		Capabilities: func() defaults.ClientCapabilities { return caps },
+		OpenSink:     sinks.opener, OpenAudioPlayer: func() (audio.Player, error) { return &fakePlayer{}, nil },
+		Tailscale: noTailscale{}, Logf: t.Logf,
+		ViewSize: func() (int, int) { return 1600, 900 },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Disconnect)
+	c.beforeLive = func(cc *conn, rt *route) {
+		select {
+		case <-settled:
+		case <-time.After(10 * time.Second):
+			t.Error("the host never settled SDR")
+			return
+		}
+		// The host answers a StatsReport on the control stream, after the
+		// Stream it already sent there.
+		sentinel := wire.HostStats{CaptureMicros: ^uint32(0), EncodeMicros: ^uint32(0)}
+		cc.mu.Lock()
+		cc.host = sentinel
+		cc.mu.Unlock()
+		if err := rt.sess.SendControl(&wire.StatsReport{}); err != nil {
+			t.Error(err)
+			return
+		}
+		waitFor(t, "the host's stats", func() bool {
+			cc.mu.Lock()
+			defer cc.mu.Unlock()
+			return cc.host != sentinel
+		})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := c.Connect(ctx, Target{Addr: h.Addr().String()}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "frames of the SDR stream", func() bool { return sinks.units(false) >= 5 })
+	if u := sinks.units(true); u > 0 {
+		t.Errorf("%d SDR frames shown on an HDR10 sink", u)
+	}
+	if prof := c.Stats().Profile; prof == nil || prof.HDR10 {
+		t.Errorf("client profile HDR10 %v, want SDR", prof != nil && prof.HDR10)
+	}
 }
 
 // hdrSinks counts the frames shown on SDR and on HDR10 sinks.

@@ -244,6 +244,8 @@ type Client struct {
 	clip   *clipSync
 	// gain is the playback volume, a float64's bits.
 	gain atomic.Uint64
+	// beforeLive, for tests, runs as connect is about to make its route live.
+	beforeLive func(*conn, *route)
 }
 
 // NewClient prepares a client; the identity is created on first Connect.
@@ -356,6 +358,12 @@ type route struct {
 	// bye is set when the host said goodbye: it ended the stream, or gave
 	// it to another client, and the stream must not come back.
 	bye atomic.Bool
+	// mu orders the route going live with the stream updates the host
+	// sends on it first: those wait in pending, as the stream it describes
+	// may be the one the connect opens its sink for.
+	mu      sync.Mutex
+	isLive  bool
+	pending []wire.Message
 }
 
 func (cc *conn) session() *transport.Session { return cc.live.Load().sess }
@@ -451,8 +459,12 @@ func (c *Client) connect(ctx context.Context, t Target) (*conn, error) {
 	if caps := hostCaps(sess); caps != nil {
 		cc.displays = caps.Displays
 	}
+	if c.beforeLive != nil {
+		c.beforeLive(cc, rt)
+	}
 	// The receive goroutine reads the stream once the route is live.
-	cc.live.Store(rt)
+	cc.goLive(rt, c.logf)
+	dcfg = cc.stream.Load().sink
 	cc.openSink = cfg.OpenSink
 	if cc.openSink == nil {
 		cc.openSink = OpenDecodeSink
@@ -591,10 +603,8 @@ func (c *Client) dialRoute(ctx context.Context, cc *conn, r resolved) (*route, e
 				switch m := m.(type) {
 				case *wire.Goodbye:
 					rt.bye.Store(true)
-				case *wire.Profile:
-					cc.resized(m.JSON, c.logf)
-				case *wire.Stream:
-					cc.switchStream(rt, m, c.logf)
+				case *wire.Profile, *wire.Stream:
+					cc.streamUpdate(rt, m, c.logf)
 				case *wire.HostStats:
 					cc.mu.Lock()
 					cc.host = *m
@@ -991,7 +1001,7 @@ func (c *Client) switchRoute(cc *conn, r resolved) error {
 	if cc.jb != nil {
 		cc.jb.Restart()
 	}
-	old := cc.live.Swap(rt)
+	old := cc.goLive(rt, c.logf)
 	cc.switches.Add(1)
 	c.logf("planck: stream moved from %s %s to %s %s (%d-byte datagrams)", old.kind, old.addr, rt.kind, rt.addr, rt.sess.MaxDatagram())
 	old.sess.Close()
@@ -1688,6 +1698,41 @@ func offerOf(d defaults.ClientDisplay, window bool) *viewOffer {
 }
 
 func packView(w, h int) uint64 { return uint64(uint32(w))<<32 | uint64(uint32(h)) }
+
+// streamUpdate takes a Profile or Stream the host sent on rt, holding it
+// until rt is live.
+func (cc *conn) streamUpdate(rt *route, m wire.Message, logf func(string, ...any)) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if !rt.isLive {
+		rt.pending = append(rt.pending, m)
+		return
+	}
+	cc.applyUpdate(rt, m, logf)
+}
+
+func (cc *conn) applyUpdate(rt *route, m wire.Message, logf func(string, ...any)) {
+	switch m := m.(type) {
+	case *wire.Profile:
+		cc.resized(m.JSON, logf)
+	case *wire.Stream:
+		cc.switchStream(rt, m, logf)
+	}
+}
+
+// goLive makes rt cc's route, then applies what the host sent on it before.
+// It returns the route rt replaces.
+func (cc *conn) goLive(rt *route, logf func(string, ...any)) *route {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	old := cc.live.Swap(rt)
+	rt.isLive = true
+	for _, m := range rt.pending {
+		cc.applyUpdate(rt, m, logf)
+	}
+	rt.pending = nil
+	return old
+}
 
 // resized takes a Profile the host sent after a Resize. The decoder
 // rebuilds for the new size on the next keyframe, as at the start.
