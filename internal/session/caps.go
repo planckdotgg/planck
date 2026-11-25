@@ -212,6 +212,7 @@ func paramsFromProfile(base VideoParams, p *defaults.ResolvedProfile, shard int)
 		v.Display = p.CaptureDisplay
 	}
 	v.VirtualDisplay = p.VirtualDisplay
+	v.HDR10 = p.HDR10
 	if v.Codec == encode.PyroWave {
 		v.Slices, v.SubFrame, v.ChunkLen = 0, false, shard
 	}

@@ -55,7 +55,12 @@ type stream struct {
 	// nil keeps the one offered at the start. Only the video loop
 	// touches it.
 	display *defaults.ClientDisplay
-	pts     [ptsRingSize]struct {
+	// switchTo holds the host display the client asked for last, for the
+	// video loop; pick is the one the stream moved to, "" while the
+	// profile chose. Only the video loop touches pick.
+	switchTo chan string
+	pick     string
+	pts      [ptsRingSize]struct {
 		id  uint32
 		pts int64
 	}
@@ -104,7 +109,7 @@ func newStream(h *Host, sess *transport.Session) *stream {
 	if p.BitrateKbps <= 0 {
 		p.BitrateKbps = int(acc.BitrateKbps)
 	}
-	st := &stream{h: h, sess: sess, params: p, done: make(chan struct{}), invalid: make(chan uint32, 16), resize: make(chan resizeReq, 1),
+	st := &stream{h: h, sess: sess, params: p, done: make(chan struct{}), invalid: make(chan uint32, 16), resize: make(chan resizeReq, 1), switchTo: make(chan string, 1),
 		encodeMs: newWindow(encodeWindow), captureW: newWindow(encodeWindow), encodeW: newWindow(encodeWindow)}
 	if ua, ok := sess.RemoteControlAddr().(*net.UDPAddr); ok {
 		st.addr = ua.String()
@@ -233,20 +238,12 @@ func (st *stream) resizeTo(r resizeReq, pipe *VideoPipe, vd *VirtualDisplay) boo
 	if st.profile == nil || !st.params.VirtualDisplay || (st.params.Codec == encode.PyroWave && !switches) {
 		return false
 	}
-	var cc clientCaps
-	if err := json.Unmarshal(st.sess.PeerCapabilities(), &cc); err != nil || cc.V != clientCapsVersion {
+	cc, ok := st.peerCaps()
+	if !ok {
 		return false
 	}
-	if st.display != nil {
-		cc.Client.Display = *st.display
-	}
 	cc.Client.Display.ViewWidthPx, cc.Client.Display.ViewHeightPx = w, h
-	var remote netip.Addr
-	if ua, ok := st.sess.RemoteControlAddr().(*net.UDPAddr); ok {
-		remote = ua.AddrPort().Addr()
-	}
-	cc.Route.Kind = st.profile.Route
-	p := st.h.resolveProfile(cc, remote, st.path, st.sess.MaxDatagram() > wire.MaxDatagram)
+	p := st.reresolve(cc)
 	if !p.VirtualDisplay {
 		return false
 	}
@@ -258,6 +255,45 @@ func (st *stream) resizeTo(r resizeReq, pipe *VideoPipe, vd *VirtualDisplay) boo
 	if sameStream(st.profile, &p) && next.ScalePct == st.params.ScalePct {
 		return false
 	}
+	from := st.restream(&p, next, pipe, vd)
+	st.h.logf("planck: stream %d moved from %s %dx%d to %s %dx%d@%d for a %dx%d window", st.epoch, from.Codec, from.Width, from.Height,
+		p.Codec, p.Width, p.Height, p.FPS, w, h)
+	return true
+}
+
+// peerCaps are the capabilities the client offered, with what the session
+// learned since: the client display its window moved to and the host
+// display it picked.
+func (st *stream) peerCaps() (clientCaps, bool) {
+	var cc clientCaps
+	if err := json.Unmarshal(st.sess.PeerCapabilities(), &cc); err != nil || cc.V != clientCapsVersion {
+		return cc, false
+	}
+	if st.display != nil {
+		cc.Client.Display = *st.display
+	}
+	if st.pick != "" {
+		cc.Overrides.Display = st.pick
+	}
+	cc.Route.Kind = st.profile.Route
+	return cc, true
+}
+
+// reresolve settles the stream anew for cc, on the session's route.
+func (st *stream) reresolve(cc clientCaps) defaults.ResolvedProfile {
+	var remote netip.Addr
+	if ua, ok := st.sess.RemoteControlAddr().(*net.UDPAddr); ok {
+		remote = ua.AddrPort().Addr()
+	}
+	return st.h.resolveProfile(cc, remote, st.path, st.sess.MaxDatagram() > wire.MaxDatagram)
+}
+
+// restream moves the session to p, piped as next, without leaving it: the
+// pipeline closes, the virtual display takes the new size, is made anew,
+// or goes when p captures a physical display, and the client hears of
+// the new stream, whose first frame the loop forces to a keyframe. It
+// returns the profile streamed before.
+func (st *stream) restream(p *defaults.ResolvedProfile, next VideoParams, pipe *VideoPipe, vd *VirtualDisplay) *defaults.ResolvedProfile {
 	if *pipe != nil {
 		(*pipe).Close()
 		*pipe = nil
@@ -265,7 +301,7 @@ func (st *stream) resizeTo(r resizeReq, pipe *VideoPipe, vd *VirtualDisplay) boo
 	from := st.profile
 	if *vd != nil {
 		switch {
-		case next.Adapter != st.params.Adapter || next.FPS != st.params.FPS || next.ScalePct != st.params.ScalePct:
+		case !next.VirtualDisplay || next.Adapter != st.params.Adapter || next.FPS != st.params.FPS || next.ScalePct != st.params.ScalePct:
 			st.closeVirtualDisplay(*vd)
 			*vd = nil
 		case next.Width != st.params.Width || next.Height != st.params.Height:
@@ -285,17 +321,71 @@ func (st *stream) resizeTo(r resizeReq, pipe *VideoPipe, vd *VirtualDisplay) boo
 	if p.Codec != from.Codec || p.Codec == defaults.CodecPyroWave {
 		start = p.BitrateKbps
 	}
-	st.sess.SetStream(st.h.profileConfig(&p, st.sess.Config()), start, p.MaxBitrateKbps, transport.ParityProfile{
+	st.sess.SetStream(st.h.profileConfig(p, st.sess.Config()), start, p.MaxBitrateKbps, transport.ParityProfile{
 		MinPercent: p.FEC.MinParityPercent, KeyframePercent: p.FEC.KeyframeParityPercent, CriticalPercent: p.FEC.CriticalParityPercent})
 	st.mu.Lock()
-	st.profile = &p
+	st.profile = p
 	st.mu.Unlock()
-	if js, err := json.Marshal(&p); err == nil {
+	if js, err := json.Marshal(p); err == nil {
 		_ = st.sess.SendControl(&wire.Stream{Epoch: st.epoch, Profile: js})
 	}
-	st.h.logf("planck: stream %d moved from %s %dx%d to %s %dx%d@%d for a %dx%d window", st.epoch, from.Codec, from.Width, from.Height,
-		p.Codec, p.Width, p.Height, p.FPS, w, h)
+	return from
+}
+
+// requestDisplay leaves the host display the client asked for to the
+// video loop, replacing one it has not taken yet.
+func (st *stream) requestDisplay(id string) {
+	for {
+		select {
+		case st.switchTo <- id:
+			return
+		default:
+		}
+		select {
+		case <-st.switchTo:
+		default:
+		}
+	}
+}
+
+// switchDisplayTo moves the stream to the host display id, physical
+// capture at that display's size and refresh, in the same session. It
+// reports whether the stream changed: not for a display the host does not
+// have, one it pins another over, or the one streaming now.
+func (st *stream) switchDisplayTo(id string, pipe *VideoPipe, vd *VirtualDisplay) bool {
+	if st.profile == nil || st.sess.PeerFeatures()&wire.FeatureStreamSwitch == 0 {
+		st.h.logf("planck: display %s asked for by a client that cannot follow a stream switch", id)
+		return false
+	}
+	if !st.params.VirtualDisplay && st.params.Display == id {
+		return false
+	}
+	cc, ok := st.peerCaps()
+	if !ok {
+		return false
+	}
+	cc.Overrides.Display = id
+	p := st.reresolve(cc)
+	if p.VirtualDisplay || p.CaptureDisplay != id {
+		st.h.logf("planck: display %s not streamed: %s", id, decisionWhy(&p, "display"))
+		return false
+	}
+	st.pick = id
+	next := paramsFromProfile(st.params, &p, st.sess.ShardSize())
+	from := st.restream(&p, next, pipe, vd)
+	st.h.logf("planck: stream %d moved from %s %dx%d to display %s, %s %dx%d@%d", st.epoch, from.Codec, from.Width, from.Height,
+		id, p.Codec, p.Width, p.Height, p.FPS)
 	return true
+}
+
+// decisionWhy is why p settled knob as it did.
+func decisionWhy(p *defaults.ResolvedProfile, knob string) string {
+	for _, d := range p.Decisions {
+		if d.Knob == knob {
+			return d.Why
+		}
+	}
+	return "no decision"
 }
 
 // sameStream reports whether b would stream exactly as a does.
@@ -465,6 +555,12 @@ func (st *stream) videoLoop() {
 		select {
 		case req := <-st.resize:
 			if st.resizeTo(req, &pipe, &vd) {
+				kbps = st.sess.TargetBitrateKbps()
+				slices = max(1, int(st.sess.Config().Slices))
+				out.slices, out.epoch = uint8(slices), st.epoch
+			}
+		case id := <-st.switchTo:
+			if st.switchDisplayTo(id, &pipe, &vd) {
 				kbps = st.sess.TargetBitrateKbps()
 				slices = max(1, int(st.sess.Config().Slices))
 				out.slices, out.epoch = uint8(slices), st.epoch

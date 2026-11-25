@@ -540,7 +540,7 @@ func (h *Host) Start(ctx context.Context) error {
 		}
 	}
 	if h.cfg.OpenVideo == nil || h.cfg.Capabilities != nil {
-		scfg.Capabilities, scfg.Resolve, scfg.Resize = h.capabilitiesJSON, h.resolve, true
+		scfg.Capabilities, scfg.Resolve, scfg.Resize, scfg.SwitchDisplay = h.capabilitiesJSON, h.resolve, true, true
 	}
 	srv, err := transport.Listen(h.cfg.ListenAddr, scfg)
 	if err != nil {
@@ -854,6 +854,10 @@ func (h *Host) onControl(m wire.Message) {
 		h.mu.Unlock()
 		if st != nil {
 			st.requestResize(resizeReq{w: int(m.Width), h: int(m.Height), display: clientDisplayOf(m.Display)})
+		}
+	case *wire.SwitchDisplay:
+		if st := h.current(); st != nil {
+			st.requestDisplay(m.DisplayID)
 		}
 	}
 }

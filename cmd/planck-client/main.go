@@ -118,6 +118,8 @@ func parseOptions(args []string, out io.Writer) (options, error) {
 	fs.StringVar(&k.Split, "nvenc-split", "auto", "NVENC two-engine split-frame encode: auto, on or off")
 	fs.StringVar(&k.Direct, "direct-display", "auto", "macOS full-screen direct-to-display: auto, on or off")
 	fs.StringVar(&k.VSync, "vsync", "auto", "present in step with the display: auto (off), on or off")
+	fs.StringVar(&k.Display, "display", "", "the host display to stream, by its ID; empty lets the host choose")
+	fs.StringVar(&k.HDR10, "hdr10", "auto", "HDR10 output: auto (where both ends and the host desktop have HDR) or off")
 	fs.BoolVar(&o.noAudio, "no-audio", false, "headless: do not ask for audio")
 	fs.BoolVar(&o.silentAudio, "silent-audio", false, "headless: receive and decode audio but play none of it")
 	fs.BoolVar(&o.inputProbe, "input-probe", false, "headless: send a zero mouse move once a second, which moves nothing")

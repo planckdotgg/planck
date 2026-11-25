@@ -504,6 +504,11 @@ func (c *Client) dialRoute(ctx context.Context, cc *conn, r resolved) (*route, e
 		// for: the host resolves per route, and takes the stream over
 		// from the old session before this client can refuse the new one.
 		cfg.Overrides = defaults.Merge(cfg.Overrides, decoderFormat(p))
+		if !p.VirtualDisplay && p.CaptureDisplay != "" {
+			// And the host display it streams, which a switch may have
+			// moved it to.
+			cfg.Overrides.Display = p.CaptureDisplay
+		}
 	}
 	stored, err := config.LoadClientConfig(c.dir)
 	if err != nil {
@@ -745,7 +750,7 @@ func (c *Client) streamConfig(sess *transport.Session) (decode.Config, *defaults
 	}
 	dcfg := decode.Config{Codec: codec, Width: int(acc.Width), Height: int(acc.Height), FPS: int(acc.FPS)}
 	if prof != nil {
-		dcfg.Chroma = streamChroma(prof)
+		dcfg.Chroma, dcfg.HDR10 = streamChroma(prof), prof.HDR10
 		for _, w := range prof.Warnings {
 			c.logf("planck: profile: %s", w)
 		}
@@ -784,7 +789,7 @@ func (c *Client) capabilities(cfg ClientConfig, addr string, path discovery.Path
 // decoders.
 func ProbeClientCapabilities() defaults.ClientCapabilities {
 	return defaults.ClientCapabilities{OS: runtime.GOOS, Display: clientDisplay(), Decoders: clientDecoders(),
-		Present10Bit: clientPresent10Bit, DirectDisplay: clientDirectDisplay}
+		Present10Bit: clientPresent10Bit, DirectDisplay: clientDirectDisplay, PresentHDR10: clientPresentHDR10}
 }
 
 // from is r on the path a race won.
@@ -1411,6 +1416,57 @@ func (c *Client) RequestKeyframe() error {
 	return cc.session().SendControl(&wire.PLI{})
 }
 
+// ErrNoDisplaySwitch is SwitchDisplay's answer from a host that cannot
+// move a stream to another display.
+var ErrNoDisplaySwitch = errors.New("session: this host cannot switch displays")
+
+// HostDisplays lists the displays the host streaming now advertised, nil
+// without a stream or from an older host.
+func (c *Client) HostDisplays() []defaults.HostDisplay {
+	c.mu.Lock()
+	cc := c.conn
+	c.mu.Unlock()
+	if cc == nil {
+		return nil
+	}
+	if caps := hostCaps(cc.session()); caps != nil {
+		return caps.Displays
+	}
+	return nil
+}
+
+// StreamedDisplay is the ID of the host display streaming now, "" on a
+// virtual display or without a stream.
+func (c *Client) StreamedDisplay() string {
+	c.mu.Lock()
+	cc := c.conn
+	c.mu.Unlock()
+	if cc == nil {
+		return ""
+	}
+	if p := cc.profile.Load(); p != nil && !p.VirtualDisplay {
+		return p.CaptureDisplay
+	}
+	return ""
+}
+
+// SwitchDisplay asks the host to stream its display id, one of
+// HostDisplays, in this session. The host answers with a new stream
+// (switchStream), which shows from its first keyframe.
+func (c *Client) SwitchDisplay(id string) error {
+	c.mu.Lock()
+	cc := c.conn
+	c.mu.Unlock()
+	if cc == nil {
+		return ErrNotConnected
+	}
+	sess := cc.session()
+	if sess.PeerFeatures()&wire.FeatureSwitchDisplay == 0 {
+		return ErrNoDisplaySwitch
+	}
+	return sess.SendControl(&wire.SwitchDisplay{DisplayID: id})
+}
+
 // SetQuality changes the requested stream. Protocol v1 fixes the config at
 // the handshake, so a live session reconnects with the new one.
 func (c *Client) SetQuality(ctx context.Context, q Quality) error {
@@ -1655,7 +1711,7 @@ func (cc *conn) switchStream(rt *route, m *wire.Stream, logf func(string, ...any
 	old := rt.sess.Config()
 	acc.AudioSampleRate, acc.AudioChannels = old.AudioSampleRate, old.AudioChannels
 	rt.sess.SetStream(acc, 0, 0, transport.ParityProfile{})
-	dcfg := decode.Config{Codec: encode.Codec(p.Codec), Width: p.Width, Height: p.Height, FPS: p.FPS, Chroma: streamChroma(p)}
+	dcfg := decode.Config{Codec: encode.Codec(p.Codec), Width: p.Width, Height: p.Height, FPS: p.FPS, Chroma: streamChroma(p), HDR10: p.HDR10}
 	if dcfg.Codec == encode.PyroWave {
 		dcfg.ChunkLen = rt.sess.ShardSize()
 	}

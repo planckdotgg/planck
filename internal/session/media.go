@@ -41,6 +41,9 @@ type VideoParams struct {
 	ScalePct int
 	// ChunkLen is the shard size PyroWave frames its chunks in.
 	ChunkLen int
+	// HDR10 streams an HDR desktop as BT.2020 PQ, when capture delivers
+	// it 10-bit; an 8-bit capture encodes SDR.
+	HDR10 bool
 }
 
 // VideoInfo describes an open pipeline.
@@ -225,6 +228,12 @@ type pipeStages struct {
 
 func (p *sourcePipe) stages() pipeStages { return p.st }
 
+// hdrSource reports whether frames of format f carry the HDR10 the
+// params ask for: only an RGB10A2 capture of an HDR desktop holds PQ.
+func hdrSource(p VideoParams, f capture.Format) bool {
+	return p.HDR10 && p.Chroma.TenBit() && f == capture.FormatRGB10A2
+}
+
 func (p *sourcePipe) openEncoder(f capture.Frame) error {
 	if p.enc != nil {
 		p.enc.Close()
@@ -234,6 +243,7 @@ func (p *sourcePipe) openEncoder(f capture.Frame) error {
 		Codec: p.params.Codec, Chroma: p.params.Chroma, Source: f.Format,
 		Width: f.Width &^ 1, Height: f.Height &^ 1, FPS: p.params.FPS, BitrateKbps: p.params.BitrateKbps,
 		Slices: p.params.Slices, SubFrame: p.params.SubFrame, Split: p.params.Split, ChunkLen: p.params.ChunkLen,
+		HDR10: hdrSource(p.params, f.Format),
 	}
 	enc, err := encode.Open(cfg, p.devices...)
 	if errors.Is(err, encode.ErrUnsupported) && (cfg.Slices > 1 || cfg.SubFrame) {
