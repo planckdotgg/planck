@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"net"
 	"net/netip"
@@ -14,6 +15,7 @@ import (
 	"github.com/planckdotgg/planck/internal/ui"
 	"github.com/planckdotgg/planck/pkg/audio"
 	"github.com/planckdotgg/planck/pkg/config"
+	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/tailscale"
 	"github.com/planckdotgg/planck/pkg/wire"
@@ -313,5 +315,147 @@ func TestBackendConnectToGoneHost(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("connect to a host that went away never returned")
+	}
+}
+
+// TestBackendHostsLeaveOutSelf: hosting from the client's own config dir
+// is heard by its discovery but never listed, on this run and the next;
+// another host not paired leaves the list once it is gone.
+func TestBackendHostsLeaveOutSelf(t *testing.T) {
+	dir := t.TempDir()
+	port := freeUDPPort(t)
+	disc := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), uint16(port))
+	newClient := func() *backend {
+		f := newFinder("", nil, []netip.AddrPort{disc}, t.Logf)
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		go f.run(ctx)
+		b, err := newBackend(backendConfig{
+			dir: dir, name: "test-client", finder: f, tailscale: noTailnet{}, logf: t.Logf,
+			hostConfig: func(s ui.Settings) session.HostConfig {
+				return session.HostConfig{
+					ConfigDir: dir, ListenAddr: "127.0.0.1:0", DiscoveryAddr: disc.String(), FPS: 60, NoTailscale: true, NoAudio: true,
+					OpenVideo: func(p session.VideoParams) (session.VideoPipe, error) { return &fakePipe{fps: p.FPS}, nil },
+					OpenAudio: func() (audio.Capturer, error) { return &toneCapturer{}, nil }, Logf: t.Logf,
+				}
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(b.close)
+		return b
+	}
+	b := newClient()
+	if err := b.SetHosting(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	b.mu.Lock()
+	selfID := b.host.HostID()
+	b.mu.Unlock()
+	b.RefreshHosts()
+	waitUntil(t, "discovery to hear this machine's host", func() bool { _, ok := b.finder.lookup(selfID); return ok })
+	if hs := b.Hosts(); len(hs) != 0 {
+		t.Fatalf("hosts while hosting: %+v, want this machine left out", hs)
+	}
+	if err := b.SetHosting(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	if hs := b.Hosts(); len(hs) != 0 {
+		t.Fatalf("hosts after hosting stopped: %+v", hs)
+	}
+
+	next := newClient()
+	next.finder.add(discovery.Announcement{Beacon: discovery.Beacon{HostID: selfID, Name: "me", CertFingerprint: strings.ToUpper(b.selfFingerprint(t))},
+		Addr: disc, Kind: discovery.PathLANDirect})
+	next.finder.add(discovery.Announcement{Beacon: bigboi, Addr: netip.MustParseAddrPort("192.168.188.126:47700"), Kind: discovery.PathLANDirect})
+	if hs := next.Hosts(); len(hs) != 1 || hs[0].ID != bigboi.HostID || hs[0].Paired {
+		t.Fatalf("next run: %+v, want bigboi alone, not paired", hs)
+	}
+	next.finder.mu.Lock()
+	next.finder.hosts[bigboi.HostID].seen = time.Now().Add(-onlineFor)
+	next.finder.mu.Unlock()
+	if hs := next.Hosts(); len(hs) != 0 {
+		t.Fatalf("an unpaired host gone: %+v, want it left out", hs)
+	}
+}
+
+func (b *backend) selfFingerprint(t *testing.T) string {
+	t.Helper()
+	hc, err := config.LoadHostConfig(b.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := tls.LoadX509KeyPair(hc.CertPath, hc.KeyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return config.CertFingerprint(cert.Certificate[0])
+}
+
+// TestBackendRemoveHost: removing a paired host drops its pins by ID and
+// by address, its alias and its overrides from client.json and its card at
+// once; one found by discovery only goes until it is heard again.
+func TestBackendRemoveHost(t *testing.T) {
+	dir := t.TempDir()
+	err := config.UpdateClientConfig(dir, func(c *config.ClientConfig) error {
+		for _, p := range []config.PinnedHost{
+			{HostID: "addr:192.168.188.126:47701", CertFingerprint: bigboi.CertFingerprint, LastAddr: "192.168.188.126:47701"},
+			{HostID: bigboi.HostID, Name: "bigboi", CertFingerprint: bigboi.CertFingerprint, LastAddr: "192.168.188.126:47701"},
+			{HostID: "h-cabin", Name: "cabin", CertFingerprint: strings.Repeat("cd", 32), LastAddr: "10.0.0.9:47701"},
+		} {
+			if err := c.Pin(p); err != nil {
+				return err
+			}
+		}
+		c.HostAliases = map[string]string{bigboi.HostID: "Rig"}
+		c.HostOverrides = map[string]defaults.UserOverrides{bigboi.HostID: {FPS: "60"}, "h-cabin": {FPS: "120"}}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, changes := newTestBackend(t, dir, nil)
+	b.finder.add(discovery.Announcement{Beacon: bigboi, Addr: netip.MustParseAddrPort("192.168.188.126:47700"), Kind: discovery.PathLANDirect})
+	if hs := b.Hosts(); len(hs) != 2 {
+		t.Fatalf("before: %+v", hs)
+	}
+	before := changes.Load()
+	if err := b.RemoveHost(bigboi.HostID); err != nil {
+		t.Fatal(err)
+	}
+	if changes.Load() == before {
+		t.Fatal("remove did not ask for a redraw")
+	}
+	if hs := b.Hosts(); len(hs) != 1 || hs[0].ID != "h-cabin" {
+		t.Fatalf("after: %+v, want cabin alone", hs)
+	}
+	stored, err := config.LoadClientConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.PinnedHosts) != 1 || stored.HostAliases[bigboi.HostID] != "" || len(stored.HostOverrides) != 1 {
+		t.Fatalf("stored pins %v aliases %v overrides %v", stored.PinnedHosts, stored.HostAliases, stored.HostOverrides)
+	}
+	if o := b.Overrides(bigboi.HostID); o != (defaults.UserOverrides{}) {
+		t.Fatalf("overrides kept in memory: %+v", o)
+	}
+
+	if err := b.RemoveHost("h-cabin"); err != nil {
+		t.Fatal(err)
+	}
+	if hs := b.Hosts(); len(hs) != 0 {
+		t.Fatalf("an offline paired host after its removal: %+v", hs)
+	}
+	b.finder.add(discovery.Announcement{Beacon: bigboi, Addr: netip.MustParseAddrPort("192.168.188.126:47700"), Kind: discovery.PathLANDirect})
+	if hs := b.Hosts(); len(hs) != 1 || hs[0].Paired {
+		t.Fatalf("bigboi heard again: %+v, want it back, not paired", hs)
+	}
+
+	b.mu.Lock()
+	b.connected = bigboi.HostID
+	b.mu.Unlock()
+	if err := b.RemoveHost(bigboi.HostID); err == nil {
+		t.Fatal("removed the host streaming now")
 	}
 }

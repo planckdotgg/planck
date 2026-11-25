@@ -267,6 +267,54 @@ func TestSettingsHostName(t *testing.T) {
 	}
 }
 
+// TestRemoveHost: a paired host's × asks first, in the card's own body,
+// without growing the card or connecting; a host gone and never paired
+// goes at once; an online unpaired host and the live one offer no ×.
+func TestRemoveHost(t *testing.T) {
+	f := newFake()
+	f.hosts = gridHosts()
+	_, tt := newTester(t, f)
+	for _, name := range []string{"Remove bigboi", "Remove cabin-pc"} {
+		if _, ok := tt.Access(name); ok {
+			t.Errorf("%q offered", name)
+		}
+	}
+	reconnect, ok := tt.Find("Connect to old-rig")
+	if !ok {
+		t.Fatal("no Reconnect on old-rig")
+	}
+
+	click(t, tt, "Remove old-rig")
+	if !tt.HasText("Remove old-rig?") || !tt.HasText("Connecting again needs its PIN.") {
+		t.Fatalf("no confirmation: %q", tt.Texts())
+	}
+	confirm, ok := tt.Find("Confirm remove old-rig")
+	if !ok || confirm.Y != reconnect.Y {
+		t.Fatalf("confirm button at %+v, want the card's action row at y %v", confirm, reconnect.Y)
+	}
+	snapshot(t, tt, "hosts-remove-confirm")
+	click(t, tt, "Keep old-rig")
+	if tt.HasText("Remove old-rig?") || len(f.removes) != 0 {
+		t.Fatalf("cancel: removes %q, texts %q", f.removes, tt.Texts())
+	}
+
+	click(t, tt, "Remove old-rig")
+	click(t, tt, "Confirm remove old-rig")
+	click(t, tt, "Remove guest-pc")
+	tt.Frame()
+	if !slices.Equal(f.removes, []string{"h-old", "h-gone"}) {
+		t.Fatalf("removes %q", f.removes)
+	}
+	for _, name := range []string{"Rename old-rig", "Rename guest-pc"} {
+		if _, ok := tt.Access(name); ok {
+			t.Errorf("%q still listed", name)
+		}
+	}
+	if len(f.connects) != 0 {
+		t.Fatalf("removing connected to %q", f.connects)
+	}
+}
+
 // TestConnectReplacesPending: Pair & Connect leaves the launcher on Hosts,
 // so a connect that never ends is invisible there; Connect on another host
 // replaces it rather than doing nothing.

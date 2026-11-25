@@ -65,6 +65,9 @@ type App struct {
 	renameText string
 	renameOpen bool
 	renameErr  string
+	// removing is the HostID whose card asks to confirm its removal.
+	removing   string
+	removeErr  string
 	focusQuick bool
 	// hostNameDraft is the Host name field while it has the focus; it is
 	// saved on Enter or when the focus leaves.

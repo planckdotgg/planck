@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -41,6 +42,7 @@ type fakeBackend struct {
 	refreshes     int
 	renames       [][2]string
 	renameErr     error
+	removes       []string
 	overrides     map[string]defaults.UserOverrides
 	ovSaves       int
 	ovErr         error
@@ -104,6 +106,13 @@ func (f *fakeBackend) RenameHost(id, alias string) error {
 	defer f.lock()()
 	f.renames = append(f.renames, [2]string{id, alias})
 	return f.renameErr
+}
+
+func (f *fakeBackend) RemoveHost(id string) error {
+	defer f.lock()()
+	f.removes = append(f.removes, id)
+	f.hosts = slices.DeleteFunc(f.hosts, func(h HostInfo) bool { return h.ID == id })
+	return nil
 }
 
 func (f *fakeBackend) SetHosting(ctx context.Context, on bool) error {

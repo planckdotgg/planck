@@ -319,6 +319,13 @@ func (f *finder) lookup(id string) (hostView, bool) {
 	return f.view(h), true
 }
 
+// forget drops the host with this ID until it is heard again.
+func (f *finder) forget(id string) {
+	f.mu.Lock()
+	delete(f.hosts, id)
+	f.mu.Unlock()
+}
+
 // tailnetStatus is the last status the tailnet gave, nil when it is not
 // running.
 func (f *finder) tailnetStatus() *tailscale.Status {

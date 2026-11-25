@@ -258,6 +258,10 @@ type Backend interface {
 	// RenameHost names a host on this client only; an empty alias goes
 	// back to the name the host advertises.
 	RenameHost(id, alias string) error
+	// RemoveHost forgets a host on this client: its pairing, its local
+	// name and its stream overrides, and its card at once. A host still
+	// announcing itself comes back, unpaired.
+	RemoveHost(id string) error
 	// Connect streams from target, a HostInfo.ID or an address typed in
 	// Quick Connect, returning once the stream runs or fails.
 	Connect(ctx context.Context, target string) error

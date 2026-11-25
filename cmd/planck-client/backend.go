@@ -3,6 +3,7 @@ package main
 import (
 	"cmp"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"maps"
@@ -75,6 +76,9 @@ type backend struct {
 	storedAll   defaults.UserOverrides
 	storedHosts map[string]defaults.UserOverrides
 	layout      ui.OverlayLayout
+	// self holds this machine's own host ID and certificate fingerprint,
+	// which discovery finds while it hosts and the list leaves out.
+	self map[string]bool
 }
 
 type backendConfig struct {
@@ -115,12 +119,16 @@ func newBackend(c backendConfig) (*backend, error) {
 	}
 	b := &backend{dir: dir, name: c.name, finder: c.finder, ts: c.tailscale, openSink: c.openSink, hostConfig: c.hostConfig,
 		encoders: c.encoders, logf: c.logf, routeConfig: c.route, overrides: c.overrides, viewSize: c.viewSize, display: c.display, onCursor: c.onCursor, onCursorShape: c.onCursorShape, onSystemKeys: c.onSystemKeys, settings: settingsFrom(stored), pinned: stored.PinnedHosts, aliases: stored.HostAliases,
-		storedAll: stored.Overrides, storedHosts: stored.HostOverrides, layout: layoutFrom(stored.Overlay)}
+		storedAll: stored.Overrides, storedHosts: stored.HostOverrides, layout: layoutFrom(stored.Overlay), self: map[string]bool{}}
 	host, err := config.LoadHostConfig(dir)
 	if err != nil {
 		return nil, err
 	}
 	b.settings.HostName = host.Name
+	b.self[host.HostID] = true
+	if cert, err := tls.LoadX509KeyPair(host.CertPath, host.KeyPath); err == nil && len(cert.Certificate) > 0 {
+		b.self[config.CertFingerprint(cert.Certificate[0])] = true
+	}
 	b.finder.subscribe(func() {
 		b.syncPins()
 		b.changed()
@@ -224,21 +232,35 @@ func (b *backend) changed() {
 
 // Hosts lists every host once: the hosts found, with their paired
 // record's routes, and the paired hosts not found, offline. A pin made
-// by address joins the host found with its certificate.
+// by address joins the host found with its certificate. This machine's
+// own host is left out, and so is a host not paired once it is gone.
 func (b *backend) Hosts() []ui.HostInfo {
 	b.mu.Lock()
 	pinned, aliases, connected := b.pinned, b.aliases, b.connected
+	self := maps.Clone(b.self)
 	b.mu.Unlock()
+	isSelf := func(id, fp string) bool { return self[id] || fp != "" && self[strings.ToLower(fp)] }
 	cardOf := map[string]string{}
 	var out []ui.HostInfo
 	for _, v := range b.finder.list() {
 		id := v.Beacon.HostID
+		if isSelf(id, v.Beacon.CertFingerprint) {
+			continue
+		}
 		p, paired := pinned[id]
-		cardOf[id] = id
+		var addrPins []string
 		for key, q := range pinned {
 			if strings.HasPrefix(key, "addr:") && strings.EqualFold(q.CertFingerprint, v.Beacon.CertFingerprint) {
-				cardOf[key], paired = id, true
+				addrPins = append(addrPins, key)
 			}
+		}
+		paired = paired || len(addrPins) > 0
+		if !paired && !v.Online {
+			continue
+		}
+		cardOf[id] = id
+		for _, key := range addrPins {
+			cardOf[key] = id
 		}
 		h := ui.HostInfo{
 			ID: id, AdvertisedName: v.Beacon.Name, OS: v.Beacon.OS, PathKind: v.Best.Kind,
@@ -266,7 +288,7 @@ func (b *backend) Hosts() []ui.HostInfo {
 		}
 	}
 	for key, p := range pinned {
-		if _, ok := cardOf[key]; ok {
+		if _, ok := cardOf[key]; ok || isSelf(key, p.CertFingerprint) {
 			continue
 		}
 		if id, ok := byFingerprint[strings.ToLower(p.CertFingerprint)]; ok && strings.HasPrefix(key, "addr:") {
@@ -335,6 +357,48 @@ func (b *backend) RenameHost(id, alias string) error {
 	b.mu.Lock()
 	b.aliases = aliases
 	b.mu.Unlock()
+	b.changed()
+	return nil
+}
+
+// RemoveHost forgets the host whose card is id: every pin of its
+// certificate, by ID and by address, with their aliases and overrides,
+// and what discovery found of it.
+func (b *backend) RemoveHost(id string) error {
+	b.mu.Lock()
+	pinned, connected := b.pinned, b.connected
+	b.mu.Unlock()
+	fp := pinned[id].CertFingerprint
+	if v, ok := b.finder.lookup(id); ok && fp == "" {
+		fp = v.Beacon.CertFingerprint
+	}
+	keys := []string{id}
+	for key, p := range pinned {
+		if key != id && fp != "" && strings.EqualFold(p.CertFingerprint, fp) {
+			keys = append(keys, key)
+		}
+	}
+	if connected != "" && slices.Contains(keys, connected) {
+		return errors.New("disconnect from the host before removing it")
+	}
+	var hostOverrides map[string]defaults.UserOverrides
+	err := config.UpdateClientConfig(b.dir, func(c *config.ClientConfig) error {
+		for _, key := range keys {
+			delete(c.PinnedHosts, key)
+			delete(c.HostAliases, key)
+			delete(c.HostOverrides, key)
+		}
+		hostOverrides = maps.Clone(c.HostOverrides)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	b.finder.forget(id)
+	b.mu.Lock()
+	b.storedHosts = hostOverrides
+	b.mu.Unlock()
+	b.reloadPins()
 	b.changed()
 	return nil
 }
@@ -769,6 +833,9 @@ func (b *backend) SetHosting(ctx context.Context, on bool) error {
 	}
 	b.mu.Lock()
 	b.host, b.hosting = h, state
+	if h != nil {
+		b.self[h.HostID()], b.self[h.Fingerprint()] = true, true
+	}
 	b.mu.Unlock()
 	b.changed()
 	return err

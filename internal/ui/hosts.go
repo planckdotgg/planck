@@ -96,6 +96,9 @@ func (a *App) hostsScreen(c *mui.Context) {
 	if a.renaming != "" && !slices.ContainsFunc(hosts, func(h HostInfo) bool { return h.ID == a.renaming }) {
 		a.cancelRename()
 	}
+	if a.removing != "" && !slices.ContainsFunc(hosts, func(h HostInfo) bool { return h.ID == a.removing && canRemove(h) }) {
+		a.cancelRemove()
+	}
 
 	mui.Column(c).FillWidth().MaxWidth(hostsColumn).AlignSelf(mui.Center).Gap(theme.Space5).Children(func() {
 		pageHeader(c, "Hosts", hostsSubtitle(hosts), func() {
@@ -203,9 +206,12 @@ func (a *App) hostCard(c *mui.Context, h HostInfo) {
 	}
 	card.Children(func() {
 		a.slicePlate(c, h, st, hover)
-		if a.renaming == h.ID {
+		switch {
+		case a.renaming == h.ID:
 			a.renameBody(c, h)
-		} else {
+		case a.removing == h.ID:
+			a.removeBody(c, h)
+		default:
 			a.cardBody(c, h, st, hover)
 		}
 	})
@@ -241,6 +247,9 @@ func (a *App) slicePlate(c *mui.Context, h HostInfo, st cardState, hover bool) {
 				a.streamSettingsButton(c, h, hover)
 			}
 			a.pencil(c, h, hover)
+			if canRemove(h) {
+				a.removeButton(c, h, hover)
+			}
 		})
 		sliceStack(c, cardInner, plateSlices(h, st))
 		a.routePill(c, h, st)
@@ -279,10 +288,76 @@ func (a *App) pencil(c *mui.Context, h HostInfo, hover bool) {
 		if a.renaming == h.ID {
 			a.cancelRename()
 		} else {
+			a.cancelRemove()
 			a.renaming, a.renameText, a.renameOpen, a.renameErr = h.ID, h.Name, true, ""
 		}
 	}
 }
+
+// canRemove: a paired host, or one no longer found. An unpaired host that
+// still announces itself would come straight back.
+func canRemove(h HostInfo) bool { return !h.Connected && (h.Paired || !h.Online) }
+
+// removeButton forgets h: at once for a host that is not paired, after a
+// confirmation in the card for one that is, which needs its PIN again.
+func (a *App) removeButton(c *mui.Context, h HostInfo, hover bool) {
+	b := mui.ButtonBase(c).Size(theme.SizeTargetMin, theme.SizeTargetMin).Margin(-4).Shrink(0).
+		Radius(theme.RadiusXs).Label("Remove " + h.Name).Cursor(mui.CursorPointer)
+	fg := theme.RoleText3
+	switch {
+	case b.Hovered() || a.removing == h.ID:
+		fg = theme.RoleFault
+	case hover:
+		fg = theme.RoleText
+	}
+	b.Children(func() {
+		mui.Icon(c, theme.IconClose).Size(theme.SizeIcon, theme.SizeIcon).TextColor(fg)
+	})
+	if !b.Clicked() {
+		return
+	}
+	switch {
+	case a.removing == h.ID:
+		a.cancelRemove()
+	case h.Paired:
+		a.cancelRename()
+		a.removing, a.removeErr = h.ID, ""
+	default:
+		a.removeHost(h)
+	}
+}
+
+// removeBody replaces a card's body while the user confirms forgetting a
+// paired host.
+func (a *App) removeBody(c *mui.Context, h HostInfo) {
+	mui.Column(c).FillWidth().Height(cardSize - plateHeight).Shrink(0).Padding(theme.Space3).Gap(theme.Space1).Children(func() {
+		heading(c, "Remove "+h.Name+"?", theme.TextBody).FixedLineHeight(theme.LeadingHeading).SingleLine().FillWidth()
+		text, col := "Connecting again needs its PIN.", theme.RoleText3
+		if a.removeErr != "" {
+			text, col = a.removeErr, theme.RoleFault
+		}
+		caption(c, text).TextColor(col).FixedLineHeight(14).SingleLine().FillWidth()
+		mui.Spacer(c)
+		mui.Row(c).FillWidth().Gap(theme.Space2).Children(func() {
+			if cardButton(c, ctaDisconnect, "Remove", "Confirm remove "+h.Name, false).Grow(1).Clicked() {
+				a.removeHost(h)
+			}
+			if cardButton(c, ctaOutline, "Cancel", "Keep "+h.Name, false).Clicked() {
+				a.cancelRemove()
+			}
+		})
+	})
+}
+
+func (a *App) removeHost(h HostInfo) {
+	if err := a.backend.RemoveHost(h.ID); err != nil {
+		a.removing, a.removeErr = h.ID, err.Error()
+		return
+	}
+	a.cancelRemove()
+}
+
+func (a *App) cancelRemove() { a.removing, a.removeErr = "", "" }
 
 // streamSettingsButton opens Settings on the host's own stream format.
 func (a *App) streamSettingsButton(c *mui.Context, h HostInfo, hover bool) {
