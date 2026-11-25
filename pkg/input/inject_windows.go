@@ -114,7 +114,7 @@ func (s *SendInputInjector) send() error {
 }
 
 func (s *SendInputInjector) mouse(dx, dy int32, data, flags uint32) error {
-	s.in = inputRecord{typ: inputMouse, mi: mouseInput{dx: dx, dy: dy, mouseData: data, flags: flags, extraInfo: InjectMarker}}
+	s.in = inputRecord{typ: inputMouse, mi: mouseInput{dx: dx, dy: dy, mouseData: data, flags: flags}}
 	return s.send()
 }
 

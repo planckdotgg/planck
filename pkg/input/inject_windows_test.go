@@ -130,23 +130,16 @@ func TestInjectMouseWhileLocked(t *testing.T) {
 	}
 }
 
-// TestInjectedEventsCarryTheMarker: a client capturing system keys on the
-// host's own machine tells the host's events by their dwExtraInfo.
-func TestInjectedEventsCarryTheMarker(t *testing.T) {
+// TestInjectedKeysCarryTheMarker: a client capturing system keys on the
+// host's own machine tells the host's keys by their dwExtraInfo.
+func TestInjectedKeysCarryTheMarker(t *testing.T) {
 	var got []uintptr
 	s := &SendInputInjector{post: func(r *inputRecord) error {
-		if r.typ == inputKeyboard {
-			got = append(got, (*keybdInput)(unsafe.Pointer(&r.mi)).extraInfo)
-		} else {
-			got = append(got, r.mi.extraInfo)
-		}
+		got = append(got, (*keybdInput)(unsafe.Pointer(&r.mi)).extraInfo)
 		return nil
 	}}
-	for _, ev := range []Event{
-		{Type: TypeKey, Key: KeyEvent{Usage: KeyLeftGUI, Pressed: true, Modifiers: ModLeftGUI, SystemKeyCapture: true}},
-		{Type: TypeMouseButton, Button: MouseButton{Button: ButtonLeft, Pressed: true}},
-	} {
-		if err := s.Inject(ev); err != nil {
+	for _, pressed := range []bool{true, false} {
+		if err := s.Inject(Event{Type: TypeKey, Key: KeyEvent{Usage: KeyLeftGUI, Pressed: pressed, SystemKeyCapture: true}}); err != nil {
 			t.Fatal(err)
 		}
 	}

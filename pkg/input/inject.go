@@ -13,7 +13,7 @@ type Injector interface {
 	Close() error
 }
 
-// InjectMarker tags the events a host injects (dwExtraInfo on Windows, the
+// InjectMarker tags the keys a host injects (dwExtraInfo on Windows, the
 // event source's user data on macOS), so that a client capturing the
 // system's keys on the same machine leaves them alone rather than sending
 // them back to the host.
