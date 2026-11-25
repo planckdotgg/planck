@@ -13,6 +13,10 @@ import (
 const (
 	metricsW, metricsH = 300, 361
 	compactW, compactH = 258, 36
+	// The compact readouts sit in fixed slots, right-aligned, so the rest
+	// of the bar does not move as the figures change four times a second.
+	compactLatencyW, compactFPSW       = 58, 42
+	compactLatencyNumW, compactFPSNumW = 45, 22
 	// metricsInset holds the window inside the view; it stays
 	// metricsKeepOut from the edge the button is docked to.
 	metricsInset   = 12
@@ -210,6 +214,15 @@ func (w *metricsWindow) sample(c *mui.Context, tel Telemetry, now time.Time) {
 	c.After(min(w.sampleAt.Sub(now), w.textAt.Sub(now)))
 }
 
+// compactTotal is the glass-to-glass figure for the compact slot, which
+// holds five characters: a stall of a second or more reads "999+".
+func (t *metricsText) compactTotal() string {
+	if len(t.total) > 5 {
+		return "999+"
+	}
+	return t.total
+}
+
 func readMetrics(tel Telemetry, dropping bool) metricsText {
 	t := metricsText{total: formatMs(tel.TotalMs), fps: fmt.Sprintf("%.0f", tel.FPS), dropping: dropping}
 	for i, s := range stages(tel) {
@@ -356,13 +369,13 @@ func (a *App) metricsHead(c *mui.Context, tel Telemetry) mui.Element {
 	return mui.Row(c.Key("metrics-head")).FillWidth().Height(34).Padding(0, 6, 0, 10).Gap(8).AlignItems(mui.Center).
 		BorderWidth(0, 0, 1, 0).BorderColor(theme.HUDDivider).Cursor(mui.CursorGrab).Label("Metrics window bar").Children(func() {
 		grip(c)
-		mui.Text(c, tel.HostName).Font(theme.FontUI).FontSize(theme.TextCaption + 1).FontWeight(600).TextColor(theme.RoleText).SingleLine().Shrink(1)
-		pathBadge(c, tel.PathKind, pathLabel(tel.PathKind), theme.TextMicro)
+		mui.Text(c, tel.HostName).Font(theme.FontUI).FontSize(theme.TextCaption + 1).FontWeight(600).TextColor(theme.RoleText).SingleLine().MinWidth(0).Shrink(1)
+		pathBadge(c, tel.PathKind, pathLabel(tel.PathKind), theme.TextMicro).Shrink(0)
 		mui.Box(c).Grow(1)
-		if iconButton(c, "Compact metrics", theme.IconChevron, 20, 180).Clicked() {
+		if iconButton(c, "Compact metrics", theme.IconChevron, 20, 180).Shrink(0).Clicked() {
 			w.compact = true
 		}
-		if iconButton(c, "Close metrics", theme.IconClose, 20, 0).Clicked() {
+		if iconButton(c, "Close metrics", theme.IconClose, 20, 0).Shrink(0).Clicked() {
 			w.shown = false
 		}
 	})
@@ -375,13 +388,17 @@ func (a *App) compactMetrics(c *mui.Context, tel Telemetry) mui.Element {
 	return mui.Row(c.Key("metrics-head")).Fill().Padding(0, 8).Gap(7).AlignItems(mui.Center).Cursor(mui.CursorGrab).
 		Label("Metrics window bar").Children(func() {
 		grip(c)
-		mui.Row(c).AlignItems(mui.Baseline).Gap(2).Shrink(0).Label(state).Children(func() {
-			mono(c, t.total).FontSize(15).FontWeight(500).TextColor(col)
+		mui.Row(c).AlignItems(mui.Baseline).Gap(2).Width(compactLatencyW).Shrink(0).Label(state).Children(func() {
+			mui.Row(c).Width(compactLatencyNumW).Justify(mui.End).Shrink(0).Children(func() {
+				mono(c, t.compactTotal()).FontSize(15).FontWeight(500).TextColor(col)
+			})
 			mono(c, "ms").FontSize(theme.TextMicro).TextColor(theme.RoleText3)
 		})
 		mui.Box(c).Size(1, 16).Background(theme.RoleText.Alpha(0.12))
-		mui.Row(c).AlignItems(mui.Baseline).Gap(2).Shrink(0).Children(func() {
-			mono(c, t.fps).FontSize(theme.TextCaption)
+		mui.Row(c).AlignItems(mui.Baseline).Gap(2).Width(compactFPSW).Shrink(0).Children(func() {
+			mui.Row(c).Width(compactFPSNumW).Justify(mui.End).Shrink(0).Children(func() {
+				mono(c, t.fps).FontSize(theme.TextCaption)
+			})
 			mono(c, "fps").FontSize(theme.TextMicro).TextColor(theme.RoleText3)
 		})
 		mui.Box(c).Size(1, 16).Background(theme.RoleText.Alpha(0.12))

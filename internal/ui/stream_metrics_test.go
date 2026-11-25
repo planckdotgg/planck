@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -242,6 +243,117 @@ func TestMetricsCompactFitsEveryPath(t *testing.T) {
 		click(t, tt, "Expand metrics")
 		if e := bounds(t, tt, "Metrics"); e.W != metricsW || e.H != metricsH {
 			t.Errorf("path %v: expand left the window at %+v", k, e)
+		}
+	}
+}
+
+func within(r, o mui.Rect) bool {
+	return r.X >= o.X && r.Y >= o.Y && r.X+r.W <= o.X+o.W && r.Y+r.H <= o.Y+o.H
+}
+
+// TestMetricsHeadKeepsBadgeOnLongHostname: a 63-character host name gives
+// way alone; the route badge keeps its width and both buttons stay whole
+// and clickable.
+func TestMetricsHeadKeepsBadgeOnLongHostname(t *testing.T) {
+	for _, k := range []discovery.PathKind{discovery.PathTailscaleDirect, discovery.PathTailscaleDERP} {
+		badge := func(host string) mui.Rect {
+			f := streamFake()
+			f.tel.PathKind, f.tel.HostName = k, host
+			_, tt, _ := newStreamTester(t, f)
+			showMetrics(t, tt)
+			head, win := bounds(t, tt, "Metrics window bar"), bounds(t, tt, "Metrics")
+			for _, n := range []string{"Compact metrics", "Close metrics"} {
+				if r := bounds(t, tt, n); !within(r, head) || !within(r, win) || r.W != 20 {
+					t.Errorf("path %v host %q: %q at %+v leaves the head %+v", k, host, n, r, head)
+				}
+			}
+			b := bounds(t, tt, pathLabel(k))
+			if !within(b, head) {
+				t.Errorf("path %v host %q: badge %+v leaves the head", k, host, b)
+			}
+			click(t, tt, "Compact metrics")
+			if c := bounds(t, tt, "Metrics"); c.W != compactW {
+				t.Errorf("path %v host %q: Compact metrics did not compact: %+v", k, host, c)
+			}
+			return b
+		}
+		short := badge("bigboi")
+		for _, host := range []string{strings.Repeat("a", 63), strings.Repeat("host.", 12) + "tail1234.ts.net"} {
+			if long := badge(host); long.W != short.W {
+				t.Errorf("path %v host %q: badge width %.1f, want %.1f", k, host, long.W, short.W)
+			}
+		}
+		f := streamFake()
+		f.tel.PathKind, f.tel.HostName = k, strings.Repeat("a", 63)
+		_, tt, _ := newStreamTester(t, f)
+		showMetrics(t, tt)
+		click(t, tt, "Close metrics")
+		if shows(tt, "Metrics") {
+			t.Errorf("path %v: Close metrics left the window open", k)
+		}
+	}
+}
+
+// TestMetricsCompactHoldsStillAt4Hz: the readouts and the route label keep
+// their x as the figures change.
+func TestMetricsCompactHoldsStillAt4Hz(t *testing.T) {
+	f := streamFake()
+	f.tel.PathKind, f.tel.TotalMs, f.tel.FPS = discovery.PathTailscaleDirect, 8.4, 60
+	_, tt, _ := newStreamTester(t, f)
+	showMetrics(t, tt)
+	click(t, tt, "Compact metrics")
+	xs := func() [4]float32 {
+		var o [4]float32
+		for i, n := range []string{"ms", "fps", "Tailscale", "Expand metrics"} {
+			r, ok := tt.Find(n)
+			if !ok {
+				t.Fatalf("no %q in %q", n, tt.Texts())
+			}
+			o[i] = r.X
+		}
+		return o
+	}
+	before := xs()
+	f.set(func(f *fakeBackend) { f.tel.TotalMs, f.tel.FPS = 124.5, 240 })
+	tt.Advance(textEvery)
+	if !tt.HasText("124.5") || !tt.HasText("240") {
+		t.Fatalf("readings did not change: %q", tt.Texts())
+	}
+	if after := xs(); after != before {
+		t.Fatalf("x moved at the 4 Hz tick: %v then %v", before, after)
+	}
+}
+
+// TestMetricsCompactStallStaysInSlot: a stall of a second or ten never
+// leaves the latency slot or touches the expand button.
+func TestMetricsCompactStallStaysInSlot(t *testing.T) {
+	for _, ms := range []float64{999.9, 1000, 10000, 123456.7} {
+		f := streamFake()
+		f.tel.PathKind, f.tel.TotalMs, f.tel.FPS = discovery.PathTailscaleDirect, ms, 240
+		_, tt, _ := newStreamTester(t, f)
+		showMetrics(t, tt)
+		click(t, tt, "Compact metrics")
+		win := bounds(t, tt, "Metrics")
+		var prev mui.Rect
+		for i, n := range []string{"ms", "240", "fps", "Tailscale", "Expand metrics"} {
+			r, ok := tt.Find(n)
+			if !ok {
+				t.Fatalf("%v ms: no %q in %q", ms, n, tt.Texts())
+			}
+			if !within(r, win) {
+				t.Errorf("%v ms: %q at %+v leaves %+v", ms, n, r, win)
+			}
+			if i > 0 && r.X < prev.X+prev.W {
+				t.Errorf("%v ms: %q at %+v overlaps %+v", ms, n, r, prev)
+			}
+			prev = r
+		}
+		if ms >= 1000 && !tt.HasText("999+") {
+			t.Errorf("%v ms: want 999+ in %q", ms, tt.Texts())
+		}
+		click(t, tt, "Expand metrics")
+		if e := bounds(t, tt, "Metrics"); e.W != metricsW {
+			t.Errorf("%v ms: expand left %+v", ms, e)
 		}
 	}
 }
