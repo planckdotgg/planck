@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/netip"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -204,6 +205,9 @@ type Host struct {
 
 	pinMu sync.Mutex
 	pin   string
+	// requireLANPIN pairs an unpaired client on a LAN address only by the
+	// PIN, never by its Tailscale identity.
+	requireLANPIN bool
 
 	srv      *transport.Server
 	disc     *discovery.Port
@@ -248,6 +252,9 @@ func NewHost(cfg HostConfig) (*Host, error) {
 		return nil, err
 	}
 	cfg.Policy = defaults.Merge(stored.Policy, cfg.Policy)
+	if !stored.AllowTailscaleSameUser {
+		cfg.NoTailscale = true
+	}
 	if err := cfg.Policy.Validate(); err != nil {
 		return nil, fmt.Errorf("session: host policy: %w", err)
 	}
@@ -269,7 +276,7 @@ func NewHost(cfg HostConfig) (*Host, error) {
 		cfg.FPS = 60
 	}
 	h := &Host{inputTrace: newTracer[inputTraceRow](traceInputEnv), cfg: cfg, dir: dir, hostID: stored.HostID, cert: cert, fp: transport.CertFingerprint(cert), pairs: pairs,
-		whois: cfg.WhoIs, open: cfg.OpenVideo, logf: cfg.Logf, pin: cfg.PIN}
+		whois: cfg.WhoIs, open: cfg.OpenVideo, logf: cfg.Logf, pin: cfg.PIN, requireLANPIN: stored.RequirePINForLAN}
 	if h.logf == nil {
 		h.logf = log.Printf
 	}
@@ -516,11 +523,15 @@ func (h *Host) preempt() {
 
 func (h *Host) trust(ctx context.Context, info transport.AuthInfo) (string, error) {
 	name := info.DeviceName
+	now := time.Now()
 	if c, ok := h.pairs.lookup(info.ClientFingerprint); ok {
+		if err := h.pairs.seen(info.ClientFingerprint, now); err != nil {
+			h.logf("planck: note when %s was last seen: %v", c.Name, err)
+		}
 		return "paired:" + c.Name, nil
 	}
 	if info.PINVerified {
-		if err := h.pairs.add(info.ClientFingerprint, PairedClient{Name: name, Method: "pin", PairedAt: time.Now()}); err != nil {
+		if err := h.pairs.add(info.ClientFingerprint, PairedClient{Name: name, Method: "pin", PairedAt: now, LastSeen: now}); err != nil {
 			return "", err
 		}
 		if h.cfg.PIN == "" {
@@ -532,10 +543,10 @@ func (h *Host) trust(ctx context.Context, info transport.AuthInfo) (string, erro
 		}
 		return "pin:" + name, nil
 	}
-	if h.whois != nil && !h.cfg.NoTailscale {
+	if h.whois != nil && !h.cfg.NoTailscale && !(h.requireLANPIN && isLANAddr(info.RemoteAddr.Addr())) {
 		id, err := h.whois.WhoIs(ctx, info.RemoteAddr.String())
 		if err == nil && id.IsSameUser {
-			if err := h.pairs.add(info.ClientFingerprint, PairedClient{Name: name, Method: "tailscale:" + id.LoginName, PairedAt: time.Now()}); err != nil {
+			if err := h.pairs.add(info.ClientFingerprint, PairedClient{Name: name, Method: "tailscale:" + id.LoginName, PairedAt: now, LastSeen: now}); err != nil {
 				return "", err
 			}
 			return "tailscale:" + id.LoginName, nil
@@ -545,6 +556,16 @@ func (h *Host) trust(ctx context.Context, info transport.AuthInfo) (string, erro
 		return "", errors.New("wrong PIN")
 	}
 	return "", errors.New("this device is not paired: enter the host's PIN")
+}
+
+// tailnetULA is Tailscale's IPv6 range, inside the private fc00::/7.
+var tailnetULA = netip.MustParsePrefix("fd7a:115c:a1e0::/48")
+
+// isLANAddr reports whether a is a private or link-local address off the
+// tailnet: a peer on the local network.
+func isLANAddr(a netip.Addr) bool {
+	a = a.Unmap()
+	return (a.IsPrivate() || a.IsLinkLocalUnicast()) && !tailnetULA.Contains(a)
 }
 
 func (h *Host) negotiate(req wire.SessionConfig) (wire.SessionConfig, error) {

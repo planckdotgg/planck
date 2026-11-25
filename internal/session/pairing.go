@@ -10,6 +10,8 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -23,7 +25,14 @@ type PairedClient struct {
 	Name     string    `json:"name"`
 	Method   string    `json:"method"`
 	PairedAt time.Time `json:"pairedAt"`
+	// LastSeen is when the client last connected; zero before the first
+	// connect after pairing was recorded.
+	LastSeen time.Time `json:"lastSeen,omitzero"`
 }
+
+// TrustedViaTailnet reports whether the client paired by its Tailscale
+// identity rather than a PIN.
+func (c PairedClient) TrustedViaTailnet() bool { return strings.HasPrefix(c.Method, "tailscale:") }
 
 // pairings is the host's set of trusted client fingerprints (lowercase hex
 // SHA-256), saved as JSON. An empty path keeps it in memory.
@@ -65,6 +74,44 @@ func (p *pairings) add(fp [32]byte, c PairedClient) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.clients[hex.EncodeToString(fp[:])] = c
+	return p.saveLocked()
+}
+
+// seen records that the client with fp connected at t.
+func (p *pairings) seen(fp [32]byte, t time.Time) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	key := hex.EncodeToString(fp[:])
+	c, ok := p.clients[key]
+	if !ok {
+		return nil
+	}
+	c.LastSeen = t
+	p.clients[key] = c
+	return p.saveLocked()
+}
+
+// remove forgets the clients whose fingerprints (lowercase hex) are in
+// fps, or every client when fps is nil, and returns the ones it forgot.
+func (p *pairings) remove(fps []string) ([]string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var gone []string
+	for key := range p.clients {
+		if fps == nil || slices.Contains(fps, key) {
+			gone = append(gone, key)
+		}
+	}
+	if len(gone) == 0 {
+		return nil, nil
+	}
+	for _, key := range gone {
+		delete(p.clients, key)
+	}
+	return gone, p.saveLocked()
+}
+
+func (p *pairings) saveLocked() error {
 	if p.path == "" {
 		return nil
 	}
