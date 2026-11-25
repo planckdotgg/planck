@@ -255,7 +255,14 @@ type Host struct {
 	inject input.Injector
 	// held is what inject holds down, let go of as each client leaves.
 	held input.Held
-	logf func(string, ...any)
+	// injMu orders every use of inject against Stop closing it; injClosed
+	// is set once Stop let go of held and closed inject.
+	injMu     sync.Mutex
+	injClosed bool
+	// openInjector and closeVDD replace newInjector and vdd.close.
+	openInjector func() (input.Injector, error)
+	closeVDD     func() error
+	logf         func(string, ...any)
 
 	pinMu sync.Mutex
 	pin   string
@@ -358,6 +365,7 @@ func NewHost(cfg HostConfig) (*Host, error) {
 	if h.logf == nil {
 		h.logf = log.Printf
 	}
+	h.openInjector, h.closeVDD = newInjector, h.vdd.close
 	h.sys.set, h.sys.hooks = cfg.Session, cfg.System.withDefaults()
 	h.pads.set = GamepadHostSettingsOf(pads)
 	name := cfg.Name
@@ -573,7 +581,7 @@ func (h *Host) Start(ctx context.Context) error {
 	h.scfg = scfg
 	h.srv.Store(srv)
 	if h.cfg.InjectInput && h.cfg.Injector == nil {
-		inj, err := newInjector()
+		inj, err := h.openInjector()
 		if err != nil {
 			h.logf("planck: input injection unavailable: %v", err)
 		} else {
@@ -756,12 +764,16 @@ func (h *Host) stopWithin(st *stream) {
 	}
 }
 
-// within runs f and waits up to stopWait for it, reporting whether it
-// returned; f keeps running after that.
-func (h *Host) within(f func()) bool {
+// within runs fs at once and waits up to stopWait for them all,
+// reporting whether they returned; they keep running after that.
+func (h *Host) within(fs ...func()) bool {
+	var wg sync.WaitGroup
+	for _, f := range fs {
+		wg.Go(f)
+	}
 	finished := make(chan struct{})
 	go func() {
-		f()
+		wg.Wait()
 		close(finished)
 	}()
 	select {
@@ -919,25 +931,36 @@ func (h *Host) onInput(in wire.Input) {
 	}
 	if h.inject != nil {
 		h.secureAttention(ev)
-		var err error
-		if ev.Type == input.TypeGamepad {
-			var dropped bool
-			if dropped, err = h.injectGamepad(ev); dropped {
-				return
-			}
-		} else {
-			err = h.inject.Inject(ev)
-		}
+		injected, err := h.injectHeld(ev)
 		if err != nil {
 			h.inputErr.Add(1)
 			return
 		}
-		h.held.Note(ev)
-		if ev.Type == input.TypeMouseMoveAbs {
+		if injected && ev.Type == input.TypeMouseMoveAbs {
 			h.absTarget.Store(uint32(ev.MouseAbs.X)<<16 | uint32(ev.MouseAbs.Y))
 			h.absMoves.Add(1)
 		}
 	}
+}
+
+// injectHeld injects ev and notes what it holds down, unless Stop closed
+// the injector or the gamepad settings drop it. Noting under injMu keeps
+// a press from landing after Stop let go of everything held.
+func (h *Host) injectHeld(ev input.Event) (bool, error) {
+	h.injMu.Lock()
+	defer h.injMu.Unlock()
+	if h.injClosed {
+		return false, nil
+	}
+	if ev.Type == input.TypeGamepad {
+		if dropped, err := h.injectGamepad(ev); dropped || err != nil {
+			return false, err
+		}
+	} else if err := h.inject.Inject(ev); err != nil {
+		return false, err
+	}
+	h.held.Note(ev)
+	return true, nil
 }
 
 // releaseInput lets go of every key and button the last client left down.
@@ -945,6 +968,32 @@ func (h *Host) releaseInput() {
 	if h.inject == nil {
 		return
 	}
+	h.injMu.Lock()
+	defer h.injMu.Unlock()
+	if !h.injClosed {
+		h.releaseLocked()
+	}
+}
+
+// closeInput lets go of what is held and closes an injector the host
+// opened. A stream whose teardown outlives Stop then injects nothing.
+func (h *Host) closeInput() {
+	if h.inject == nil {
+		return
+	}
+	h.injMu.Lock()
+	defer h.injMu.Unlock()
+	if h.injClosed {
+		return
+	}
+	h.releaseLocked()
+	h.injClosed = true
+	if h.cfg.Injector == nil {
+		h.inject.Close()
+	}
+}
+
+func (h *Host) releaseLocked() {
 	for _, ev := range h.held.Release() {
 		if err := h.inject.Inject(ev); err != nil {
 			h.logf("planck: let go of %+v: %v", ev, err)
@@ -956,7 +1005,9 @@ func (h *Host) releaseInput() {
 // opened pipe captures: a virtual display, one that changed size or
 // place, or the physical one.
 func (h *Host) targetInput(info VideoInfo) {
-	if t, ok := h.inject.(input.Targeter); ok {
+	h.injMu.Lock()
+	defer h.injMu.Unlock()
+	if t, ok := h.inject.(input.Targeter); ok && !h.injClosed {
 		t.SetTarget(info.Display, info.Desktop)
 		if info.Display.W > 0 {
 			h.logf("planck: input on %+v of desktop %+v", info.Display, info.Desktop)
@@ -1103,14 +1154,15 @@ func (h *Host) Stop() {
 		}) {
 			h.fail("the host's streams took over %v to stop; stopping without them", h.stopWait)
 		}
-		if h.clip != nil {
-			h.clip.close()
-		}
-		if err := h.vdd.close(); err != nil {
-			h.logf("planck: virtual display driver: %v", err)
-		}
-		if h.inject != nil && h.cfg.Injector == nil {
-			h.inject.Close()
+		if !h.within(h.closeInput, func() {
+			if h.clip != nil {
+				h.clip.close()
+			}
+			if err := h.closeVDD(); err != nil {
+				h.logf("planck: virtual display driver: %v", err)
+			}
+		}) {
+			h.fail("the host's input, clipboard, or virtual displays took over %v to close; stopping without them", h.stopWait)
 		}
 		h.setStarted(false)
 		close(h.done)

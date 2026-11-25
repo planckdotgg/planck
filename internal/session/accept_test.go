@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/planckdotgg/planck/pkg/audio"
 	"github.com/planckdotgg/planck/pkg/discovery"
+	"github.com/planckdotgg/planck/pkg/input"
 	"github.com/planckdotgg/planck/pkg/transport"
 )
 
@@ -370,5 +372,129 @@ func TestHaltWithWedgedTeardown(t *testing.T) {
 	defer cancel()
 	if _, _, err := discovery.Probe(ctx, disc); err == nil {
 		t.Error("discovery still answers for a host that stopped")
+	}
+}
+
+// TestHaltWithWedgedVDDClose: a host that cannot listen again stops, and
+// Done closes with its error, even when the virtual display driver hangs
+// on close.
+func TestHaltWithWedgedVDDClose(t *testing.T) {
+	logs := &logBuf{}
+	h := newTestHost(t, HostConfig{}, logs)
+	h.stopWait = 200 * time.Millisecond
+	release, entered := make(chan struct{}), make(chan struct{})
+	h.closeVDD = func() error {
+		close(entered)
+		<-release
+		return nil
+	}
+	var opened atomic.Int32
+	h.listen = func(addr string, cfg transport.ServerConfig) (*transport.Server, error) {
+		if opened.Add(1) > 1 {
+			return nil, errors.New("port taken")
+		}
+		return transport.Listen(addr, cfg)
+	}
+	startTestHost(t, h)
+	t.Cleanup(func() { close(release) })
+	h.srv.Load().Close()
+
+	select {
+	case <-h.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("a wedged virtual display close kept the host from stopping")
+	}
+	select {
+	case <-entered:
+	default:
+		t.Fatal("Stop never closed the virtual display driver")
+	}
+	if h.Err() == nil {
+		t.Error("host stopped with no error after its listener could not come back")
+	}
+	if !logs.has("to close; stopping without them") {
+		t.Error("the host did not log the slow virtual display close")
+	}
+}
+
+// closeInjector records injects, and any after Close.
+type closeInjector struct {
+	recordInjector
+	closed atomic.Bool
+	late   atomic.Int32
+}
+
+func (c *closeInjector) Inject(ev input.Event) error {
+	if c.closed.Load() {
+		c.late.Add(1)
+	}
+	return c.recordInjector.Inject(ev)
+}
+
+func (c *closeInjector) Close() error { c.closed.Store(true); return nil }
+
+// TestStopWithWedgedTeardownReleasesHeldInput: when Stop gives up on a
+// stream whose teardown hangs, it still lets go of the held key before it
+// closes its injector, and the stream injects nothing once it unwedges.
+func TestStopWithWedgedTeardownReleasesHeldInput(t *testing.T) {
+	release := make(chan struct{})
+	var forced, kbps atomic.Int64
+	h := newTestHost(t, HostConfig{InjectInput: true, OpenVideo: func(p VideoParams) (VideoPipe, error) {
+		return &wedgedPipe{fakePipe: fakePipe{fps: p.FPS, forced: &forced, kbps: &kbps}, release: release}, nil
+	}}, &logBuf{})
+	h.stopWait = 200 * time.Millisecond
+	inj := &closeInjector{}
+	h.openInjector = func() (input.Injector, error) { return inj, nil }
+	startTestHost(t, h)
+	released := false
+	t.Cleanup(func() {
+		if !released {
+			close(release)
+		}
+	})
+
+	r := newClient(t, t.TempDir(), h.PIN())
+	if err := connect(t, r, h.Addr().String()); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "video", func() bool { return r.sink.Units.Load() >= 5 })
+	press := input.Event{Type: input.TypeKey, Key: input.KeyEvent{Usage: input.KeyA, Pressed: true}}
+	if err := r.client.SendInput(press); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the press at the host", func() bool { return len(inj.events()) == 1 })
+
+	stopped := make(chan struct{})
+	go func() {
+		h.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Stop waited on a wedged stream teardown")
+	}
+	want := []input.Event{press, {Type: input.TypeKey, Key: input.KeyEvent{Usage: input.KeyA}}}
+	if got := inj.events(); !slices.Equal(got, want) || !inj.closed.Load() {
+		t.Fatalf("after Stop: injected %+v, closed %v; want %+v, closed", got, inj.closed.Load(), want)
+	}
+
+	close(release)
+	released = true
+	ended := make(chan struct{})
+	go func() {
+		h.wg.Wait()
+		close(ended)
+	}()
+	select {
+	case <-ended:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the stream did not end after its teardown unwedged")
+	}
+	if n := inj.late.Load(); n != 0 {
+		t.Fatalf("%d injects after the injector closed", n)
+	}
+	if got := inj.events(); !slices.Equal(got, want) {
+		t.Fatalf("after the stream ended: injected %+v; want %+v", got, want)
 	}
 }
