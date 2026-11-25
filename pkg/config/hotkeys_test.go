@@ -207,3 +207,35 @@ func TestHostQoLValidate(t *testing.T) {
 		t.Errorf("host QoL after a save: %+v", back)
 	}
 }
+
+// TestSetHotkeyGlobalKeys: a host hotkey takes only keys the desktop's
+// global shortcuts register on goos; a stream hotkey takes any.
+func TestSetHotkeyGlobalKeys(t *testing.T) {
+	for _, tc := range []struct {
+		chord, goos string
+		ok          bool
+	}{
+		{"Ctrl+ContextMenu", "windows", false},
+		{"Ctrl+ContextMenu", "darwin", false},
+		{"Ctrl+Pause", "windows", false},
+		{"Ctrl+F21", "darwin", false},
+		{"Ctrl+ScrollLock", "darwin", false},
+		{"Ctrl+F21", "windows", true},
+		{"Ctrl+ScrollLock", "windows", true},
+		{"Ctrl+F20", "darwin", true},
+		{"Ctrl+Alt+.", "darwin", true},
+	} {
+		c := DefaultClientConfig()
+		err := c.SetHotkey(HotkeyKickClient, tc.chord, tc.goos)
+		if tc.ok && err != nil {
+			t.Errorf("kick on %s: %s refused: %v", tc.goos, tc.chord, err)
+		}
+		if !tc.ok && (!errors.Is(err, ErrNotGlobal) || len(c.Hotkeys) != 0) {
+			t.Errorf("kick on %s: %s gave %v, kept %v", tc.goos, tc.chord, err, c.Hotkeys)
+		}
+	}
+	c := DefaultClientConfig()
+	if err := c.SetHotkey(HotkeyMetrics, "Ctrl+Alt+ContextMenu", "windows"); err != nil {
+		t.Errorf("Ctrl+Alt+ContextMenu for metrics: %v", err)
+	}
+}

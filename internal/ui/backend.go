@@ -314,6 +314,7 @@ var (
 	ErrNoModifier    = config.ErrNoModifier
 	ErrReservedChord = config.ErrReservedChord
 	ErrChordInUse    = config.ErrChordInUse
+	ErrNotGlobal     = config.ErrNotGlobal
 )
 
 // ErrOneDisplay is SwitchDisplay's answer while a host streams one

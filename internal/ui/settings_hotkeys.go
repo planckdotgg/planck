@@ -250,6 +250,8 @@ func (a *App) chordRefused(err error, old string) string {
 		return chord + ": " + he.Reason + ". " + keep
 	case errors.Is(err, ErrNoModifier):
 		return "A shortcut needs at least one modifier. " + keep
+	case errors.Is(err, ErrNotGlobal):
+		return chord + " cannot fire while Planck is not in front. " + keep
 	}
 	return err.Error()
 }

@@ -334,3 +334,23 @@ func TestForwarderReleasesKeyBeforeNeverSendChord(t *testing.T) {
 		}
 	}
 }
+
+// TestBackendRefusesChordDesktopCannotTake: a host hotkey the desktop
+// cannot register is refused and not stored; a stream hotkey may have it.
+func TestBackendRefusesChordDesktopCannotTake(t *testing.T) {
+	dir := t.TempDir()
+	b, _ := newTestBackend(t, dir, nil)
+	var he *ui.HotkeyError
+	if err := b.SetHotkey(ui.HotkeyStopHosting, "Ctrl+ContextMenu"); !errors.Is(err, config.ErrNotGlobal) || !errors.As(err, &he) {
+		t.Fatalf("Ctrl+ContextMenu for stop hosting: %v", err)
+	}
+	if got := chordOf(b.Hotkeys(), ui.HotkeyStopHosting); got != "Ctrl+F3" {
+		t.Errorf("stop hosting is %q after the refusal", got)
+	}
+	if stored, err := config.LoadClientConfig(dir); err != nil || len(stored.Hotkeys) != 0 {
+		t.Errorf("stored hotkeys %v, %v", stored.Hotkeys, err)
+	}
+	if err := b.SetHotkey(ui.HotkeyMetrics, "Ctrl+Alt+ContextMenu"); err != nil {
+		t.Errorf("Ctrl+Alt+ContextMenu for metrics: %v", err)
+	}
+}

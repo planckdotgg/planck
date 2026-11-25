@@ -167,6 +167,7 @@ var (
 	ErrNoModifier    = errors.New("needs at least one modifier")
 	ErrReservedChord = errors.New("the system keeps this chord")
 	ErrChordInUse    = errors.New("already in use")
+	ErrNotGlobal     = errors.New("the desktop cannot take this chord while Planck is not in front")
 )
 
 // HotkeyError is a chord refused for a hotkey or the never-send list.
@@ -275,6 +276,9 @@ func (c *ClientConfig) checkHotkey(a HotkeyAction, ch Chord, goos string) error 
 	if reason := ReservedChord(ch, goos); reason != "" {
 		return &HotkeyError{Chord: ch, Err: ErrReservedChord, Reason: reason}
 	}
+	if d, _ := hotkeyDef(a); d.Global && !globalKey(ch.Key, goos) {
+		return &HotkeyError{Chord: ch, Err: ErrNotGlobal}
+	}
 	for _, d := range HotkeyDefs {
 		if d.Action != a && c.Hotkey(d.Action) == ch {
 			return &HotkeyError{Chord: ch, Err: ErrChordInUse, Owner: d.Action}
@@ -284,6 +288,20 @@ func (c *ClientConfig) checkHotkey(a HotkeyAction, ch Chord, goos string) error 
 		return &HotkeyError{Chord: ch, Err: ErrChordInUse}
 	}
 	return nil
+}
+
+// globalKey is whether MyGo's global shortcuts register key on goos: its
+// accelerators name no ContextMenu or Pause key, and its macOS hotkeys
+// have no CapsLock, PrintScreen, ScrollLock or F21 to F24.
+func globalKey(key uint16, goos string) bool {
+	switch {
+	case key == input.KeyApplication || key == input.KeyPause:
+		return false
+	case key == input.KeyCapsLock || key == input.KeyPrintScreen || key == input.KeyScrollLock,
+		key >= input.KeyF21 && key <= input.KeyF24:
+		return goos != "darwin"
+	}
+	return true
 }
 
 // AddNeverSend keeps chord from the host from now on, even while

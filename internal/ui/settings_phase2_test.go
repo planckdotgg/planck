@@ -2,6 +2,7 @@ package ui
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	mui "github.com/egoist/mygo/ui"
@@ -338,5 +339,20 @@ func TestSettingsSearchPhase2(t *testing.T) {
 				t.Errorf("%q does not show %q: %q", c.query, c.text, tt.Texts())
 			}
 		})
+	}
+}
+
+// TestHotkeyNotGlobal: a host hotkey on a key the desktop cannot take
+// while Planck is not in front says so and keeps the old chord.
+func TestHotkeyNotGlobal(t *testing.T) {
+	f := newFake()
+	_, tt := settingsOn(t, f, catInput, "darwin")
+	clickScrolled(t, tt, "Shortcut for Stop hosting")
+	press(tt, mui.Ctrl, mui.KeyContextMenu)
+	if want := "cannot fire while Planck is not in front. Press another chord, or Esc to keep ⌃F3."; !slices.ContainsFunc(tt.Texts(), func(s string) bool { return strings.HasSuffix(s, want) }) {
+		t.Errorf("no %q: %q", want, tt.Texts())
+	}
+	if got := chordFor(f, HotkeyStopHosting); got != "Ctrl+F3" {
+		t.Errorf("stop hosting = %q after the refusal", got)
 	}
 }
