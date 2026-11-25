@@ -31,6 +31,8 @@ type statsHistory struct {
 	lostSeen uint64
 	samples  []statsSample
 	window   int
+	// polled is when the stream's statistics were last read for a sample.
+	polled time.Time
 }
 
 // statsWindows are the glass-to-glass chart's windows, in seconds; 0 is
@@ -41,7 +43,7 @@ var statsWindows = []int{60, 300, 0}
 // for a new stream.
 func (h *statsHistory) add(s SessionStats, now time.Time) {
 	if !s.Started.Equal(h.started) {
-		*h = statsHistory{started: s.Started, window: h.window, lostSeen: s.FramesLost}
+		*h = statsHistory{started: s.Started, window: h.window, lostSeen: s.FramesLost, polled: h.polled}
 	}
 	if !h.last.IsZero() && now.Sub(h.last) < time.Second {
 		return
@@ -53,6 +55,18 @@ func (h *statsHistory) add(s SessionStats, now time.Time) {
 		h.samples = slices.Delete(h.samples, 0, 1)
 	}
 	h.samples = append(h.samples, statsSample{latencyMs: s.Total.P50, bitrateMbps: s.BitrateMbps, lossPct: s.LossPct, lost: lost})
+}
+
+// sampleStats keeps the charts' history whatever page is open, reading
+// the stream's statistics at most once a second.
+func (a *App) sampleStats(now time.Time) {
+	if !a.stats.polled.IsZero() && now.Sub(a.stats.polled) < time.Second {
+		return
+	}
+	a.stats.polled = now
+	if st := a.backend.SessionStats(); st.Live {
+		a.stats.add(st, now)
+	}
 }
 
 // tail is the last n samples, or all of them for n 0.

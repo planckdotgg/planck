@@ -231,6 +231,18 @@ func TestStaleEpochFramesDropped(t *testing.T) {
 	}
 }
 
+// TestFrameBeforeStreamState: a frame that arrives once the route is live
+// but before the stream state is stored is dropped, not a panic.
+func TestFrameBeforeStreamState(t *testing.T) {
+	cc := &conn{frames: make(chan *frameBuf, 4), free: make(chan *frameBuf, 4)}
+	cc.free <- &frameBuf{}
+	cc.live.Store(&route{})
+	cc.onFrame(wire.VideoInfo{FrameID: 1, Keyframe: true}, []byte{1, 2, 3})
+	if len(cc.frames) != 0 {
+		t.Fatalf("%d frames queued before the stream state", len(cc.frames))
+	}
+}
+
 // TestVirtualDisplayTakesClientScale: the virtual display takes the
 // client display's scale, 100% for a 1x display, so a game in a
 // borderless window on it sees the whole display.

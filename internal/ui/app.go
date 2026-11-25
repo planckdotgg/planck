@@ -276,6 +276,7 @@ func (a *App) frame(c *mui.Context, stream bool) (Telemetry, string) {
 	connecting, pairBusy := a.connecting, a.pairBusy
 	a.mu.Unlock()
 	a.frameNow = c.Now()
+	a.sampleStats(a.frameNow)
 
 	tel := a.backend.Telemetry()
 	split := a.streamWin != nil

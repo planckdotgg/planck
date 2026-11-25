@@ -112,3 +112,32 @@ func TestStatsHistory(t *testing.T) {
 		t.Fatalf("a new stream kept the old samples: %+v", h.samples)
 	}
 }
+
+// TestStatisticsHistoryWhileAway: a stream's history builds while another
+// page is open, and starts over for the next stream.
+func TestStatisticsHistoryWhileAway(t *testing.T) {
+	f := newFake()
+	start := time.Now().Add(-time.Minute)
+	f.set(func(f *fakeBackend) {
+		f.stats = SessionStats{Live: true, Started: start, HostName: "bigboi", BitrateMbps: 42}
+	})
+	a, tt := newTester(t, f)
+	for range 3 {
+		tt.Advance(time.Second)
+		tt.Frame()
+	}
+	if a.screen != ScreenHosts {
+		t.Fatalf("screen = %v, want Hosts", a.screen)
+	}
+	click(t, tt, "Statistics")
+	if n := len(a.stats.samples); n < 3 {
+		t.Fatalf("%d samples after 3 s on Hosts, want 3 or more", n)
+	}
+
+	f.set(func(f *fakeBackend) { f.stats.Started = start.Add(time.Minute) })
+	tt.Advance(time.Second)
+	tt.Frame()
+	if n := len(a.stats.samples); n != 1 {
+		t.Fatalf("%d samples for a new stream, want 1", n)
+	}
+}

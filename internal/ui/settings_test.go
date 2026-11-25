@@ -229,3 +229,21 @@ func TestSettingsGeneral(t *testing.T) {
 		t.Fatal("clipboard send not saved")
 	}
 }
+
+// TestPortsRecheckedOnReopen: reopening the ports with the same numbers
+// tests them again, since another app may have taken one meanwhile.
+func TestPortsRecheckedOnReopen(t *testing.T) {
+	f := newFake()
+	f.hostSettings.Ports = HostPorts{Control: 41000, Media: 41001}
+	_, tt := settingsAt(t, f, catHost)
+	clickScrolled(t, tt, "Ports")
+	if tt.HasText("Media port: Another app is using UDP port 41001.") {
+		t.Fatal("warning shown before the port was taken")
+	}
+	clickScrolled(t, tt, "Ports")
+	f.set(func(f *fakeBackend) { f.ports = PortStatus{Media: "Another app is using UDP port 41001."} })
+	clickScrolled(t, tt, "Ports")
+	if !tt.HasText("Media port: Another app is using UDP port 41001.") {
+		t.Fatalf("reopened ports kept a stale test: %q", tt.Texts())
+	}
+}

@@ -36,9 +36,14 @@ type settingsState struct {
 	// the ports.
 	advancedClosed bool
 	portsOpen      bool
-	// ports is the last TestPorts answer, for ports.
-	ports       PortStatus
-	portsTested HostPorts
+	// ports is the last TestPorts answer, for ports, taken when they
+	// changed or when the ports came into view: another app may have
+	// taken one while they were out of it. frame counts Settings' frames;
+	// portsShownAt is the last one that showed the ports.
+	ports        PortStatus
+	portsTested  HostPorts
+	frame        uint64
+	portsShownAt uint64
 	// revoking is the fingerprint whose row asks to confirm its revoke,
 	// "*" for every device.
 	revoking  string
@@ -123,6 +128,7 @@ func (a *App) settingsScreen(c *mui.Context) {
 	}
 	f.query = strings.ToLower(strings.TrimSpace(a.set.query))
 	f.searching = f.query != ""
+	a.set.frame++
 
 	c.OnWindowShortcut(mui.Cmd, mui.KeyF, func() {
 		a.set.focusSearch = true

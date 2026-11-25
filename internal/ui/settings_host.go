@@ -299,8 +299,11 @@ func portText(port int, zero string) string {
 func (a *App) portsRow(c *mui.Context, f *settingsFrame) {
 	p := &f.hs.Ports
 	open := a.set.portsOpen || f.searching
-	if open && a.set.portsTested != *p {
-		a.set.ports, a.set.portsTested = a.backend.TestPorts(*p), *p
+	if open {
+		if a.set.portsTested != *p || a.set.portsShownAt == 0 || a.set.portsShownAt != a.set.frame-1 {
+			a.set.ports, a.set.portsTested = a.backend.TestPorts(*p), *p
+		}
+		a.set.portsShownAt = a.set.frame
 	}
 	bad := open && (a.set.ports != PortStatus{})
 	mui.Column(c).FillWidth().Background(theme.RoleSurface).Border(1, theme.RoleBorder).Radius(theme.RadiusMd).

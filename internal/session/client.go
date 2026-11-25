@@ -433,7 +433,6 @@ func (c *Client) connect(ctx context.Context, t Target) (*conn, error) {
 		return nil, err
 	}
 	sess := rt.sess
-	cc.live.Store(rt)
 	if cc.name == "" {
 		cc.name = sess.PeerName()
 	}
@@ -443,6 +442,8 @@ func (c *Client) connect(ctx context.Context, t Target) (*conn, error) {
 	cc.stream.Store(&streamState{sink: dcfg})
 	cc.profile.Store(prof)
 	cc.policy.Store(hostPolicy(sess))
+	// The receive goroutine reads the stream once the route is live.
+	cc.live.Store(rt)
 	cc.openSink = cfg.OpenSink
 	if cc.openSink == nil {
 		cc.openSink = OpenDecodeSink
@@ -971,7 +972,8 @@ func (cc *conn) onFrame(info wire.VideoInfo, frame []byte) {
 		return
 	}
 	sess := rt.sess
-	if info.Epoch != cc.stream.Load().epoch {
+	st := cc.stream.Load()
+	if st == nil || info.Epoch != st.epoch {
 		// A frame of the stream before a switch, or of the next one
 		// before its wire.Stream: neither decodes on this sink.
 		return
