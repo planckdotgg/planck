@@ -260,3 +260,54 @@ func TestOverlayLayoutPlacementsAndLegacy(t *testing.T) {
 		t.Fatalf("round trip %+v", o)
 	}
 }
+
+func TestHostConfigHostingFields(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, HostConfigFile), []byte(`{"hostID":"h1","controlPort":47701,"mediaPort":47702,"codec":"hevc","chroma":"nv12","fps":60,"maxBitrateKbps":1000,"certPath":"c","keyPath":"k"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old, err := LoadHostConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if old.DiscoveryPort != DefaultDiscoveryPort {
+		t.Errorf("a host.json from before discoveryPort: port %d, want %d", old.DiscoveryPort, DefaultDiscoveryPort)
+	}
+
+	host := DefaultHostConfig(dir)
+	host.ControlPort, host.MediaPort, host.DiscoveryPort = 0, 0, 0
+	host.FixedPIN, host.Clipboard, host.NoInput, host.Adapter, host.VDDPrimary = "012345", ClipboardHostToClient, true, "4080", true
+	if err := SaveHostConfig(dir, host); err != nil {
+		t.Fatalf("ports left to pick: %v", err)
+	}
+	back, err := LoadHostConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.DiscoveryPort != 0 || back.ControlPort != 0 || back.FixedPIN != "012345" || back.Clipboard != ClipboardHostToClient || !back.NoInput || back.Adapter != "4080" || !back.VDDPrimary {
+		t.Errorf("round trip: %+v", back)
+	}
+
+	for _, bad := range []func(*HostConfig){
+		func(c *HostConfig) { c.FixedPIN = "12345" },
+		func(c *HostConfig) { c.FixedPIN = "12345a" },
+		func(c *HostConfig) { c.Clipboard = "sideways" },
+	} {
+		c := DefaultHostConfig(dir)
+		bad(&c)
+		if err := c.Validate(); err == nil {
+			t.Errorf("accepted %+v", c)
+		}
+	}
+}
+
+func TestClientDeviceName(t *testing.T) {
+	dir := t.TempDir()
+	if err := UpdateClientConfig(dir, func(c *ClientConfig) error { c.DeviceName = "couch-mac"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	c, err := LoadClientConfig(dir)
+	if err != nil || c.DeviceName != "couch-mac" {
+		t.Fatalf("device name %q, %v", c.DeviceName, err)
+	}
+}

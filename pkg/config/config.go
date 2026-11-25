@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/planckdotgg/planck/pkg/defaults"
@@ -25,11 +26,12 @@ const (
 	ClientConfigFile = "client.json"
 )
 
-// The host's default ports, with discovery.DefaultPort (47700) beside
-// them: below 47981-48500, the range Sunshine uses.
+// The host's default ports, the first discovery.DefaultPort: below
+// 47981-48500, the range Sunshine uses.
 const (
-	DefaultControlPort = 47701
-	DefaultMediaPort   = 47702
+	DefaultDiscoveryPort = 47700
+	DefaultControlPort   = 47701
+	DefaultMediaPort     = 47702
 )
 
 // Codec and chroma values use the same names as the encoder flags in the
@@ -48,13 +50,39 @@ func Dir() (string, error) {
 	return filepath.Join(base, "planck"), nil
 }
 
+// Clipboard directions a host allows, as HostConfig.Clipboard holds them.
+const (
+	ClipboardBoth         = "both"
+	ClipboardHostToClient = "host-to-client"
+	ClipboardClientToHost = "client-to-host"
+	ClipboardOff          = "off"
+)
+
+var clipboards = []string{ClipboardBoth, ClipboardHostToClient, ClipboardClientToHost, ClipboardOff}
+
 type HostConfig struct {
 	HostID string `json:"hostID"`
 	// Name is what clients see; empty advertises Hostname().
-	Name                   string `json:"name"`
-	ControlPort            uint16 `json:"controlPort"`
-	MediaPort              uint16 `json:"mediaPort"`
-	Display                string `json:"display,omitempty"`
+	Name string `json:"name"`
+	// ControlPort and MediaPort 0 pick a free port; DiscoveryPort 0 turns
+	// LAN discovery off.
+	ControlPort   uint16 `json:"controlPort"`
+	MediaPort     uint16 `json:"mediaPort"`
+	DiscoveryPort uint16 `json:"discoveryPort"`
+	Display       string `json:"display,omitempty"`
+	// Adapter is the encoding GPU by part of its name; empty lets the host
+	// choose.
+	Adapter string `json:"adapter,omitempty"`
+	// VDDPrimary makes a session's virtual display the primary one.
+	VDDPrimary bool `json:"vddPrimary,omitempty"`
+	// FixedPIN is a pairing PIN that never changes; empty rotates a random
+	// one after each pairing.
+	FixedPIN string `json:"fixedPIN,omitempty"`
+	// NoInput ignores clients' keyboard, mouse and gamepad.
+	NoInput bool `json:"noInput,omitempty"`
+	// Clipboard is what the host shares: one of the Clipboard constants,
+	// empty is off.
+	Clipboard string `json:"clipboard,omitempty"`
 	Codec                  string `json:"codec"`
 	Chroma                 string `json:"chroma"`
 	FPS                    int    `json:"fps"`
@@ -83,6 +111,9 @@ type ClientConfig struct {
 	SystemKeysCapture bool                  `json:"systemKeysCapture,omitempty"`
 	ThemeName         string                `json:"themeName"`
 	PinnedHosts       map[string]PinnedHost `json:"pinnedHosts"`
+	// DeviceName is the name hosts pair this client under; empty is
+	// Hostname().
+	DeviceName string `json:"deviceName,omitempty"`
 	// HostAliases are names the user gave hosts on this client, by host
 	// ID; they replace the name the host advertises.
 	HostAliases map[string]string `json:"hostAliases,omitempty"`
@@ -154,6 +185,7 @@ func DefaultHostConfig(dir string) HostConfig {
 		Name:                   Hostname(),
 		ControlPort:            DefaultControlPort,
 		MediaPort:              DefaultMediaPort,
+		DiscoveryPort:          DefaultDiscoveryPort,
 		Codec:                  "hevc",
 		Chroma:                 "nv12",
 		FPS:                    120,
@@ -287,8 +319,12 @@ func (c HostConfig) Validate() error {
 	switch {
 	case c.HostID == "":
 		return errors.New("config: host: empty hostID")
-	case c.ControlPort == 0 || c.MediaPort == 0 || c.ControlPort == c.MediaPort:
-		return fmt.Errorf("config: host: controlPort %d and mediaPort %d must be distinct and non-zero", c.ControlPort, c.MediaPort)
+	case c.ControlPort != 0 && c.ControlPort == c.MediaPort:
+		return fmt.Errorf("config: host: controlPort and mediaPort are both %d", c.ControlPort)
+	case c.FixedPIN != "" && !validPIN(c.FixedPIN):
+		return errors.New("config: host: fixedPIN must be 6 digits")
+	case c.Clipboard != "" && !slices.Contains(clipboards, c.Clipboard):
+		return fmt.Errorf("config: host: unknown clipboard %q (want one of %v)", c.Clipboard, clipboards)
 	case c.FPS <= 0 || c.MaxBitrateKbps <= 0:
 		return fmt.Errorf("config: host: fps %d and maxBitrateKbps %d must be positive", c.FPS, c.MaxBitrateKbps)
 	case c.CertPath == "" || c.KeyPath == "":
@@ -313,6 +349,11 @@ func (c ClientConfig) Validate() error {
 		}
 	}
 	return validateFormat("client", c.PreferredCodec, c.PreferredChroma)
+}
+
+// validPIN reports whether pin is a pairing PIN: six ASCII digits.
+func validPIN(pin string) bool {
+	return len(pin) == 6 && strings.Trim(pin, "0123456789") == ""
 }
 
 func validateFormat(who, codec, chroma string) error {
