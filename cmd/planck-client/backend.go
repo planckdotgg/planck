@@ -772,20 +772,28 @@ func (b *backend) SetHosting(ctx context.Context, on bool) error {
 // hostingError is what the hosting card says of a failure to host.
 func hostingError(err error) string {
 	var op *net.OpError
-	if errors.As(err, &op) && op.Addr != nil && addrInUse(err) {
+	if errors.As(err, &op) && op.Addr != nil {
 		if _, port, e := net.SplitHostPort(op.Addr.String()); e == nil {
-			return fmt.Sprintf("Another app is using %s port %s.", strings.ToUpper(strings.TrimRight(op.Net, "46")), port)
+			proto := strings.ToUpper(strings.TrimRight(op.Net, "46"))
+			switch {
+			case errors.Is(err, syscall.EADDRINUSE) || errors.Is(err, wsaeAddrInUse):
+				return fmt.Sprintf("Another app is using %s port %s.", proto, port)
+			case errors.Is(err, wsaeAccess):
+				// Windows refuses a shared bind on a port another socket
+				// holds alone, and a bind in a range it reserved.
+				return fmt.Sprintf("Windows will not let Planck use %s port %s: another app holds it, or Windows reserved it.", proto, port)
+			}
 		}
 	}
 	return err.Error()
 }
 
-// wsaeAddrInUse is Windows' WSAEADDRINUSE, which syscall.EADDRINUSE is not.
-const wsaeAddrInUse = syscall.Errno(10048)
-
-func addrInUse(err error) bool {
-	return errors.Is(err, syscall.EADDRINUSE) || errors.Is(err, wsaeAddrInUse)
-}
+// wsaeAddrInUse and wsaeAccess are Windows' WSAEADDRINUSE and WSAEACCES,
+// which syscall.EADDRINUSE and syscall.EACCES are not.
+const (
+	wsaeAddrInUse = syscall.Errno(10048)
+	wsaeAccess    = syscall.Errno(10013)
+)
 
 func encoderLabel(gpu string, all []ui.EncoderInfo) string {
 	for _, e := range all {

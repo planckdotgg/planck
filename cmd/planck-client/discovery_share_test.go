@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"runtime"
 	"testing"
 	"time"
 
@@ -103,6 +104,9 @@ func TestHostingPortHeldElsewhere(t *testing.T) {
 		t.Fatal("hosted on a port another app holds alone")
 	}
 	want := fmt.Sprintf("Another app is using UDP port %d.", port)
+	if runtime.GOOS == "windows" {
+		want = fmt.Sprintf("Windows will not let Planck use UDP port %d: another app holds it, or Windows reserved it.", port)
+	}
 	if h := b.Hosting(); h.On || h.Err != want {
 		t.Fatalf("hosting state %+v, want the error %q", h, want)
 	}
