@@ -430,13 +430,15 @@ func (a *App) videoGroup(c *mui.Context, m mui.MenuParts, e *overrideEdit, tel T
 }
 
 // hostDisplayFlyout picks which of the host's displays streams, live,
-// when it has more than one. The pick holds for the host's next streams.
+// when one other than the stream's is there to pick: any on a virtual
+// display, and a second one on a physical display. The pick holds for
+// the host's next streams.
 func (a *App) hostDisplayFlyout(c *mui.Context, m mui.MenuParts, tel Telemetry) {
 	ds := a.backend.HostDisplays(tel.HostID)
-	if len(ds) < 2 {
+	cur := streamedDisplay(tel.Profile)
+	if len(ds) == 0 || len(ds) == 1 && ds[0].ID == cur {
 		return
 	}
-	cur := streamedDisplay(tel.Profile)
 	value := "Virtual"
 	var choices []choice
 	for i, d := range ds {

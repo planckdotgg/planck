@@ -133,6 +133,73 @@ func TestNextDisplay(t *testing.T) {
 	if _, ok := nextDisplay(ds[:1], "a"); ok {
 		t.Error("one display has a next")
 	}
+	if got, ok := nextDisplay(ds[:1], ""); !ok || got != "a" {
+		t.Errorf("from a virtual display to the only one: %q %v", got, ok)
+	}
+	if _, ok := nextDisplay(nil, ""); ok {
+		t.Error("no display has a next")
+	}
+}
+
+// virtualDisplay stands in for a SudoVDA display.
+type virtualDisplay struct{ closed atomic.Bool }
+
+func (v *virtualDisplay) Name() string          { return `\\.\DISPLAY40` }
+func (v *virtualDisplay) Resize(int, int) error { return nil }
+func (v *virtualDisplay) Close() error          { v.closed.Store(true); return nil }
+
+// TestBackendSwitchesFromVirtualToOnlyDisplay: a stream on a virtual
+// display moves to the host's one physical display on the Switch Display
+// hotkey, in place; there it has no other display to go to.
+func TestBackendSwitchesFromVirtualToOnlyDisplay(t *testing.T) {
+	dir := t.TempDir()
+	err := config.UpdateHostConfig(dir, func(c *config.HostConfig) error {
+		c.ControlPort, c.MediaPort, c.DiscoveryPort, c.FixedPIN = 0, 0, 0, "246802"
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := newTestBackend(t, t.TempDir(), nil)
+	app := hostingFromAppConfig(t, dir)
+	vd := &virtualDisplay{}
+	b.hostConfig = func(s ui.Settings) session.HostConfig {
+		c := app(s)
+		caps := c.Capabilities
+		c.Capabilities = func() defaults.HostCapabilities {
+			h := caps()
+			h.VDD = defaults.VDDCap{Available: true, Protocol: "0.2.1", CanSetRenderAdapter: true}
+			return h
+		}
+		c.OpenVirtualDisplay = func(session.VideoParams, []byte, bool) (session.VirtualDisplay, error) { return vd, nil }
+		return c
+	}
+	ctx := context.Background()
+	if err := b.SetHosting(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(b.Hosting().Using.Control))
+	if err := b.Connect(ctx, addr); !errors.Is(err, ui.ErrPairingRequired) {
+		t.Fatalf("first connect: %v", err)
+	}
+	if err := b.SubmitPIN(ctx, "246802"); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "the virtual stream", func() bool { p := b.Telemetry().Profile; return p != nil && p.VirtualDisplay })
+	key := b.Telemetry().HostID
+	waitUntil(t, "the host's display", func() bool { return len(b.HostDisplays(key)) == 1 })
+	started := b.SessionStats().Started
+	if err := b.SwitchDisplay(); err != nil {
+		t.Fatalf("Switch Display on a virtual display: %v", err)
+	}
+	waitUntil(t, "the stream on display 1", func() bool { return streamedDisplay(b.Telemetry().Profile) == "1" })
+	waitUntil(t, "the virtual display removed", vd.closed.Load)
+	if s := b.SessionStats(); !s.Started.Equal(started) {
+		t.Error("the switch restarted the stream")
+	}
+	if err := b.SwitchDisplay(); !errors.Is(err, ui.ErrOneDisplay) {
+		t.Errorf("Switch Display on the only display: %v, want ErrOneDisplay", err)
+	}
 }
 
 // TestSettingsKeepDisplayWindows: Open all host displays and its window

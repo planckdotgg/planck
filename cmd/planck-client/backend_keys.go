@@ -211,12 +211,13 @@ func (b *backend) SwitchDisplay() error {
 }
 
 // nextDisplay is the display after cur in ds, the first when cur is the
-// last or none of them; false with fewer than two.
+// last or none of them ("" on a virtual display); false when ds holds no
+// display but cur.
 func nextDisplay(ds []defaults.HostDisplay, cur string) (string, bool) {
-	if len(ds) < 2 {
+	i := slices.IndexFunc(ds, func(d defaults.HostDisplay) bool { return d.ID == cur })
+	if len(ds) == 0 || len(ds) == 1 && i == 0 {
 		return "", false
 	}
-	i := slices.IndexFunc(ds, func(d defaults.HostDisplay) bool { return d.ID == cur })
 	return ds[(i+1)%len(ds)].ID, true
 }
 
