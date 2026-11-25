@@ -1,6 +1,8 @@
 package assets
 
 import (
+	"bytes"
+	"image/png"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -46,6 +48,18 @@ func TestIconsPathOnly(t *testing.T) {
 		s := string(data)
 		if strings.Contains(s, "<text") || strings.Contains(s, "<image") || strings.Contains(s, "href=") {
 			t.Errorf("%s is not path-only", f)
+		}
+	}
+}
+
+func TestAppIconsArePNG(t *testing.T) {
+	for name, want := range map[string]int{"darwin": 1024, "windows": 256, "linux": 256} {
+		cfg, err := png.DecodeConfig(bytes.NewReader(AppIcon(name)))
+		if err != nil {
+			t.Fatalf("%s icon is not a PNG: %v", name, err)
+		}
+		if cfg.Width != want || cfg.Height != want {
+			t.Errorf("%s icon is %dx%d, want %d square", name, cfg.Width, cfg.Height, want)
 		}
 	}
 }

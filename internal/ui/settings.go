@@ -137,6 +137,10 @@ var categoryPages = [numCategories]func(a *App, c *mui.Context, f *settingsFrame
 	catNetwork: (*App).networkPage,
 }
 
+// settingsPadTop is one px under the other screens' 24: Settings' title is a
+// 25 px display line, so its cap height centres where the 31 px titles' does.
+const settingsPadTop = 25
+
 func (a *App) settingsScreen(c *mui.Context) {
 	f := &settingsFrame{s: a.backend.Settings(), hs: a.backend.HostSettings(), layout: a.backend.OverlayLayout(),
 		hosting: a.backend.Hosting(), stats: a.backend.SessionStats(), gp: a.backend.GamepadSettings()}
@@ -158,7 +162,7 @@ func (a *App) settingsScreen(c *mui.Context) {
 	mui.Row(c).Grow(1).FillHeight().Children(func() {
 		a.settingsNav(c, f)
 		mui.Scroll(c).Grow(1).FillHeight().Children(func() {
-			mui.Column(c).FillWidth().MaxWidth(968).Padding(theme.Space5, theme.Space6).Gap(18).Children(func() {
+			mui.Column(c).FillWidth().MaxWidth(968).Padding(settingsPadTop, theme.Space6, theme.Space5).Gap(18).Children(func() {
 				a.settingsError(c)
 				if f.searching {
 					a.searchResults(c, f)

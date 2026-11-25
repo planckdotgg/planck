@@ -15,13 +15,15 @@ var railItems = []struct {
 	{ScreenSettings, "Settings", &theme.IconSetting},
 }
 
-// The rail's vertical rhythm: the nav stack starts at 48 + 40 + 28 = 116,
-// so the active marker sits at 132, 196 and 260.
+// The rail's vertical rhythm: the mark's centre sits at 21 + 20 = 41, on the
+// middle of the cap height of every page title (content starts 24 down), and
+// the nav stack starts at 21 + 40 + 55 = 116, so the active marker sits at
+// 132, 196 and 260.
 const (
-	railPadTop    = 48
+	railPadTop    = 21
 	railPadBottom = 20
 	railLogoBox   = 40
-	railNavGap    = 28
+	railNavGap    = 55
 )
 
 // rail is the 88 px icon rail: the mark, the three destinations, and the

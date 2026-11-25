@@ -7,12 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
 
+	"github.com/planckdotgg/planck/assets"
 	"github.com/planckdotgg/planck/internal/session"
 	"github.com/planckdotgg/planck/internal/ui"
 	"github.com/planckdotgg/planck/internal/ui/theme"
@@ -132,6 +134,9 @@ func runGUI(o options) error {
 	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { streams.quitting = true })
 	mygo.App.OnQuitCanceled(func() { streams.quitting = false })
 	mygo.App.WhenReady(func() {
+		if err := mygo.App.Dock.SetIcon(assets.AppIcon(runtime.GOOS)); err != nil {
+			logf("app icon: %v", err)
+		}
 		win := mygo.NewWindow(mygo.WindowOptions{
 			Title: "Planck", Width: 1280, Height: 800, MinWidth: 960, MinHeight: 600,
 			BackgroundColor: "#0E0F12", Content: app.Content(),
