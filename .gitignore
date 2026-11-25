@@ -2,6 +2,8 @@
 /spike-mygo-surface
 /planck-spike2
 /spike-transport
+/planck-client
+/planck-host
 *.exe
 *.out
 *.test
