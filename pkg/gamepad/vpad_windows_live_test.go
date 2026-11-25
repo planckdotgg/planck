@@ -83,6 +83,11 @@ func TestLiveVirtualPadLoopback(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Error("no rumble back from ViGEmBus")
 	}
+	select {
+	case r := <-rumble:
+		t.Errorf("second rumble %v with no motor change", r)
+	case <-time.After(200 * time.Millisecond):
+	}
 	capture.Rumble(slot, 0, 0)
 
 	if err := pads.ResetSlots(); err != nil {
@@ -96,10 +101,20 @@ func TestLiveVirtualPadLoopback(t *testing.T) {
 	}
 
 	pads.SetType(PadDS4)
-	if err := pads.Submit(0, State{Buttons: ButtonB | ButtonDPadLeft, LX: -32768}); err != nil {
+	ds4 := State{Buttons: ButtonB | ButtonDPadLeft, LX: -32768}
+	if err := pads.Submit(0, ds4); err != nil {
 		t.Fatalf("DualShock 4 submit: %v", err)
 	}
 	if s := pads.Slots(); s[0] != 0 {
 		t.Errorf("DS4 slots = %v", s)
+	}
+	// Once the HID stack polls the new pad, the driver takes the report.
+	tg := pads.slots[0].target.(*vigemTarget)
+	err = tg.submitReport(ds4)
+	for deadline := time.Now().Add(5 * time.Second); err != nil && time.Now().Before(deadline); err = tg.submitReport(ds4) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("DualShock 4 never took a report: %v", err)
 	}
 }

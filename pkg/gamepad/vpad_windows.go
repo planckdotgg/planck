@@ -220,7 +220,19 @@ type vigemTarget struct {
 	plugged bool
 }
 
+// submit drops a report the pad has no read pending for, as ViGEmClient
+// does: right after plug-in, before the HID stack polls a DualShock 4,
+// the driver answers ERROR_NO_MORE_ITEMS. States are absolute, so the
+// next one carries it.
 func (t *vigemTarget) submit(s State) error {
+	err := t.submitReport(s)
+	if err == windows.ERROR_NO_MORE_ITEMS {
+		return nil
+	}
+	return err
+}
+
+func (t *vigemTarget) submitReport(s State) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.ds4 {
@@ -233,7 +245,8 @@ func (t *vigemTarget) submit(s State) error {
 }
 
 // watchRumble keeps one notification request pending on the driver; it
-// completes each time a game sets the motors, until the pad is unplugged.
+// completes each time a game sets the motors or the LED, until the pad is
+// unplugged. Only motor changes reach onRumble.
 func (t *vigemTarget) watchRumble(onRumble func(large, small uint8)) error {
 	n, err := newOverlappedIO()
 	if err != nil {
@@ -242,6 +255,13 @@ func (t *vigemTarget) watchRumble(onRumble func(large, small uint8)) error {
 	t.notify, t.plugged = n, true
 	go func() {
 		defer n.close()
+		var last [2]uint8
+		report := func(large, small uint8) {
+			if m := [2]uint8{large, small}; m != last {
+				last = m
+				onRumble(large, small)
+			}
+		}
 		if t.ds4 {
 			req := &ds4Notification{}
 			for {
@@ -249,7 +269,7 @@ func (t *vigemTarget) watchRumble(onRumble func(large, small uint8)) error {
 				if err := n.do(t.bus.h, ioctlDS4Notification, unsafe.Pointer(req), req.Size, unsafe.Pointer(req), req.Size); err != nil {
 					return
 				}
-				onRumble(req.LargeMotor, req.SmallMotor)
+				report(req.LargeMotor, req.SmallMotor)
 			}
 		}
 		req := &xusbNotification{}
@@ -258,7 +278,7 @@ func (t *vigemTarget) watchRumble(onRumble func(large, small uint8)) error {
 			if err := n.do(t.bus.h, ioctlXUSBNotification, unsafe.Pointer(req), req.Size, unsafe.Pointer(req), req.Size); err != nil {
 				return
 			}
-			onRumble(req.LargeMotor, req.SmallMotor)
+			report(req.LargeMotor, req.SmallMotor)
 		}
 	}()
 	return nil
