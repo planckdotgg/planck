@@ -67,14 +67,15 @@ func TestGamepadConfigKeepsDefaultsForMissingKeys(t *testing.T) {
 
 func TestGamepadConfigValidateRejects(t *testing.T) {
 	for name, edit := range map[string]func(*GamepadConfig){
-		"deadzone":   func(c *GamepadConfig) { c.LeftDeadzone = 51 },
-		"negative":   func(c *GamepadConfig) { c.RightDeadzone = -1 },
-		"trigger":    func(c *GamepadConfig) { c.TriggerThreshold = 60 },
-		"rumble":     func(c *GamepadConfig) { c.RumbleStrength = 101 },
-		"type":       func(c *GamepadConfig) { c.VirtualType = "wiimote" },
-		"empty type": func(c *GamepadConfig) { c.VirtualType = "" },
-		"bad guid":   func(c *GamepadConfig) { c.Mappings = map[string]string{"xyz": "xyz,Pad,a:b0"} },
-		"upper guid": func(c *GamepadConfig) { c.Mappings = map[string]string{strings.ToUpper(ps4GUID): ps4GUID + ",Pad,"} },
+		"deadzone":    func(c *GamepadConfig) { c.LeftDeadzone = 51 },
+		"negative":    func(c *GamepadConfig) { c.RightDeadzone = -1 },
+		"trigger":     func(c *GamepadConfig) { c.TriggerThreshold = 60 },
+		"rumble":      func(c *GamepadConfig) { c.RumbleStrength = 101 },
+		"type":        func(c *GamepadConfig) { c.VirtualType = "wiimote" },
+		"empty type":  func(c *GamepadConfig) { c.VirtualType = "" },
+		"bad guid":    func(c *GamepadConfig) { c.Mappings = map[string]string{"xyz": "xyz,Pad,a:b0"} },
+		"upper guid":  func(c *GamepadConfig) { c.Mappings = map[string]string{strings.ToUpper(ps4GUID): ps4GUID + ",Pad,"} },
+		"bad binding": func(c *GamepadConfig) { c.Mappings = map[string]string{ps4GUID: ps4GUID + ",Pad,a:garbage,"} },
 		"mismatched line": func(c *GamepadConfig) {
 			c.Mappings = map[string]string{ps4GUID: "78696e70757401000000000000000000,Pad,a:b0"}
 		},

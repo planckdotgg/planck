@@ -161,6 +161,10 @@ type Mapping struct {
 	GUID     string
 	Name     string
 	Bindings [NumInputs]Binding
+	// Halves drive one half of a stick output each, [0] the positive and
+	// [1] the negative, as +leftx: and -leftx: do in a mapping string; they
+	// add to the stick's full binding.
+	Halves [NumInputs][2]Binding
 	// Extra are fields of an imported mapping string this package does not
 	// use, such as platform:, kept so that export gives them back.
 	Extra []string
@@ -189,14 +193,16 @@ func DefaultMapping(guid, name string) Mapping {
 	return Mapping{GUID: guid, Name: name, Bindings: defaultBindings}
 }
 
-func (m *Mapping) Map(in Input, b Binding) { m.Bindings[in] = b }
+func (m *Mapping) Map(in Input, b Binding) { m.Bindings[in], m.Halves[in] = b, [2]Binding{} }
 
-func (m *Mapping) Unmap(in Input) { m.Bindings[in] = Binding{} }
+func (m *Mapping) Unmap(in Input) { m.Map(in, Binding{}) }
+
+func isStick(in Input) bool { return in >= InputLeftX && in <= InputRightY }
 
 // Reset puts every input back on the binding its controller starts with
 // and drops imported extras. A parsed mapping resets to the XInput layout.
 func (m *Mapping) Reset() {
-	m.Bindings, m.Extra = defaultBindings, nil
+	m.Bindings, m.Halves, m.Extra = defaultBindings, [NumInputs][2]Binding{}, nil
 	if m.defaults != nil {
 		m.Bindings = *m.defaults
 	}
@@ -259,6 +265,15 @@ func (m *Mapping) Apply(raw *RawState) State {
 				v = 0
 			}
 		}
+		for i, sign := range [2]float64{1, -1} {
+			if h := m.Halves[in][i]; h.Kind != SourceNone {
+				hv, half, _ := h.value(raw)
+				if !half {
+					hv = (hv + 1) / 2
+				}
+				v += sign * hv
+			}
+		}
 		return v
 	}
 	trigger := func(in Input) uint8 {
@@ -293,6 +308,11 @@ func (m *Mapping) FormatSDLMapping() string {
 		if b := m.Bindings[in]; b.Kind != SourceNone {
 			fields = append(fields, sdlNames[in]+":"+b.String())
 		}
+		for i, sign := range [2]string{"+", "-"} {
+			if b := m.Halves[in][i]; b.Kind != SourceNone {
+				fields = append(fields, sign+sdlNames[in]+":"+b.String())
+			}
+		}
 	}
 	for _, e := range m.Extra {
 		if strings.HasPrefix(e, "platform:") {
@@ -322,7 +342,7 @@ func ParseSDLMapping(s string) (Mapping, error) {
 	if !ValidGUID(m.GUID) {
 		return Mapping{}, fmt.Errorf("gamepad: mapping GUID %q: want 32 hex digits", fields[0])
 	}
-	var seen [NumInputs]bool
+	var seen [NumInputs][3]bool // full, positive half, negative half
 	for _, f := range fields[2:] {
 		if f = strings.TrimSpace(f); f == "" {
 			continue
@@ -331,19 +351,28 @@ func ParseSDLMapping(s string) (Mapping, error) {
 		if !ok {
 			return Mapping{}, fmt.Errorf("gamepad: mapping field %q: want name:binding", f)
 		}
-		in := Input(slices.Index(sdlNames[:], key))
-		if in >= NumInputs || val == "" {
+		part, name := 0, key
+		if len(key) > 0 && (key[0] == '+' || key[0] == '-') {
+			part, name = 1+strings.IndexByte("+-", key[0]), key[1:]
+		}
+		in := Input(slices.Index(sdlNames[:], name))
+		if in >= NumInputs || val == "" || (part > 0 && !isStick(in)) {
 			m.Extra = append(m.Extra, f)
 			continue
 		}
-		if seen[in] {
+		if seen[in][part] {
 			return Mapping{}, fmt.Errorf("gamepad: mapping binds %s twice", key)
 		}
 		b, err := parseBinding(val)
 		if err != nil {
 			return Mapping{}, err
 		}
-		m.Bindings[in], seen[in] = b, true
+		if part == 0 {
+			m.Bindings[in] = b
+		} else {
+			m.Halves[in][part-1] = b
+		}
+		seen[in][part] = true
 	}
 	return m, nil
 }

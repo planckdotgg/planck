@@ -111,6 +111,21 @@ func TestReorderIntoFreeSlot(t *testing.T) {
 	}
 }
 
+func TestReorderSlotResubmitsStates(t *testing.T) {
+	bus := &fakeBus{}
+	v := newVirtualPads(bus, PadXbox360)
+	first, second := State{Buttons: ButtonA, LX: 100}, State{Buttons: ButtonB, RT: 200}
+	v.Submit(4, first)
+	v.Submit(6, second)
+	if err := v.ReorderSlot(0, 1); err != nil {
+		t.Fatal(err)
+	}
+	last := func(i int) State { st := bus.plugged[i].states; return st[len(st)-1] }
+	if last(0) != second || last(1) != first {
+		t.Errorf("after reorder the virtual pads read %+v and %+v, want %+v and %+v", last(0), last(1), second, first)
+	}
+}
+
 func TestPlugFailureLeavesSlotFree(t *testing.T) {
 	bus := &fakeBus{plugErr: errors.New("busy")}
 	v := newVirtualPads(bus, PadXbox360)

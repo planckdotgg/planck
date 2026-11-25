@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/planckdotgg/planck/pkg/gamepad"
 )
 
 // GamepadConfigFile holds the gamepad settings of both roles, beside
@@ -84,6 +86,9 @@ func (c GamepadConfig) Validate() error {
 		}
 		if first, _, _ := strings.Cut(c.Mappings[guid], ","); !strings.EqualFold(first, guid) {
 			return fmt.Errorf("config: gamepad: mapping for %s starts with GUID %q", guid, first)
+		}
+		if _, err := gamepad.ParseSDLMapping(c.Mappings[guid]); err != nil {
+			return fmt.Errorf("config: gamepad: mapping for %s: %w", guid, err)
 		}
 	}
 	return nil

@@ -130,3 +130,62 @@ func TestLiveVirtualPadLoopback(t *testing.T) {
 		t.Fatal("DualShock 4 never took its first report")
 	}
 }
+
+// Plugs two ViGEmBus pads in with different states, swaps their slots and
+// expects the two XInput controllers to swap states with no further input.
+// Runs only with PLANCK_LIVE_GAMEPAD_TEST=1.
+func TestLiveVirtualPadReorder(t *testing.T) {
+	if os.Getenv("PLANCK_LIVE_GAMEPAD_TEST") != "1" {
+		t.Skip("set PLANCK_LIVE_GAMEPAD_TEST=1 to plug in virtual controllers")
+	}
+	if st := VirtualPadStatus(); !st.Installed {
+		t.Skipf("ViGEmBus not installed: %+v", st)
+	}
+	capture, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before []int
+	for _, c := range capture.Controllers() {
+		before = append(before, c.Slot)
+	}
+	pads, err := OpenVirtualPads(PadXbox360)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pads.Close()
+	first, second := State{Buttons: ButtonA, LX: 11111}, State{Buttons: ButtonB, LX: -22222}
+	if err := pads.Submit(1, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := pads.Submit(2, second); err != nil {
+		t.Fatal(err)
+	}
+	find := func(want State) int {
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+			for _, c := range capture.Controllers() {
+				if slices.Contains(before, c.Slot) {
+					continue
+				}
+				var raw RawState
+				if capture.Read(c.Slot, &raw) == nil {
+					if m := capture.DefaultMapping(c.Slot); m.Apply(&raw) == want {
+						return c.Slot
+					}
+				}
+			}
+		}
+		t.Fatalf("no new XInput controller reads %+v", want)
+		return -1
+	}
+	a, b := find(first), find(second)
+	if err := pads.ReorderSlot(0, 1); err != nil {
+		t.Fatal(err)
+	}
+	if got := find(second); got != a {
+		t.Errorf("after reorder %+v is on XInput slot %d, want %d", second, got, a)
+	}
+	if got := find(first); got != b {
+		t.Errorf("after reorder %+v is on XInput slot %d, want %d", first, got, b)
+	}
+}

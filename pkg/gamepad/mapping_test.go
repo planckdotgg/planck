@@ -61,6 +61,8 @@ func TestParseSDLMappingErrors(t *testing.T) {
 		"030000004c050000c405000000010000,Pad,a:h0",
 		"030000004c050000c405000000010000,Pad,a:+b0",
 		"030000004c050000c405000000010000,Pad,a",
+		"030000004c050000c405000000010000,Pad,+leftx:h0.2,+leftx:b1",
+		"030000004c050000c405000000010000,Pad,-leftx:garbage",
 	} {
 		if _, err := ParseSDLMapping(s); err == nil {
 			t.Errorf("ParseSDLMapping(%q) succeeded", s)
@@ -165,5 +167,35 @@ func TestBindingStrings(t *testing.T) {
 		if err != nil || b.String() != s {
 			t.Errorf("parseBinding(%q) = %v, %v", s, b, err)
 		}
+	}
+}
+
+func TestApplySplitOutputAxes(t *testing.T) {
+	const joyCon = "050000007e0500000620000001000000,Joy-Con (L),a:b0,+leftx:h0.2,-leftx:h0.8,+lefty:h0.4,-lefty:h0.1,platform:Linux,"
+	m, err := ParseSDLMapping(joyCon)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := ParseSDLMapping(m.FormatSDLMapping())
+	if err != nil || !reflect.DeepEqual(again, m) {
+		t.Fatalf("reparse of %s = %+v, %v; want %+v", m.FormatSDLMapping(), again, err, m)
+	}
+	for _, mm := range []Mapping{m, again} {
+		for _, tc := range []struct {
+			hat    uint8
+			lx, ly int16
+		}{
+			{HatRight, 32767, 0}, {HatLeft, -32768, 0}, {0, 0, 0},
+			{HatDown, 0, -32768}, {HatUp | HatRight, 32767, 32767},
+		} {
+			s := mm.Apply(&RawState{Buttons: make([]bool, 1), Hats: []uint8{tc.hat}})
+			if s.LX != tc.lx || s.LY != tc.ly {
+				t.Errorf("hat %#x: LX, LY = %d, %d; want %d, %d", tc.hat, s.LX, s.LY, tc.lx, tc.ly)
+			}
+		}
+	}
+	m.Unmap(InputLeftX)
+	if s := m.Apply(&RawState{Hats: []uint8{HatRight}}); s.LX != 0 {
+		t.Errorf("unmapped leftx still reads %d", s.LX)
 	}
 }

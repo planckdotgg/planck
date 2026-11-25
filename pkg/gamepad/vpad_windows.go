@@ -232,6 +232,9 @@ type vigemTarget struct {
 	hasPending bool
 	retrying   bool
 	retryUntil time.Time
+	// lost is set when the newest state never reached the bus: retry gave
+	// up on it, or the bus failed it.
+	lost bool
 }
 
 const (
@@ -249,10 +252,10 @@ func (t *vigemTarget) submit(s State) error {
 	defer t.mu.Unlock()
 	err := t.submitLocked(s)
 	if err != windows.ERROR_NO_MORE_ITEMS {
-		t.hasPending = false
+		t.hasPending, t.lost = false, err != nil
 		return err
 	}
-	t.pending, t.hasPending, t.retryUntil = s, true, time.Now().Add(resubmitFor)
+	t.pending, t.hasPending, t.lost, t.retryUntil = s, true, false, time.Now().Add(resubmitFor)
 	if !t.retrying {
 		t.retrying = true
 		time.AfterFunc(resubmitEvery, t.retry)
@@ -263,23 +266,30 @@ func (t *vigemTarget) submit(s State) error {
 func (t *vigemTarget) retry() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.hasPending && t.plugged && time.Now().Before(t.retryUntil) {
-		if t.submitLocked(t.pending) == windows.ERROR_NO_MORE_ITEMS {
-			time.AfterFunc(resubmitEvery, t.retry)
-			return
+	if t.hasPending {
+		t.lost = true
+		if t.plugged && time.Now().Before(t.retryUntil) {
+			err := t.submitLocked(t.pending)
+			if err == windows.ERROR_NO_MORE_ITEMS {
+				t.lost = false
+				time.AfterFunc(resubmitEvery, t.retry)
+				return
+			}
+			t.lost = err != nil
 		}
 	}
 	t.hasPending, t.retrying = false, false
 }
 
-// waitDelivered waits up to d for a refused state to land.
+// waitDelivered waits up to d for a refused state to land, and reports
+// whether the newest state reached the bus.
 func (t *vigemTarget) waitDelivered(d time.Duration) bool {
 	for deadline := time.Now().Add(d); ; time.Sleep(resubmitEvery) {
 		t.mu.Lock()
-		done := !t.hasPending
+		settled, lost := !t.hasPending, t.lost
 		t.mu.Unlock()
-		if done || time.Now().After(deadline) {
-			return done
+		if settled || time.Now().After(deadline) {
+			return settled && !lost
 		}
 	}
 }
@@ -337,7 +347,8 @@ func (t *vigemTarget) watchRumble(onRumble func(large, small uint8)) error {
 func (t *vigemTarget) unplug() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.plugged, t.hasPending = false, false
+	t.plugged, t.lost = false, t.lost || t.hasPending
+	t.hasPending = false
 	if t.notify != nil {
 		windows.CancelIoEx(t.bus.h, t.notify.ov)
 		t.notify = nil

@@ -86,6 +86,7 @@ type padSlot struct {
 	pad    int // client pad index, -1 when free
 	plug   uint64
 	target padTarget
+	state  State // the last state the client pad sent
 }
 
 // VirtualPads feeds client controllers to virtual ones on the host. Each
@@ -150,6 +151,7 @@ func (v *VirtualPads) Submit(pad uint8, s State) error {
 	free := -1
 	for i := range v.slots {
 		if v.slots[i].pad == int(pad) {
+			v.slots[i].state = s
 			return v.slots[i].target.submit(s)
 		}
 		if free < 0 && v.slots[i].pad < 0 {
@@ -165,7 +167,7 @@ func (v *VirtualPads) Submit(pad uint8, s State) error {
 	if err != nil {
 		return err
 	}
-	v.slots[free] = padSlot{pad: int(pad), plug: id, target: t}
+	v.slots[free] = padSlot{pad: int(pad), plug: id, target: t, state: s}
 	return t.submit(s)
 }
 
@@ -201,7 +203,8 @@ func (v *VirtualPads) unplugAll() error {
 
 // ReorderSlot swaps the client pads feeding slots from and to, so that a
 // game's player 1 becomes whichever pad was in slot to. The virtual pads
-// stay plugged in.
+// stay plugged in, and each one takes its new client pad's last state at
+// once rather than on that pad's next input.
 func (v *VirtualPads) ReorderSlot(from, to int) error {
 	if from < 0 || from >= MaxVirtualPads || to < 0 || to >= MaxVirtualPads {
 		return fmt.Errorf("gamepad: slots %d and %d: want 0 to %d", from, to, MaxVirtualPads-1)
@@ -214,7 +217,8 @@ func (v *VirtualPads) ReorderSlot(from, to int) error {
 		return nil
 	}
 	a.pad, b.pad = b.pad, a.pad
-	return nil
+	a.state, b.state = b.state, a.state
+	return errors.Join(a.target.submit(a.state), b.target.submit(b.state))
 }
 
 // Close unplugs every virtual pad.
