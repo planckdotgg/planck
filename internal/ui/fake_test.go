@@ -66,6 +66,7 @@ type fakeBackend struct {
 	switchErr      error
 	kicks          int
 	audioDevices   AudioDevices
+	virtualAudio   VirtualAudioStatus
 	apps           []string
 	privacyProblem string
 }
@@ -304,6 +305,8 @@ func (f *fakeBackend) SwitchDisplay() error {
 func (f *fakeBackend) KickClient() error { defer f.lock()(); f.kicks++; return nil }
 
 func (f *fakeBackend) AudioDevices() AudioDevices { defer f.lock()(); return f.audioDevices }
+
+func (f *fakeBackend) VirtualAudio() VirtualAudioStatus { defer f.lock()(); return f.virtualAudio }
 
 func (f *fakeBackend) RunningApps() []string { defer f.lock()(); return slices.Clone(f.apps) }
 

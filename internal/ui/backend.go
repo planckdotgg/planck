@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/planckdotgg/planck/pkg/audio"
 	"github.com/planckdotgg/planck/pkg/config"
 	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/discovery"
@@ -270,6 +271,10 @@ type AudioDevice struct {
 type AudioDevices struct {
 	Outputs, Inputs []AudioDevice
 }
+
+// VirtualAudioStatus is Planck Virtual Audio's driver and device on this
+// machine.
+type VirtualAudioStatus = audio.VirtualAudioStatus
 
 // HotkeyAction names what a hotkey does.
 type HotkeyAction = config.HotkeyAction
@@ -637,6 +642,9 @@ type Backend interface {
 	// AudioDevices lists this machine's sound devices, for Settings'
 	// output, microphone and capture pickers.
 	AudioDevices() AudioDevices
+	// VirtualAudio is whether Planck Virtual Audio is installed and
+	// running, and the virtual mic Auto picks.
+	VirtualAudio() VirtualAudioStatus
 	// RunningApps names the apps running now, for the apps hosting leaves
 	// out of the sound.
 	RunningApps() []string

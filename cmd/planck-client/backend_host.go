@@ -12,6 +12,7 @@ import (
 
 	"github.com/planckdotgg/planck/internal/session"
 	"github.com/planckdotgg/planck/internal/ui"
+	"github.com/planckdotgg/planck/pkg/audio"
 	"github.com/planckdotgg/planck/pkg/config"
 	"github.com/planckdotgg/planck/pkg/discovery"
 )
@@ -151,6 +152,14 @@ func (b *backend) SetHostSettings(s ui.HostSettings) error {
 	}
 	h.SetSessionSettings(sessionSettingsOf(after))
 	return nil
+}
+
+func (b *backend) VirtualAudio() ui.VirtualAudioStatus {
+	st, err := audio.VirtualAudio()
+	if err != nil {
+		b.logf("planck: virtual audio: %v", err)
+	}
+	return st
 }
 
 func (b *backend) Displays() []ui.DisplayInfo {

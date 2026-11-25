@@ -93,6 +93,31 @@ func (a *App) virtualMicRow(c *mui.Context, f *settingsFrame) {
 	f.laneRow(c, "Virtual mic sink", 124, func() {
 		dropdown(c, "Virtual mic sink", &f.hs.VirtualMic, values, labels, 0)
 	})
+	if f.hs.VirtualMic != VirtualMicOff {
+		virtualAudioStatusLine(c, a.backend.VirtualAudio())
+	}
+}
+
+// virtualAudioStatusLine says whether Planck Virtual Audio is running and,
+// when not, what Auto falls back to and how to install it.
+func virtualAudioStatusLine(c *mui.Context, st VirtualAudioStatus) {
+	bars, col, text := 3, theme.RoleDirect, "Planck Virtual Audio is running."
+	switch {
+	case st.Active:
+	case st.DeviceName != "":
+		bars, col, text = 1, theme.RoleRelay, "Auto plays into "+st.DeviceName+"."
+	default:
+		bars, col, text = 0, theme.RoleText3, "No virtual mic found."
+	}
+	mui.Column(c).FillWidth().Gap(theme.Space1).Label("Virtual audio status").Children(func() {
+		mui.Row(c).FillWidth().Gap(theme.Space2).AlignItems(mui.Center).Children(func() {
+			sliceMeter(c, bars, 3, col)
+			secondary(c, text).Grow(1).Shrink(1)
+		})
+		if st.InstallHint != "" {
+			caption(c, st.InstallHint).FixedLineHeight(theme.LeadingCaption)
+		}
+	})
 }
 
 // quickApps are the apps people most often keep out of a stream's sound.
