@@ -72,6 +72,7 @@ type fakeBackend struct {
 	virtualAudio   VirtualAudioStatus
 	apps           []string
 	privacyProblem string
+	gamepad        fakeGamepad
 }
 
 func newFake() *fakeBackend {

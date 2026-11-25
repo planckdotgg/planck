@@ -22,6 +22,7 @@ const (
 	virtualAudioTTL = 5 * time.Second
 	runningAppsTTL  = 3 * time.Second
 	privacyTTL      = 5 * time.Second
+	virtualPadTTL   = 5 * time.Second
 )
 
 // ttlCache keeps load's last answer for ttl. The first get loads in the
@@ -91,10 +92,11 @@ type probeCaches struct {
 	virtualAudio *ttlCache[ui.VirtualAudioStatus]
 	runningApps  *ttlCache[[]string]
 	privacy      *ttlCache[string]
+	virtualPads  *ttlCache[ui.VirtualPadStatus]
 	paired       pairedFileCache
 }
 
-func (b *backend) initCaches() {
+func (b *backend) initCaches(virtualPads func() ui.VirtualPadStatus) {
 	b.caches = probeCaches{
 		displays: newTTLCache(displaysTTL, b.loadDisplays, slices.Equal[[]ui.DisplayInfo], b.changed),
 		audioDevices: newTTLCache(audioDevicesTTL, b.loadAudioDevices, func(x, y ui.AudioDevices) bool {
@@ -103,6 +105,7 @@ func (b *backend) initCaches() {
 		virtualAudio: newTTLCache(virtualAudioTTL, b.loadVirtualAudio, func(x, y ui.VirtualAudioStatus) bool { return x == y }, b.changed),
 		runningApps:  newTTLCache(runningAppsTTL, b.loadRunningApps, slices.Equal[[]string], b.changed),
 		privacy:      newTTLCache(privacyTTL, session.PrivacyModeProblem, func(x, y string) bool { return x == y }, b.changed),
+		virtualPads:  newTTLCache(virtualPadTTL, virtualPads, samePadStatus, b.changed),
 	}
 }
 

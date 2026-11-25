@@ -58,21 +58,6 @@ func (a *App) metricsRow(c *mui.Context, f *settingsFrame) {
 	})
 }
 
-func (a *App) gamepadPage(c *mui.Context, f *settingsFrame) {
-	settingsHeader(c, "Gamepad", "Controllers on this device, and what a host sees them as.", nil)
-	a.entries(c, f, "gamepad.status")
-}
-
-func (a *App) gamepadStatus(c *mui.Context, f *settingsFrame) {
-	mui.Column(c).FillWidth().MinHeight(200).Padding(theme.Space6).AlignItems(mui.Center).Justify(mui.Center).Gap(theme.Space3).
-		Background(theme.RoleSurface).Border(1, theme.RoleBorder).Radius(theme.RadiusMd).Children(func() {
-		sliceMeter(c, 0, 3, theme.RoleText3)
-		f.title(c, "Gamepads are not forwarded yet", theme.RoleText)
-		caption(c, "Keyboard and mouse reach the host today. Controller forwarding, mapping and the virtual controller driver come in a later build.").
-			TextAlign(mui.Center).MaxWidth(420)
-	})
-}
-
 func (a *App) networkPage(c *mui.Context, f *settingsFrame) {
 	settingsHeader(c, "Network", "How this "+machineWord(a.goos)+" finds hosts and the route a stream takes.", nil)
 	columns(c, 1, 1, func() {
@@ -287,8 +272,52 @@ var settingEntries = []settingEntry{
 	{id: "input.hotkeys", cat: catInput, title: "Hotkeys", aliases: "shortcut chord keys stream menu hide overlay button metrics hud microphone full screen immersive cursor disconnect keyframe ctrl alt del display switch kick stop hosting reset",
 		build: (*App).hotkeyTable},
 
-	{id: "gamepad.status", cat: catGamepad, title: "Gamepads", aliases: "controller gamepad joystick xbox dualsense",
-		build: (*App).gamepadStatus},
+	{id: "gamepad.controllers", cat: catGamepad, title: "Connected controllers", aliases: "controller gamepad joystick xbox dualsense dualshock bluetooth usb battery",
+		build: (*App).controllerList},
+	{id: "gamepad.preview", cat: catGamepad, title: "Live state", help: "Buttons, sticks and triggers as a stream sends them.", aliases: "preview test buttons sticks triggers test rumble vibration",
+		build: (*App).livePreview},
+	{id: "gamepad.mapping", cat: catGamepad, title: "Button mapping", aliases: "map unmap remap reset default sdl gamecontrollerdb copy paste mapping string",
+		build: (*App).mappingRows},
+	{id: "gamepad.leftDeadzone", cat: catGamepad, title: "Left stick deadzone", aliases: "deadzone dead zone drift stick calibration",
+		build: func(a *App, c *mui.Context, f *settingsFrame) {
+			f.percentRow(c, "Left stick deadzone", "Radial: the stick still reaches full tilt.", &f.gp.LeftDeadzone, gamepadMaxDeadzone)
+		}},
+	{id: "gamepad.rightDeadzone", cat: catGamepad, title: "Right stick deadzone", aliases: "deadzone dead zone drift stick calibration",
+		build: func(a *App, c *mui.Context, f *settingsFrame) {
+			f.percentRow(c, "Right stick deadzone", "", &f.gp.RightDeadzone, gamepadMaxDeadzone)
+		}},
+	{id: "gamepad.trigger", cat: catGamepad, title: "Trigger threshold", aliases: "trigger deadzone lt rt calibration",
+		build: func(a *App, c *mui.Context, f *settingsFrame) {
+			f.percentRow(c, "Trigger threshold", "Travel ignored before a trigger counts.", &f.gp.TriggerThreshold, gamepadMaxTrigger)
+		}},
+	{id: "gamepad.invertLeft", cat: catGamepad, title: "Invert left stick Y", aliases: "invert y axis flip look",
+		build: func(a *App, c *mui.Context, f *settingsFrame) {
+			f.switchRow(c, "Invert left stick Y", "", &f.gp.InvertLeftY)
+		}},
+	{id: "gamepad.invertRight", cat: catGamepad, title: "Invert right stick Y", aliases: "invert y axis flip look camera",
+		build: func(a *App, c *mui.Context, f *settingsFrame) {
+			f.switchRow(c, "Invert right stick Y", "", &f.gp.InvertRightY)
+		}},
+	{id: "gamepad.rumble", cat: catGamepad, title: "Rumble", aliases: "vibration force feedback haptics",
+		build: func(a *App, c *mui.Context, f *settingsFrame) {
+			f.switchRow(c, "Rumble", "Play a game’s rumble on this device’s controllers.", &f.gp.RumbleEnabled)
+		}},
+	{id: "gamepad.rumbleStrength", cat: catGamepad, title: "Rumble strength", aliases: "vibration intensity force feedback",
+		build: func(a *App, c *mui.Context, f *settingsFrame) {
+			if f.gp.RumbleEnabled {
+				f.percentRow(c, "Rumble strength", "", &f.gp.RumbleStrength, gamepadMaxRumble)
+			}
+		}},
+	{id: "gamepad.allowGuests", cat: catGamepad, title: "Allow guest gamepads", aliases: "host guest client controller permission",
+		build: func(a *App, c *mui.Context, f *settingsFrame) {
+			f.switchRow(c, "Allow guest gamepads", "Controllers of the device streaming from this "+machineWord(a.goos)+" plug in as virtual ones.", &f.gp.AllowGuestGamepads)
+		}},
+	{id: "gamepad.virtualType", cat: catGamepad, title: "Virtual controller type", aliases: "xbox 360 dualshock ds4 dualsense ps4 ps5 emulate virtual controller",
+		build: (*App).virtualTypeRow},
+	{id: "gamepad.driver", cat: catGamepad, title: "Virtual gamepad driver", aliases: "vigembus vigem driver install driverkit",
+		build: (*App).virtualPadStatusLine},
+	{id: "gamepad.slots", cat: catGamepad, title: "Controller slots", aliases: "slot player order reorder reset move",
+		build: (*App).slotRows},
 
 	{id: "net.tailscale", cat: catNetwork, title: "Tailscale", aliases: "tailnet vpn",
 		build: (*App).tailscaleRow},

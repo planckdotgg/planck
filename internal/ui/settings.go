@@ -59,6 +59,8 @@ type settingsState struct {
 	// the sound; appDraft is the field.
 	appAdding bool
 	appDraft  string
+	// pad is the Gamepad page's pick and its last mapping message.
+	pad gamepadEdit
 }
 
 // settingsFrame is one frame's edit of everything Settings changes; the
@@ -66,6 +68,7 @@ type settingsState struct {
 type settingsFrame struct {
 	s, sBefore             Settings
 	hs, hsBefore           HostSettings
+	gp, gpBefore           GamepadSettings
 	layout, layoutBefore   OverlayLayout
 	e                      *overrideEdit
 	query                  string
@@ -73,8 +76,10 @@ type settingsFrame struct {
 	stats                  SessionStats
 	searching              bool
 	firstHit, firstHitDone bool
-	// devices is the backend's AudioDevices, asked once a frame.
+	// devices is the backend's AudioDevices, and pads its Gamepads, asked
+	// at most once a frame.
 	devices *AudioDevices
+	pads    *[]GamepadInfo
 }
 
 func (f *settingsFrame) audioDevices(a *App) AudioDevices {
@@ -134,10 +139,10 @@ var categoryPages = [numCategories]func(a *App, c *mui.Context, f *settingsFrame
 
 func (a *App) settingsScreen(c *mui.Context) {
 	f := &settingsFrame{s: a.backend.Settings(), hs: a.backend.HostSettings(), layout: a.backend.OverlayLayout(),
-		hosting: a.backend.Hosting(), stats: a.backend.SessionStats()}
+		hosting: a.backend.Hosting(), stats: a.backend.SessionStats(), gp: a.backend.GamepadSettings()}
 	// An unset knob in host.json is auto: the dropdowns show it so.
 	f.hs.Policy = f.hs.Policy.Normalize()
-	f.sBefore, f.hsBefore, f.layoutBefore = f.s, f.hs, f.layout
+	f.sBefore, f.hsBefore, f.layoutBefore, f.gpBefore = f.s, f.hs, f.layout, f.gp
 	f.e = a.editOverrides(a.settingsScope())
 	if f.stats.Live && f.stats.HostID != "" && f.stats.HostID == f.e.scope.hostID {
 		f.e.policy = &f.stats.HostPolicy
@@ -168,6 +173,9 @@ func (a *App) settingsScreen(c *mui.Context) {
 	a.saveOverrides(f.e)
 	if f.hs != f.hsBefore {
 		a.setSettingsErr(a.backend.SetHostSettings(f.hs))
+	}
+	if f.gp != f.gpBefore {
+		a.setSettingsErr(a.backend.SetGamepadSettings(f.gp))
 	}
 	if f.layout != f.layoutBefore {
 		a.setSettingsErr(a.backend.SaveOverlayLayout(f.layout))

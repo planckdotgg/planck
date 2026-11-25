@@ -24,6 +24,7 @@ import (
 	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/encode"
+	"github.com/planckdotgg/planck/pkg/gamepad"
 	"github.com/planckdotgg/planck/pkg/input"
 	"github.com/planckdotgg/planck/pkg/transport"
 	"github.com/planckdotgg/planck/pkg/wire"
@@ -68,6 +69,8 @@ type backend struct {
 	audioOutputs, audioInputs func() ([]audio.Device, error)
 	runningApps               func() ([]audio.App, error)
 	caches                    probeCaches
+	// pads reads this device's controllers for Settings and the stream.
+	pads *session.GamepadPump
 	// onKeys hears the hotkeys and the never-send list change; heldMods is
 	// what modifiers the host holds for this device, as HID bits. The GUI
 	// sets both before the first stream.
@@ -112,6 +115,8 @@ type backend struct {
 	self map[string]bool
 	// keys are client.json's hotkeys and never-send list.
 	keys config.ClientConfig
+	// gamepadCfg is gamepad.json as this backend last read or wrote it.
+	gamepadCfg config.GamepadConfig
 	// hostOS is the OS of the host hostOSOf streams from.
 	hostOSOf *session.Client
 	hostOS   string
@@ -152,6 +157,11 @@ type backendConfig struct {
 	audioOutputs, audioInputs func() ([]audio.Device, error)
 	runningApps               func() ([]audio.App, error)
 	globals                   globalShortcuts
+	// openGamepads opens this device's controllers, session.OpenGamepads
+	// in the app; nil has none. virtualPads replaces
+	// gamepad.VirtualPadStatus.
+	openGamepads func() (session.GamepadSource, error)
+	virtualPads  func() ui.VirtualPadStatus
 }
 
 func newBackend(c backendConfig) (*backend, error) {
@@ -190,7 +200,20 @@ func newBackend(c backendConfig) (*backend, error) {
 	if b.displays == nil {
 		b.displays = session.LocalDisplays
 	}
-	b.initCaches()
+	gp, err := config.LoadGamepadConfig(dir)
+	if err != nil {
+		return nil, err
+	}
+	b.gamepadCfg = gp
+	if c.openGamepads == nil {
+		c.openGamepads = func() (session.GamepadSource, error) { return noGamepads{}, nil }
+	}
+	b.pads = session.NewGamepadPump(c.openGamepads, b.changed, b.logf)
+	b.pads.SetProfile(gamepadProfile(gp, b.logf))
+	if c.virtualPads == nil {
+		c.virtualPads = gamepad.VirtualPadStatus
+	}
+	b.initCaches(c.virtualPads)
 	host, err := config.LoadHostConfig(dir)
 	if err != nil {
 		return nil, err
@@ -625,7 +648,7 @@ func (b *backend) dialNew(ctx context.Context, t session.Target, pin string, s u
 	cfg := session.ClientConfig{
 		ConfigDir: b.dir, Name: name, PIN: pin, NoAudio: !s.AudioEnabled, Quality: legacyQuality(ov), Overrides: ov,
 		OpenSink: b.openSink, Tailscale: b.ts, Logf: b.logf, Route: b.route(ov), ViewSize: b.viewSize, Clipboard: clipboardOf(s),
-		OnCursor: b.onCursor, OnCursorShape: b.onCursorShape, Capabilities: b.capabilities,
+		OnCursor: b.onCursor, OnCursorShape: b.onCursorShape, Capabilities: b.capabilities, Gamepads: b.pads,
 	}
 	if id := s.OutputDevice; id != "" {
 		cfg.OpenAudioPlayer = func() (audio.Player, error) { return audio.NewOutputPlayer(id) }
@@ -1267,4 +1290,5 @@ func (b *backend) close() {
 	if h != nil {
 		h.Stop()
 	}
+	b.pads.Close()
 }

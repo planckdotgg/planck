@@ -10,6 +10,7 @@ import (
 	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/encode"
+	"github.com/planckdotgg/planck/pkg/gamepad"
 )
 
 // ErrPairingRequired is what Backend.Connect returns for a host this
@@ -275,6 +276,74 @@ type AudioDevices struct {
 // VirtualAudioStatus is Planck Virtual Audio's driver and device on this
 // machine.
 type VirtualAudioStatus = audio.VirtualAudioStatus
+
+// GamepadSettings are how this device processes its controllers and,
+// while it hosts, what clients' controllers become, kept in gamepad.json.
+type GamepadSettings struct {
+	// LeftDeadzone and RightDeadzone are radial stick deadzones, and
+	// TriggerThreshold the trigger travel ignored, in percent: 0 to 50.
+	LeftDeadzone     int
+	RightDeadzone    int
+	TriggerThreshold int
+	InvertLeftY      bool
+	InvertRightY     bool
+	// RumbleEnabled plays a host's rumble here at RumbleStrength percent.
+	RumbleEnabled  bool
+	RumbleStrength int
+	// VirtualType is what clients' controllers appear as to games while
+	// this machine hosts: one of the VirtualPad constants.
+	VirtualType        string
+	AllowGuestGamepads bool
+}
+
+// Virtual controller types, as GamepadSettings.VirtualType holds them.
+const (
+	VirtualPadXbox360   = config.VirtualPadXbox360
+	VirtualPadDS4       = config.VirtualPadDS4
+	VirtualPadDualSense = config.VirtualPadDualSense
+)
+
+// GamepadState is a controller's input after mapping and calibration: what
+// a stream sends.
+type GamepadState = gamepad.State
+
+// GamepadInfo is one controller attached to this device.
+type GamepadInfo struct {
+	// ID names it to the mapping methods while it stays attached.
+	ID   string
+	Name string
+	GUID string
+	// Transport is "USB", "Bluetooth", "Wireless", or "" when unknown.
+	Transport string
+	// BatteryPct is -1 when unknown or wired.
+	BatteryPct int
+	// Slot is the pad index a stream sends it as, from 0.
+	Slot  int
+	State GamepadState
+	// Buttons, Axes (-1 to 1) and Hats are its raw inputs, as an SDL
+	// mapping indexes them.
+	Buttons []bool
+	Axes    []float64
+	Hats    []uint8
+	// Mapping is the SDL gamecontrollerdb line in use; Custom says it is
+	// one the user saved rather than the controller's default.
+	Mapping string
+	Custom  bool
+	// Learning is the input Map waits on, by SDL name, "" when none.
+	Learning string
+}
+
+// VirtualPadStatus is whether this machine can plug in virtual
+// controllers while it hosts.
+type VirtualPadStatus = gamepad.PadDriverStatus
+
+// HostGamepadSlot is one virtual controller slot of this machine while it
+// hosts: Pad is the client controller in it, by its pad index, -1 when
+// free.
+type HostGamepadSlot struct {
+	Slot int
+	Pad  int
+}
 
 // HotkeyAction names what a hotkey does.
 type HotkeyAction = config.HotkeyAction
@@ -676,4 +745,31 @@ type Backend interface {
 	// PrivacyModeProblem is why privacy mode cannot work on this machine,
 	// "" when it can.
 	PrivacyModeProblem() string
+
+	// GamepadSettings are gamepad.json's; SetGamepadSettings keeps them and
+	// applies them to the stream and to hosting at once.
+	GamepadSettings() GamepadSettings
+	SetGamepadSettings(s GamepadSettings) error
+	// Gamepads lists the controllers attached now, read in the background
+	// for a second after each call.
+	Gamepads() []GamepadInfo
+	// MapGamepadButton waits up to ten seconds for a control of controller
+	// id to move and binds it to target, an SDL input name such as "a" or
+	// "lefttrigger"; GamepadInfo.Learning shows the wait. UnmapGamepadButton
+	// clears target, ResetGamepadMapping forgets the saved mapping, and
+	// SetGamepadSDLMapping saves a gamecontrollerdb line for the controller.
+	MapGamepadButton(id, target string) error
+	UnmapGamepadButton(id, target string) error
+	ResetGamepadMapping(id string) error
+	SetGamepadSDLMapping(id, sdl string) error
+	// TestGamepadRumble shakes controller id briefly at the rumble strength.
+	TestGamepadRumble(id string) error
+	// VirtualPadStatus is the virtual controller driver of this machine.
+	VirtualPadStatus() VirtualPadStatus
+	// HostGamepadSlots are the four virtual controller slots while hosting,
+	// nil when not. ResetGamepadSlots unplugs them all; ReorderGamepadSlot
+	// swaps the controllers in two slots, so a game's player order changes.
+	HostGamepadSlots() []HostGamepadSlot
+	ResetGamepadSlots() error
+	ReorderGamepadSlot(from, to int) error
 }

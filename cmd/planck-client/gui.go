@@ -44,7 +44,7 @@ func runGUI(o options) error {
 		dir: o.configDir, name: o.name, finder: f, tailscale: ts, openSink: video.open,
 		hostConfig: appHostConfig(o.configDir, logf),
 		encoders:   localEncoders(), logf: logf, overrides: o.overrides, viewSize: video.liveSize, display: video.display, onCursor: ptr.setHost, onCursorShape: ptr.setShape,
-		onSystemKeys: sys.setEnabled, globals: desktopShortcuts{},
+		onSystemKeys: sys.setEnabled, globals: desktopShortcuts{}, openGamepads: session.OpenGamepads,
 		onHostDisplays: func(host string, ds []defaults.HostDisplay, streamed string) {
 			s := b.Settings()
 			p := planDisplayWindows(ds, streamed, s.OpenEveryHostDisplay, s.MaxStreamWindows, hostStreamsAtOnce)
