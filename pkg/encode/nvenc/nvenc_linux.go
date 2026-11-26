@@ -109,6 +109,13 @@ func ccall2(fn, a, b uintptr) uintptr {
 	return uintptr(uint32(r))
 }
 
+// guidArgs passes a GUID by value: the System V and AArch64 calling
+// conventions put a struct of 16 bytes of integers in two registers.
+func guidArgs(g *guid) []uintptr {
+	w := (*[2]uint64)(unsafe.Pointer(g))
+	return []uintptr{uintptr(w[0]), uintptr(w[1])}
+}
+
 func yieldThread() { syscall.Syscall(syscall.SYS_SCHED_YIELD, 0, 0, 0) }
 
 func cudaErr(what string, r uintptr) error {

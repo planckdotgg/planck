@@ -47,6 +47,10 @@ func ccall2(fn, a, b uintptr) uintptr {
 	return r
 }
 
+// guidArgs passes a GUID by value: Windows x64 hands a struct of 16 bytes
+// over as a pointer to it.
+func guidArgs(g *guid) []uintptr { return []uintptr{uintptr(unsafe.Pointer(g))} }
+
 var procSwitchToThread = windows.NewLazySystemDLL("kernel32.dll").NewProc("SwitchToThread")
 
 func yieldThread() { syscall.SyscallN(procSwitchToThread.Addr()) }

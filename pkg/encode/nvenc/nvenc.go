@@ -236,17 +236,19 @@ func codecGUID(c encode.Codec) (guid, error) {
 	return guid{}, encode.ErrUnsupported
 }
 
-func (e *Encoder) capValue(codec guid, which uint32) int {
+// capValue queries a capability of codec, which must point to memory that
+// does not move: a package GUID or one on the heap.
+func (e *Encoder) capValue(codec *guid, which uint32) int {
 	p := make([]byte, sizeCapsParam)
 	put32(p, 0, verCapsParam)
 	put32(p, capsToQuery, which)
-	var v int32
-	r := ccall(e.api.fn(fnGetEncodeCaps), e.enc, uintptr(unsafe.Pointer(&codec)),
-		uintptr(unsafe.Pointer(&p[0])), uintptr(unsafe.Pointer(&v)))
+	v := new(int32)
+	args := append(append([]uintptr{e.enc}, guidArgs(codec)...), uintptr(unsafe.Pointer(&p[0])), uintptr(unsafe.Pointer(v)))
+	r := ccall(e.api.fn(fnGetEncodeCaps), args...)
 	if uint32(r) != statusSuccess {
 		return 0
 	}
-	return int(v)
+	return int(*v)
 }
 
 func (e *Encoder) queryCaps() encode.Caps {
@@ -257,9 +259,10 @@ func (e *Encoder) queryCaps() encode.Caps {
 	if n > 0 {
 		ccall(e.api.fn(fnGetEncodeGUIDs), e.enc, uintptr(unsafe.Pointer(&guids[0])), uintptr(n), uintptr(unsafe.Pointer(&n)))
 	}
-	for _, g := range guids[:n] {
+	for i := range guids[:n] {
+		g := &guids[i]
 		var c encode.Codec
-		switch g {
+		switch *g {
 		case guidH264:
 			c = encode.H264
 		case guidHEVC:
@@ -340,7 +343,7 @@ func openEncoder(deviceType uint32, device uintptr, adapter gpu.Adapter, cfg enc
 		registered: map[uintptr]registration{},
 	}
 	e.caps = e.queryCaps()
-	e.caps.RefInvalidation = e.capValue(codec, capsSupportRefPicInvalidation) != 0
+	e.caps.RefInvalidation = e.capValue(&e.codec, capsSupportRefPicInvalidation) != 0
 	if err := e.initialize(); err != nil {
 		e.Close()
 		return nil, err
@@ -368,9 +371,9 @@ func (e *Encoder) initialize() error {
 	preset := make([]byte, sizePresetConfig)
 	put32(preset, 0, verPresetConfig)
 	put32(preset, pcPresetCfg, verConfig)
-	codec, presetGUID := e.codec, guidPresetP1
-	if err := e.call(fnGetEncodePresetConfigEx, e.enc, uintptr(unsafe.Pointer(&codec)),
-		uintptr(unsafe.Pointer(&presetGUID)), tuningUltraLowLatency, uintptr(unsafe.Pointer(&preset[0]))); err != nil {
+	args := append([]uintptr{e.enc}, guidArgs(&e.codec)...)
+	args = append(append(args, guidArgs(&guidPresetP1)...), tuningUltraLowLatency, uintptr(unsafe.Pointer(&preset[0])))
+	if err := e.call(fnGetEncodePresetConfigEx, args...); err != nil {
 		return err
 	}
 	c := e.config
