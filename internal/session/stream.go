@@ -18,6 +18,7 @@ import (
 	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/encode"
 	"github.com/planckdotgg/planck/pkg/fec"
+	"github.com/planckdotgg/planck/pkg/phaselock"
 	"github.com/planckdotgg/planck/pkg/ratectl"
 	"github.com/planckdotgg/planck/pkg/transport"
 	"github.com/planckdotgg/planck/pkg/wire"
@@ -92,6 +93,12 @@ type stream struct {
 	bg        sync.WaitGroup
 
 	trace *tracer[hostTraceRow]
+
+	// phase steers the video loop's frames by the client's display phase;
+	// nil until a pipe opens. phaseLog is the state last logged.
+	phase    atomic.Pointer[phaselock.Controller]
+	phaseMu  sync.Mutex
+	phaseLog phaselock.State
 
 	// endedByHost is set when this machine ended the stream: a stop, a
 	// kick, a revoke, or another client taking over.
@@ -693,6 +700,7 @@ func (st *stream) videoLoop() {
 			st.mu.Lock()
 			st.info = info
 			st.mu.Unlock()
+			st.openPhase(pipe, info.FPS)
 			st.h.targetInput(info)
 			st.h.logf("planck: video %s %dx%d@%d on %s (%s), power %s, GPU priority %d", info.Codec, info.Width, info.Height, info.FPS,
 				info.Adapter.Name, info.Source, info.Power, info.GPUPriority)
@@ -710,6 +718,12 @@ func (st *stream) videoLoop() {
 				kbps = t
 			}
 			setRate = transport.Mono() - t0
+		}
+		var phaseStep int64
+		if ctl, steer := st.phase.Load(), steererOf(pipe); ctl != nil && steer != nil {
+			if phaseStep = ctl.Advance(frameID); phaseStep != 0 {
+				steer.steerPhase(phaseStep)
+			}
 		}
 		var pkt encode.Packet
 		var captureTS int64
@@ -778,7 +792,7 @@ func (st *stream) videoLoop() {
 		}
 		if st.trace != nil {
 			job.traced = true
-			job.row = hostTraceRow{Frame: info.FrameID, Key: pkt.Keyframe, Bytes: len(pkt.Data), Present: captureTS, Kbps: kbps, SetRateNs: setRate}
+			job.row = hostTraceRow{Frame: info.FrameID, Key: pkt.Keyframe, Bytes: len(pkt.Data), Present: captureTS, Kbps: kbps, SetRateNs: setRate, PhaseNs: phaseStep}
 			if staged {
 				g := sp.stages()
 				job.row.WaitStart, job.row.Acquired, job.row.EncStart, job.row.EncEnd, job.row.FirstSlice, job.row.Accum = g.WaitStart, g.Acquired, g.EncStart, g.EncEnd, g.FirstSlice, g.Accum

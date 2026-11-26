@@ -29,6 +29,7 @@ import (
 	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/encode"
 	"github.com/planckdotgg/planck/pkg/input"
+	"github.com/planckdotgg/planck/pkg/phaselock"
 	"github.com/planckdotgg/planck/pkg/player"
 	"github.com/planckdotgg/planck/pkg/ratectl"
 	"github.com/planckdotgg/planck/pkg/tailscale"
@@ -199,6 +200,12 @@ type ClientStats struct {
 	// Only a sink that presents on macOS reports them.
 	Glass    Latency
 	E2EGlass Latency
+	// Phase is how the last pictures lined up with the client display's
+	// refreshes, and whether the system scanned them out directly or
+	// composited them; not Valid from a sink that cannot tell. PhaseSent
+	// says the host takes the reports, so it can steer by them.
+	Phase     phaselock.Report
+	PhaseSent bool
 
 	// CaptureMs and HostEncodeMs split Encode where the host acquired the
 	// picture, as p50s; both are 0 from a host that does not send
@@ -324,6 +331,11 @@ type conn struct {
 	presentW  *window
 	glassW    *window
 	e2eGlassW *window
+	// phaseSrc is the sink's phase estimate, phase its last report and
+	// phaseSent whether that went to the host.
+	phaseSrc  atomic.Pointer[phaseSource]
+	phase     phaselock.Report
+	phaseSent bool
 	captured  [captureRing]capturedAt
 	encodeMs  float64
 	decodeMs  float64
@@ -517,7 +529,7 @@ func (c *Client) connect(ctx context.Context, t Target) (*conn, error) {
 			cc.wg.Go(cc.audioLoop)
 		}
 	}
-	cc.wg.Go(cc.reportLoop)
+	cc.wg.Go(func() { cc.reportLoop(c.logf) })
 	return cc, nil
 }
 
@@ -537,7 +549,57 @@ func (cc *conn) newSink(dcfg decode.Config) (Sink, error) {
 	if o, ok := sink.(interface{ SetObserver(player.Observer) }); ok {
 		o.SetObserver(viewObserver{cc})
 	}
+	if ps, ok := sink.(phaseSource); ok {
+		cc.phaseSrc.Store(&ps)
+	}
 	return sink, nil
+}
+
+// phaseSource is a sink that measures its pictures against the display's
+// refreshes (player.Player).
+type phaseSource interface{ Phase() phaselock.Report }
+
+// phaseEvery is how often the client reads its sink's phase and tells a
+// host that steers by it.
+const phaseEvery = 250 * time.Millisecond
+
+// reportPhase reads the sink's phase and sends it to a host that takes it
+// while the profile has phase lock on. It logs when the scan-out mode or
+// the lock changes.
+func (cc *conn) reportPhase(logf func(string, ...any)) {
+	src := cc.phaseSrc.Load()
+	if src == nil {
+		return
+	}
+	r := (*src).Phase()
+	sess := cc.session()
+	prof := cc.profile.Load()
+	send := r.Valid && prof != nil && prof.PhaseLock && sess.PeerFeatures()&wire.FeatureDisplayPhase != 0
+	if send {
+		_ = sess.SendControl(phaseMessage(r))
+	}
+	cc.mu.Lock()
+	last := cc.phase
+	cc.phase, cc.phaseSent = r, send
+	cc.mu.Unlock()
+	if r.Mode != last.Mode && r.Mode != phaselock.ModeUnknown {
+		logf("planck: scan-out %s (%.0f%% of pictures a refresh late), display %.3f Hz", r.Mode, r.CompositedPct, r.RefreshHz())
+	}
+	if r.Valid && r.Locked != last.Locked {
+		logf("planck: display phase locked %v: slack %.2f ms, target %.2f ms, jitter %.2f ms, sent to host %v",
+			r.Locked, float64(r.SlackNs)/1e6, float64(r.TargetNs)/1e6, float64(r.JitterNs)/1e6, send)
+	}
+}
+
+func phaseMessage(r phaselock.Report) *wire.DisplayPhase {
+	clampU := func(v int64) uint32 { return uint32(min(max(v, 0), math.MaxUint32)) }
+	return &wire.DisplayPhase{
+		Valid: r.Valid, Locked: r.Locked, Direct: r.Mode == phaselock.ModeDirect, Composited: r.Mode == phaselock.ModeComposited,
+		PeriodNs: clampU(r.PeriodNs), ErrorNs: int32(min(max(r.ErrorNs, math.MinInt32), math.MaxInt32)),
+		SlackNs: clampU(r.SlackNs), TargetNs: clampU(r.TargetNs), JitterNs: clampU(r.JitterNs),
+		LatePermille: uint16(min(r.LatePct*10, 1000)), CompositedPermille: uint16(min(r.CompositedPct*10, 1000)),
+		Oldest: r.Oldest, Newest: r.Newest,
+	}
 }
 
 // dialRoute opens a session to the host on r for cc, checking the host's
@@ -1351,14 +1413,19 @@ func (cc *conn) audioLoop() {
 }
 
 // reportLoop tells the host what the client sees, once a second.
-func (cc *conn) reportLoop() {
+func (cc *conn) reportLoop(logf func(string, ...any)) {
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
+	phase := time.NewTicker(phaseEvery)
+	defer phase.Stop()
 	var loss shardLoss
 	for {
 		select {
 		case <-cc.ctx.Done():
 			return
+		case <-phase.C:
+			cc.reportPhase(logf)
+			continue
 		case <-t.C:
 		}
 		s := cc.stats()
@@ -1437,6 +1504,7 @@ func (cc *conn) stats() ClientStats {
 	s.E2E, s.Network = cc.e2e.summary(), cc.network.summary()
 	s.Encode, s.Decode, s.Present = cc.encodeW.summary(), cc.decodeW.summary(), cc.presentW.summary()
 	s.Glass, s.E2EGlass = cc.glassW.summary(), cc.e2eGlassW.summary()
+	s.Phase, s.PhaseSent = cc.phase, cc.phaseSent
 	s.E2EMs, s.NetworkMs = cc.e2e.last(), cc.network.last()
 	s.FrameTimesMs, s.Keyframes = cc.frameTimes.ordered(nil), cc.keyframes
 	cc.mu.Unlock()

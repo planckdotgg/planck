@@ -567,6 +567,8 @@ func (h *Host) Start(ctx context.Context) error {
 		// The video loop answers RefInvalidate, with a keyframe when the
 		// encoder cannot invalidate.
 		RefInvalidation: true,
+		// The video loop steers its frames by the client's display phase.
+		DisplayPhase: true,
 		Handlers: transport.Handlers{
 			Input:   h.onInput,
 			Control: h.onControl,
@@ -1180,6 +1182,10 @@ func (h *Host) onControl(m wire.Message) {
 	case *wire.SwitchDisplay:
 		if st := h.current(); st != nil {
 			st.requestDisplay(m.DisplayID)
+		}
+	case *wire.DisplayPhase:
+		if st := h.current(); st != nil {
+			st.phaseReport(m)
 		}
 	}
 }

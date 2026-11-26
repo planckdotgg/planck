@@ -44,6 +44,9 @@ type hostTraceRow struct {
 	// wait in QueryOutput; Tries counts the QueryOutput calls.
 	SubmitNs, QueryNs int64
 	Tries             int
+	// PhaseNs is how much later than its cadence the phase lock captured
+	// the frame.
+	PhaseNs int64
 }
 
 // clientTraceRow is one frame on the client. Host stamps are mapped onto

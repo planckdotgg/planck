@@ -65,6 +65,9 @@ type ServerConfig struct {
 	// handler takes wire.RefInvalidate and marks the frame encoded after it
 	// Recovery.
 	RefInvalidation bool
+	// DisplayPhase offers wire.FeatureDisplayPhase: the Control handler
+	// takes wire.DisplayPhase.
+	DisplayPhase bool
 	// MediaAddr is the local address for media sockets; default ":0".
 	MediaAddr string
 	// MaxDatagram caps sealed media datagrams. Zero takes
@@ -280,6 +283,9 @@ func (sv *Server) handshake(parent context.Context, conn *quic.Conn) (*Session, 
 	}
 	if sv.cfg.RefInvalidation {
 		features |= wire.FeatureRefInvalidate | wire.FeatureRefInvalidateThrough
+	}
+	if sv.cfg.DisplayPhase {
+		features |= wire.FeatureDisplayPhase
 	}
 	if err := wire.WriteMessage(ctrl, &wire.Hello{Version: wire.Version, Role: wire.RoleHost, Name: *sv.name.Load(), Features: features}); err != nil {
 		return nil, err
