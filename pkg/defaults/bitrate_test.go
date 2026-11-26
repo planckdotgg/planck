@@ -39,3 +39,21 @@ func TestBitrateOverrideKeepsLANCeiling(t *testing.T) {
 		t.Fatalf("auto: max %d, want the %d LAN ceiling for the rate controller", p.MaxBitrateKbps, lanCeilingKbps)
 	}
 }
+
+func TestVSyncAuto(t *testing.T) {
+	for _, tc := range []struct {
+		route RouteInfo
+		o     UserOverrides
+		want  bool
+	}{
+		{lan, UserOverrides{}, false},
+		{tsDirect, UserOverrides{}, true},
+		{wanRelay, UserOverrides{}, true},
+		{lan, UserOverrides{VSyncMode: ToggleOn}, true},
+		{tsDirect, UserOverrides{VSyncMode: ToggleOff}, false},
+	} {
+		if p := Resolve(bigboi(), m5Pro(), tc.route, tc.o); p.VSync != tc.want {
+			t.Errorf("%v with VSync %q: %v, want %v", tc.route.Kind, tc.o.VSyncMode, p.VSync, tc.want)
+		}
+	}
+}

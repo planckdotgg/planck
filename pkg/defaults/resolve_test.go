@@ -135,12 +135,12 @@ func TestResolveWorkedCases(t *testing.T) {
 	caseB := golden{
 		Adapter: rtx4080.Name, API: APINVENC, VirtualDisplay: true, Codec: CodecHEVC, BitDepth: 10,
 		W: 3024, H: 1964, FPS: 120, Bitrate: 100000, Max: 100000, Slices: 4, SubFrame: true,
-		Datagram: 1152, Direct: true, FEC: fecTSDir,
+		Datagram: 1152, Direct: true, VSync: true, FEC: fecTSDir,
 	}
 	caseBWAN := golden{
 		Adapter: rtx4080.Name, API: APINVENC, VirtualDisplay: true, Codec: CodecAV1, BitDepth: 10,
 		W: 2216, H: 1440, FPS: 120, Bitrate: 20000, Max: 20000, Slices: 1,
-		Datagram: 1152, Direct: true, FEC: fecWANCfg,
+		Datagram: 1152, Direct: true, VSync: true, FEC: fecWANCfg,
 	}
 	caseC := golden{
 		Adapter: rx6700.Name, API: APIAMF, VirtualDisplay: true, Codec: CodecHEVC, BitDepth: 8,
