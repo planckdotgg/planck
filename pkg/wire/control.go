@@ -726,6 +726,10 @@ func newMessage(t MsgType) Message {
 		return &SwitchDisplay{}
 	case MsgDisplayPhase:
 		return &DisplayPhase{}
+	case MsgProbeRequest:
+		return &ProbeRequest{}
+	case MsgProbeDone:
+		return &ProbeDone{}
 	}
 	return nil
 }

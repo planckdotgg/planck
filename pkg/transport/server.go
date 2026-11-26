@@ -68,6 +68,9 @@ type ServerConfig struct {
 	// DisplayPhase offers wire.FeatureDisplayPhase: the Control handler
 	// takes wire.DisplayPhase.
 	DisplayPhase bool
+	// Calibration offers wire.FeatureCalibration: sessions answer a
+	// client's ProbeRequest with a probe train.
+	Calibration bool
 	// MediaAddr is the local address for media sockets; default ":0".
 	MediaAddr string
 	// MaxDatagram caps sealed media datagrams. Zero takes
@@ -287,6 +290,9 @@ func (sv *Server) handshake(parent context.Context, conn *quic.Conn) (*Session, 
 	if sv.cfg.DisplayPhase {
 		features |= wire.FeatureDisplayPhase
 	}
+	if sv.cfg.Calibration {
+		features |= wire.FeatureCalibration
+	}
 	if err := wire.WriteMessage(ctrl, &wire.Hello{Version: wire.Version, Role: wire.RoleHost, Name: *sv.name.Load(), Features: features}); err != nil {
 		return nil, err
 	}
@@ -401,6 +407,7 @@ func (sv *Server) handshake(parent context.Context, conn *quic.Conn) (*Session, 
 		parity:       resolved.Parity,
 		peerFeatures: hello.Features,
 		refInv:       sv.cfg.RefInvalidation && hello.Features&wire.FeatureRefInvalidate != 0,
+		serveProbes:  sv.cfg.Calibration,
 		peerName:     hello.Name,
 		peerCaps:     peerCaps,
 		profile:      resolved.Profile,

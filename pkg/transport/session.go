@@ -220,6 +220,16 @@ type Session struct {
 
 	peerState atomic.Pointer[wire.PeerState]
 
+	// serveProbes answers a client's ProbeRequest (host only); probing is
+	// set while a train goes out. probe is the client's train waiting for
+	// its datagrams, and pongTap hears round trips while Ping runs.
+	serveProbes bool
+	probing     atomic.Bool
+	probeMu     sync.Mutex
+	probeSeq    uint32
+	probe       atomic.Pointer[probeCollector]
+	pongTap     atomic.Pointer[chan time.Duration]
+
 	mediaUp     chan struct{}
 	mediaUpOnce sync.Once
 	done        chan struct{}
@@ -251,6 +261,7 @@ type sessionParams struct {
 	peerCaps     []byte
 	profile      []byte
 	refInv       bool
+	serveProbes  bool
 }
 
 func newSession(p sessionParams) (*Session, error) {
@@ -287,6 +298,7 @@ func newSession(p sessionParams) (*Session, error) {
 		h:            p.handlers,
 		peerFeatures: p.peerFeatures,
 		refInv:       p.refInv,
+		serveProbes:  p.serveProbes,
 		peerName:     p.peerName,
 		peerCaps:     p.peerCaps,
 		profile:      p.profile,
@@ -825,6 +837,17 @@ func (s *Session) handleMedia(plain []byte, now int64) {
 		if p.Parse(plain) == nil {
 			s.clock.Add(p, now)
 			s.markMediaUp()
+			if tap := s.pongTap.Load(); tap != nil {
+				select {
+				case *tap <- time.Duration((now - p.T0) - (p.T2 - p.T1)):
+				default:
+				}
+			}
+		}
+	case wire.KindProbe:
+		var h wire.ProbeHeader
+		if c := s.probe.Load(); c != nil && !s.isHost && h.Parse(plain) == nil {
+			c.record(h, now)
 		}
 	case wire.KindVideo:
 		if !s.isHost {
@@ -1030,6 +1053,16 @@ func (s *Session) ctrlReadLoop() {
 			}
 		case *wire.PeerState:
 			s.peerState.Store(m)
+		case *wire.ProbeRequest:
+			if s.isHost && s.serveProbes {
+				s.serveProbe(m)
+			}
+			continue
+		case *wire.ProbeDone:
+			if !s.isHost {
+				s.onProbeDone(m)
+			}
+			continue
 		case *wire.Goodbye:
 			if s.h.Control != nil {
 				s.h.Control(m)

@@ -53,6 +53,10 @@ type ClientConfig struct {
 	// the next Recovery one. With a host that offers it too, the session
 	// sends no PLI for a lost frame.
 	RefInvalidation bool
+	// Calibration dials for a calibration session: a host whose Hello
+	// lacks wire.FeatureCalibration is refused with
+	// ErrCalibrationUnsupported before any stream is asked for.
+	Calibration bool
 }
 
 // Dial connects to a host, authenticates, negotiates the session and brings
@@ -149,6 +153,10 @@ func clientHandshake(ctx context.Context, conn *quic.Conn, cfg ClientConfig) (*S
 	}
 	if hello.Version != wire.Version || hello.Role != wire.RoleHost {
 		return nil, fmt.Errorf("transport: host hello version %d role %d", hello.Version, hello.Role)
+	}
+	if cfg.Calibration && hello.Features&wire.FeatureCalibration == 0 {
+		_ = wire.WriteMessage(ctrl, &wire.Goodbye{Reason: wire.GoodbyeNormal, Message: "calibration needs a newer host"})
+		return nil, ErrCalibrationUnsupported
 	}
 
 	tlsState := conn.ConnectionState().TLS
