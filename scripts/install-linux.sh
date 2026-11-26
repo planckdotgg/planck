@@ -75,8 +75,14 @@ chmod 0755 "$bin/planck-client.new" "$bin/planck-host.new"
 mv -f "$bin/planck-client.new" "$bin/planck-client"
 mv -f "$bin/planck-host.new" "$bin/planck-host"
 
+quote_exec() {
+  local s=${1//\\/\\\\}
+  s=${s//\"/\\\"}
+  printf '"%s"' "$s"
+}
+
 echo "==> desktop entry"
-sed "s|^Exec=.*|Exec=$bin/planck-client|" "$desktop" > "$prefix/share/applications/planck.desktop"
+awk -v val="$(quote_exec "$bin/planck-client")" '{ if ($0 ~ /^Exec=/) print "Exec=" val; else print }' "$desktop" > "$prefix/share/applications/planck.desktop"
 
 echo "==> icons"
 if [[ "$mode" == archive ]]; then
@@ -97,7 +103,7 @@ if [[ "$systemd" == 1 ]]; then
   echo "==> systemd user service"
   unitdir=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
   mkdir -p "$unitdir"
-  sed "s|^ExecStart=.*|ExecStart=$bin/planck-host|" "$unit" > "$unitdir/planck-host.service"
+  awk -v val="$(quote_exec "$bin/planck-host")" '{ if ($0 ~ /^ExecStart=/) print "ExecStart=" val; else print }' "$unit" > "$unitdir/planck-host.service"
   if command -v systemctl >/dev/null && systemctl --user daemon-reload 2>/dev/null; then
     echo "    enable it with: systemctl --user enable --now planck-host"
   else
