@@ -712,3 +712,61 @@ func TestRefusedInstalledFreesTheClaim(t *testing.T) {
 		t.Fatalf("sent %v", got)
 	}
 }
+
+// TestSettingTurnedOffDuringTheLockWaitSendsNothing: the setting is read
+// again after the claim waits on telemetry.json.lock.
+func TestSettingTurnedOffDuringTheLockWaitSendsNothing(t *testing.T) {
+	in := newIngest(t)
+	o := in.options(t)
+	if err := os.WriteFile(o.StateFile, []byte(`{"install_id":"6f1c2a52-6f0e-4c1e-9a43-0d5f7a3b9e21"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(o.StateFile+".lock", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var on atomic.Bool
+	on.Store(true)
+	checked := make(chan struct{}, 1)
+	o.Enabled = func() bool {
+		select {
+		case checked <- struct{}{}:
+		default:
+		}
+		return on.Load()
+	}
+	c := New(o, true)
+	c.Launched()
+	select {
+	case <-checked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the setting was never read")
+	}
+	on.Store(false)
+	os.Remove(o.StateFile + ".lock")
+	settle(c)
+	if n := in.requests(); n != 0 {
+		t.Fatalf("%d requests after the setting turned off during the lock wait", n)
+	}
+	if c.Active() {
+		t.Fatal("still active after the setting turned off")
+	}
+	if loadState(o.StateFile).FirstLaunchSent {
+		t.Fatal("app.installed is claimed though it never left")
+	}
+}
+
+// TestInstalledIsNotSentWhenTheClaimCannotBeSaved: telemetry.json is a
+// directory, so the claim never reaches the file.
+func TestInstalledIsNotSentWhenTheClaimCannotBeSaved(t *testing.T) {
+	in := newIngest(t)
+	o := in.options(t)
+	if err := os.MkdirAll(filepath.Join(o.StateFile, "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	c := New(o, true)
+	c.Launched()
+	settle(c)
+	if got := types(in.signals()); len(got) != 1 || got[0] != TypeLaunched {
+		t.Fatalf("sent %v, want only %s", got, TypeLaunched)
+	}
+}

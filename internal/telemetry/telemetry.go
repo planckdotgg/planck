@@ -396,15 +396,21 @@ func (c *Client) flush() bool {
 	// app.installed is claimed in telemetry.json before it leaves: a send cut
 	// off by off or a timeout may still have reached the server, and the app
 	// and the host share one install, so a second one would count it twice.
+	// A claim that did not reach the file is no claim: another process could
+	// make the same one.
 	marked := false
 	if !c.claimed && hasType(batch, TypeInstalled) {
-		c.updateStateLocked(func(s *state) bool {
+		err := c.updateStateLocked(func(s *state) bool {
 			if s.FirstLaunchSent {
 				return false
 			}
 			s.FirstLaunchSent, marked = true, true
 			return true
 		})
+		if marked && err != nil {
+			marked = false
+			c.st.FirstLaunchSent = false
+		}
 		if marked {
 			c.claimed = true
 		} else {
@@ -418,6 +424,20 @@ func (c *Client) flush() bool {
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancel = cancel
 	c.mu.Unlock()
+
+	// The setting can turn off while the claim waits on the lock.
+	if c.o.Enabled != nil && !c.o.Enabled() {
+		cancel()
+		c.mu.Lock()
+		c.cancel = nil
+		if marked {
+			c.claimed = false
+			c.updateStateLocked(func(s *state) bool { s.FirstLaunchSent = false; return true })
+		}
+		c.mu.Unlock()
+		c.SetEnabled(false)
+		return true
+	}
 
 	err := c.post(ctx, batch)
 	cancel()
@@ -492,22 +512,23 @@ func withoutType(batch []Signal, typ string) []Signal {
 // updateStateLocked reads telemetry.json, lets change edit it, and saves it
 // if change says so, all under the file's lock, so another process on the
 // same install sees each change. c.st ends as the file's state. Without the
-// lock it changes nothing.
-func (c *Client) updateStateLocked(change func(*state) bool) {
+// lock it changes nothing. The error is the lock's or the save's.
+func (c *Client) updateStateLocked(change func(*state) bool) error {
 	if c.o.StateFile == "" {
 		change(&c.st)
-		return
+		return nil
 	}
 	unlock, err := lockFile(c.o.StateFile + ".lock")
 	if err != nil {
 		slog.Warn("telemetry: could not lock state", "err", err)
-		return
+		return err
 	}
 	defer unlock()
 	c.st = loadState(c.o.StateFile)
 	if change(&c.st) {
-		c.saveStateLocked()
+		return c.saveStateLocked()
 	}
+	return nil
 }
 
 // lockFile takes a lock that holds across processes: the file exists while
@@ -538,9 +559,9 @@ func lockFile(path string) (func(), error) {
 	}
 }
 
-func (c *Client) saveStateLocked() {
+func (c *Client) saveStateLocked() error {
 	if c.o.StateFile == "" {
-		return
+		return nil
 	}
 	data, err := json.MarshalIndent(c.st, "", "  ")
 	if err == nil {
@@ -552,6 +573,7 @@ func (c *Client) saveStateLocked() {
 	if err != nil {
 		slog.Warn("telemetry: could not save state", "err", err)
 	}
+	return err
 }
 
 // writeAtomic writes through a temp file of its own and a rename, so the
