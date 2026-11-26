@@ -39,8 +39,11 @@ type Encoder struct {
 	headroom  int
 	tailroom  int
 	rs        rsCache
-	bufs      [][]byte
-	shards    [][]byte
+	// bufs holds block b's shard i at b*wire.MaxShards+i, for the
+	// interleaved send of a slice's blocks.
+	bufs   [][]byte
+	shards [][]byte
+	blocks [wire.MaxBlocks]struct{ data, parity, blockLen int }
 }
 
 func NewEncoder(shardSize, headroom, tailroom int) *Encoder {
@@ -49,7 +52,7 @@ func NewEncoder(shardSize, headroom, tailroom int) *Encoder {
 		headroom:  headroom,
 		tailroom:  tailroom,
 		rs:        rsCache{},
-		bufs:      make([][]byte, wire.MaxShards),
+		bufs:      make([][]byte, wire.MaxBlocks*wire.MaxShards),
 		shards:    make([][]byte, wire.MaxShards),
 	}
 }
@@ -75,10 +78,12 @@ func (e *Encoder) EncodeFrame(info wire.VideoInfo, frame []byte, policy ParityPo
 	return sent, nil
 }
 
-// EncodeSlice emits every datagram of one slice: per block, data shards then
-// parity shards. emit receives the full buffer, headroom included; it is
-// reused after emit returns. Slices of one frame may be encoded as the codec
-// produces them.
+// EncodeSlice emits every datagram of one slice. A slice of several blocks
+// is sent interleaved, shard i of each block in turn, so a burst of n lost
+// datagrams costs each block about n/blocks shards instead of one block
+// all of them. emit receives the full buffer, headroom included; it is
+// reused after emit returns. Slices of one frame may be encoded as the
+// codec produces them.
 func (e *Encoder) EncodeSlice(info wire.VideoInfo, slice int, data []byte, policy ParityPolicy, emit func(pkt []byte) error) (int, error) {
 	if info.SliceCount == 0 || int(info.SliceCount) > wire.MaxSlices || slice < 0 || slice >= int(info.SliceCount) {
 		return 0, fmt.Errorf("fec: slice %d of %d out of range", slice, info.SliceCount)
@@ -92,13 +97,8 @@ func (e *Encoder) EncodeSlice(info wire.VideoInfo, slice int, data []byte, polic
 	if blocks > wire.MaxBlocks {
 		return 0, fmt.Errorf("%w: %d bytes needs %d blocks, max %d", ErrTooLarge, len(data), blocks, wire.MaxBlocks)
 	}
-	h := wire.VideoHeader{
-		VideoInfo:  info,
-		SliceIndex: uint8(slice),
-		BlockCount: uint8(blocks),
-		ShardLen:   uint16(ss),
-	}
-	sent := 0
+	hdrEnd := e.headroom + wire.VideoHeaderLen
+	longest := 0
 	off := 0
 	for b := 0; b < blocks; b++ {
 		d := dataTotal / blocks
@@ -106,19 +106,15 @@ func (e *Encoder) EncodeSlice(info wire.VideoInfo, slice int, data []byte, polic
 			d++
 		}
 		blockLen := min(d*ss, len(data)-off)
-		parity := policy.Parity(d)
-		if info.Keyframe {
-			// A lost keyframe shard costs a round trip for a new one.
-			parity = max(parity, 1)
-		}
+		parity := max(policy.Parity(d), BurstFloor(d, blocks, info.Keyframe))
 		parity = min(parity, wire.MaxShards-d)
 		total := d + parity
-		hdrEnd := e.headroom + wire.VideoHeaderLen
+		bufs := e.bufs[b*wire.MaxShards:]
 		for i := 0; i < total; i++ {
-			if e.bufs[i] == nil {
-				e.bufs[i] = make([]byte, hdrEnd+ss+e.tailroom)
+			if bufs[i] == nil {
+				bufs[i] = make([]byte, hdrEnd+ss+e.tailroom)
 			}
-			e.shards[i] = e.bufs[i][hdrEnd : hdrEnd+ss]
+			e.shards[i] = bufs[i][hdrEnd : hdrEnd+ss]
 		}
 		block := data[off : off+blockLen]
 		for i := 0; i < d; i++ {
@@ -128,26 +124,41 @@ func (e *Encoder) EncodeSlice(info wire.VideoInfo, slice int, data []byte, polic
 		if parity > 0 {
 			enc, err := e.rs.get(d, parity)
 			if err != nil {
-				return sent, err
+				return 0, err
 			}
 			if err := enc.Encode(e.shards[:total]); err != nil {
-				return sent, err
+				return 0, err
 			}
 		}
-		h.BlockIndex = uint8(b)
-		h.DataShards = uint8(d)
-		h.ParityShards = uint8(parity)
-		h.BlockLen = uint32(blockLen)
-		for i := 0; i < total; i++ {
+		e.blocks[b].data, e.blocks[b].parity, e.blocks[b].blockLen = d, parity, blockLen
+		longest = max(longest, total)
+		off += blockLen
+	}
+	h := wire.VideoHeader{
+		VideoInfo:  info,
+		SliceIndex: uint8(slice),
+		BlockCount: uint8(blocks),
+		ShardLen:   uint16(ss),
+	}
+	sent := 0
+	for i := 0; i < longest; i++ {
+		for b := 0; b < blocks; b++ {
+			blk := &e.blocks[b]
+			if i >= blk.data+blk.parity {
+				continue
+			}
+			h.BlockIndex = uint8(b)
+			h.DataShards = uint8(blk.data)
+			h.ParityShards = uint8(blk.parity)
+			h.BlockLen = uint32(blk.blockLen)
 			h.ShardIndex = uint8(i)
-			buf := e.bufs[i][:hdrEnd+ss]
+			buf := e.bufs[b*wire.MaxShards+i][:hdrEnd+ss]
 			h.Put(buf[e.headroom:])
 			if err := emit(buf); err != nil {
 				return sent, err
 			}
 			sent++
 		}
-		off += blockLen
 	}
 	return sent, nil
 }

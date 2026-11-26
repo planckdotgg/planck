@@ -109,6 +109,29 @@ func (p *Policy) Parity(data int) int {
 	return limit
 }
 
+// BurstFloor is the parity a block carries whatever the loss estimate, for
+// the bursts a clean path still has: a NIC, switch or socket queue that
+// overflows drops consecutive datagrams, which an estimate of independent
+// loss does not foresee. A lost keyframe costs a round trip and the largest
+// frame again; a block of a multi-block slice, interleaved on the wire,
+// takes a third of a six-datagram burst. Small P frames stay bare: one lost
+// costs a reference invalidation, not a keyframe.
+func BurstFloor(data, blocks int, keyframe bool) int {
+	switch {
+	case keyframe && data >= 16:
+		return max(4, ceilPercent(data, 5))
+	case keyframe:
+		return 1
+	case blocks > 1:
+		return max(3, ceilPercent(data, 3))
+	case data >= 64:
+		return 2
+	}
+	return 0
+}
+
+func ceilPercent(n, pct int) int { return (n*pct + 99) / 100 }
+
 // binomialTailAbove returns P(X > k) for X ~ Binomial(n, p).
 func binomialTailAbove(n, k int, p float64) float64 {
 	pmf := math.Pow(1-p, float64(n))
