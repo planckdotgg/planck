@@ -562,6 +562,7 @@ func (h *Host) Start(ctx context.Context) error {
 	if !h.cfg.NoMic {
 		scfg.Handlers.Mic = h.onMic
 	}
+	h.openInput()
 	if h.cfg.Clipboard.any() {
 		h.clip = openClipSync(h.cfg.OpenClipboard, h.cfg.Clipboard, h.liveSession, h.peerReceivesClipboard, h.logf)
 		if h.clip != nil {
@@ -573,37 +574,52 @@ func (h *Host) Start(ctx context.Context) error {
 	}
 	srv, err := h.listen(h.cfg.ListenAddr, scfg)
 	if err != nil {
-		if h.clip != nil {
-			h.clip.close()
-		}
+		h.abortStart()
 		return err
 	}
 	h.scfg = scfg
 	h.srv.Store(srv)
-	if h.cfg.InjectInput && h.cfg.Injector == nil {
-		inj, err := h.openInjector()
-		if err != nil {
-			h.logf("planck: input injection unavailable: %v", err)
-		} else {
-			h.inject = inj
-		}
-	} else if h.cfg.InjectInput {
-		h.inject = h.cfg.Injector
-	}
-	if pi, ok := h.inject.(PadInjector); ok {
-		pi.SetGamepadType(h.GamepadSettings().Type)
-	}
 	ctx, h.cancel = context.WithCancel(ctx)
 	if h.cfg.DiscoveryAddr != "off" {
 		if err := h.startDiscovery(ctx); err != nil {
 			h.cancel()
 			srv.Close()
+			h.abortStart()
 			return err
 		}
 	}
 	h.wg.Go(func() { h.acceptLoop(ctx) })
 	h.setStarted(true)
 	return nil
+}
+
+// openInput puts the injector in place before the listener opens, since
+// the listener hands clients' input to onInput as soon as it serves.
+func (h *Host) openInput() {
+	if !h.cfg.InjectInput {
+		return
+	}
+	inj := h.cfg.Injector
+	if inj == nil {
+		var err error
+		if inj, err = h.openInjector(); err != nil {
+			h.logf("planck: input injection unavailable: %v", err)
+			return
+		}
+	}
+	h.injMu.Lock()
+	defer h.injMu.Unlock()
+	h.inject = inj
+	if pi, ok := inj.(PadInjector); ok {
+		pi.SetGamepadType(h.GamepadSettings().Type)
+	}
+}
+
+// abortStart closes what a Start that failed opened.
+func (h *Host) abortStart() {
+	h.closeInput()
+	h.closeClipboard()
+	h.clip = nil
 }
 
 func (h *Host) startDiscovery(ctx context.Context) error {
@@ -965,12 +981,9 @@ func (h *Host) injectHeld(ev input.Event) (bool, error) {
 
 // releaseInput lets go of every key and button the last client left down.
 func (h *Host) releaseInput() {
-	if h.inject == nil {
-		return
-	}
 	h.injMu.Lock()
 	defer h.injMu.Unlock()
-	if !h.injClosed {
+	if h.inject != nil && !h.injClosed {
 		h.releaseLocked()
 	}
 }
@@ -978,12 +991,9 @@ func (h *Host) releaseInput() {
 // closeInput lets go of what is held and closes an injector the host
 // opened. A stream whose teardown outlives Stop then injects nothing.
 func (h *Host) closeInput() {
-	if h.inject == nil {
-		return
-	}
 	h.injMu.Lock()
 	defer h.injMu.Unlock()
-	if h.injClosed {
+	if h.inject == nil || h.injClosed {
 		return
 	}
 	h.releaseLocked()
@@ -1130,6 +1140,18 @@ func (h *Host) Stats() HostStats {
 	return out
 }
 
+func (h *Host) closeClipboard() {
+	if h.clip != nil {
+		h.clip.close()
+	}
+}
+
+func (h *Host) closeDisplays() {
+	if err := h.closeVDD(); err != nil {
+		h.logf("planck: virtual display driver: %v", err)
+	}
+}
+
 // Stop disconnects the client and closes the listeners.
 func (h *Host) Stop() {
 	h.stopOnce.Do(func() {
@@ -1154,14 +1176,7 @@ func (h *Host) Stop() {
 		}) {
 			h.fail("the host's streams took over %v to stop; stopping without them", h.stopWait)
 		}
-		if !h.within(h.closeInput, func() {
-			if h.clip != nil {
-				h.clip.close()
-			}
-			if err := h.closeVDD(); err != nil {
-				h.logf("planck: virtual display driver: %v", err)
-			}
-		}) {
+		if !h.within(h.closeInput, h.closeClipboard, h.closeDisplays) {
 			h.fail("the host's input, clipboard, or virtual displays took over %v to close; stopping without them", h.stopWait)
 		}
 		h.setStarted(false)

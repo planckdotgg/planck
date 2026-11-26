@@ -118,12 +118,17 @@ func (h *Host) GamepadSettings() GamepadHostSettings {
 // each client controller plugs in again, as the new type, on its next
 // input.
 func (h *Host) SetGamepadSettings(s GamepadHostSettings) error {
+	h.injMu.Lock()
+	defer h.injMu.Unlock()
 	h.pads.gate.Lock()
 	defer h.pads.gate.Unlock()
 	h.pads.mu.Lock()
 	before, slots := h.pads.set, h.pads.slots
 	h.pads.set = s
 	h.pads.mu.Unlock()
+	if h.injClosed {
+		return nil
+	}
 	if pi, ok := h.inject.(PadInjector); ok {
 		pi.SetGamepadType(s.Type)
 	}
