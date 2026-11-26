@@ -211,7 +211,9 @@ func TestSettingsHeaderStaysOneLineAtMinimumWindow(t *testing.T) {
 			if !ok || sub == "" {
 				t.Fatalf("%s: no subtitle found", name)
 			}
-			if r.H < pageSubLine || r.H > pageSubLine+1 || r.Y+r.H < pagePadTop+pageHeaderH || r.Y+r.H > pagePadTop+pageHeaderH+1 {
+			// Layout sums in float32; a millipixel is noise, not a move.
+			const eps = 1e-3
+			if r.H < pageSubLine-eps || r.H > pageSubLine+1 || r.Y+r.H < pagePadTop+pageHeaderH-eps || r.Y+r.H > pagePadTop+pageHeaderH+1 {
 				t.Errorf("%s: subtitle %.2f..%.2f (wrapped or moved), want bottom %d, height %d", name, r.Y, r.Y+r.H, pagePadTop+pageHeaderH, pageSubLine)
 			}
 			img := tt.Image()

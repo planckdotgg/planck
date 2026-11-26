@@ -45,14 +45,22 @@ const (
 	pageFirstRowH = 48
 )
 
+// pageTitle is the title and subtitle of a page header. Their boxes are
+// sized, not only their lines: a line is never shorter than its font's
+// ascent and descent, which Pango rounds to whole pixels and a fallback
+// font for a symbol can raise, and the rail aligns to this block.
+func pageTitle(c *mui.Context, title, sub string) {
+	heading(c, title, theme.TextReadout).FixedLineHeight(pageTitleLine).Height(pageTitleLine)
+	if sub != "" {
+		secondary(c, sub).SingleLine().FixedLineHeight(pageSubLine).Height(pageSubLine)
+	}
+}
+
 // pageHeader is the title block every rail screen opens with.
 func pageHeader(c *mui.Context, title, sub string, trailing func()) {
 	mui.Row(c).FillWidth().AlignItems(mui.End).Children(func() {
 		mui.Column(c).Gap(pageHeaderGap).Grow(1).Children(func() {
-			heading(c, title, theme.TextReadout).FixedLineHeight(pageTitleLine)
-			if sub != "" {
-				secondary(c, sub).SingleLine().FixedLineHeight(pageSubLine)
-			}
+			pageTitle(c, title, sub)
 		})
 		if trailing != nil {
 			trailing()
