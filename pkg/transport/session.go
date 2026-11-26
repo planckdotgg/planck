@@ -148,8 +148,12 @@ type Session struct {
 	peer     netip.AddrPort
 	havePeer bool
 	impair   *Impairer
-	txBuf    []byte
-	pingSeq  uint32
+	// train batches video datagrams into send-offload calls; it is
+	// flushed before any other datagram goes out, so sequence numbers
+	// leave in order.
+	train   trainWriter
+	txBuf   []byte
+	pingSeq uint32
 	// lastInput is the client's previous input event and when it went out,
 	// sent again ahead of the next one while loss is recent.
 	lastInput   wire.Input
@@ -291,6 +295,7 @@ func newSession(p sessionParams) (*Session, error) {
 		opener:       opener,
 		peer:         p.peer,
 		havePeer:     p.peer.IsValid(),
+		train:        newTrainWriter(p.udp),
 		txBuf:        make([]byte, p.maxDgram),
 		rxBuf:        make([]byte, 64<<10),
 		pingInterval: p.pingInterval,
@@ -470,6 +475,7 @@ func (s *Session) SendVideoFrame(info wire.VideoInfo, frame []byte) error {
 	defer s.videoMu.Unlock()
 	s.paceFrame(info, len(frame))
 	_, err := s.enc.EncodeFrame(info, frame, s.policyFor(info), s.emitVideo)
+	err = errors.Join(err, s.flushTrain())
 	s.recordSent(info.FrameID, len(frame))
 	return err
 }
@@ -485,6 +491,7 @@ func (s *Session) SendVideoSlice(info wire.VideoInfo, slice int, data []byte) er
 	// The first slice stands for the frame's size.
 	s.paceFrame(info, len(data)*max(int(info.SliceCount), 1))
 	_, err := s.enc.EncodeSlice(info, slice, data, s.policyFor(info), s.emitVideo)
+	err = errors.Join(err, s.flushTrain())
 	s.recordSent(info.FrameID, len(data))
 	return err
 }
@@ -508,10 +515,36 @@ func (s *Session) paceFrame(info wire.VideoInfo, size int) {
 	s.pacer.SetRate(r, s.pacing.BurstDatagrams*s.maxDgram)
 }
 
-// sendPaced is sendSealed after the pacer lets the datagram go.
+// sendPaced seals a video datagram into the send train once the pacer
+// lets it go. A train goes out before the pacer sleeps, and at the end of
+// each video send call.
 func (s *Session) sendPaced(pkt []byte) error {
-	s.pacer.Wait(len(pkt) + AEADTagLen)
-	return s.sendSealed(pkt)
+	if until := s.pacer.Reserve(len(pkt) + AEADTagLen); until != 0 {
+		if err := s.flushTrain(); err != nil {
+			return err
+		}
+		SleepUntilMono(until)
+	}
+	s.sealMu.Lock()
+	defer s.sealMu.Unlock()
+	if !s.havePeer {
+		return ErrNoPeer
+	}
+	sealed := s.sealer.Seal(pkt, pkt[AEADHeaderLen:])
+	if s.impair != nil {
+		return s.impairLocked(sealed)
+	}
+	n, err := s.train.add(sealed, s.peer)
+	s.stats.sent.Add(uint64(n))
+	return err
+}
+
+func (s *Session) flushTrain() error {
+	s.sealMu.Lock()
+	n, err := s.train.flush(s.peer)
+	s.sealMu.Unlock()
+	s.stats.sent.Add(uint64(n))
+	return err
 }
 
 func (s *Session) recordSent(id uint32, n int) {
@@ -685,32 +718,32 @@ func (s *Session) SendInput(in wire.Input) error {
 	return s.sealAndWriteLocked(s.txBuf[:AEADHeaderLen+len(pl)])
 }
 
-// sendSealed seals and sends a packet whose plaintext starts at
-// AEADHeaderLen and whose capacity has room for the tag.
-func (s *Session) sendSealed(pkt []byte) error {
-	s.sealMu.Lock()
-	err := s.sealAndWriteLocked(pkt)
-	s.sealMu.Unlock()
-	return err
-}
-
 func (s *Session) sealAndWriteLocked(pkt []byte) error {
 	if !s.havePeer {
 		return ErrNoPeer
 	}
 	sealed := s.sealer.Seal(pkt, pkt[AEADHeaderLen:])
 	if s.impair != nil {
-		before := s.impair.Dropped
-		err := s.impair.Send(sealed)
-		if s.impair.Dropped != before {
-			s.stats.simDrop.Add(1)
-		}
-		return err
+		return s.impairLocked(sealed)
 	}
 	return s.writeLocked(sealed)
 }
 
+func (s *Session) impairLocked(sealed []byte) error {
+	before := s.impair.Dropped
+	err := s.impair.Send(sealed)
+	if s.impair.Dropped != before {
+		s.stats.simDrop.Add(1)
+	}
+	return err
+}
+
 func (s *Session) writeLocked(sealed []byte) error {
+	n, err := s.train.flush(s.peer)
+	s.stats.sent.Add(uint64(n))
+	if err != nil {
+		return err
+	}
 	if _, err := s.udp.WriteToUDPAddrPort(sealed, s.peer); err != nil {
 		return err
 	}

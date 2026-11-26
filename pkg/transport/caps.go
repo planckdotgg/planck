@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"errors"
 	"fmt"
 	"net/netip"
 
@@ -102,12 +103,12 @@ func (s *Session) SendChunkedFrame(info wire.VideoInfo, frame []byte, ends []int
 		}
 		if _, err := s.enc.EncodeSlice(info, i, frame[lo:end], pol, s.emitVideo); err != nil {
 			s.recordSent(info.FrameID, lo)
-			return err
+			return errors.Join(err, s.flushTrain())
 		}
 		lo = end
 	}
 	s.recordSent(info.FrameID, len(frame))
-	return nil
+	return s.flushTrain()
 }
 
 func (s *Session) policyFor(info wire.VideoInfo) fec.ParityPolicy {

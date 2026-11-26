@@ -35,17 +35,28 @@ func (p *Pacer) SetRate(bytesPerSec float64, burstBytes int) {
 // wake, a gap between frames) starts again from now, not with a catch-up
 // burst.
 func (p *Pacer) Wait(n int) {
+	if until := p.Reserve(n); until != 0 {
+		SleepUntilMono(until)
+	}
+}
+
+// Reserve is Wait without the sleep: it books n bytes and returns the
+// Mono time to sleep until before they go, or 0 to send now. A sender
+// that batches packets flushes its batch before it sleeps.
+func (p *Pacer) Reserve(n int) int64 {
 	if p.nsPerByte == 0 {
-		return
+		return 0
 	}
 	now := Mono()
 	if p.next < now {
 		p.next = now
 	}
+	var until int64
 	if p.next-now > p.burstNs {
-		SleepUntilMono(p.next - p.burstNs/2)
+		until = p.next - p.burstNs/2
 	}
 	p.next += int64(float64(n) * p.nsPerByte)
+	return until
 }
 
 // Pacing spreads each video frame's datagrams over a share of the frame
