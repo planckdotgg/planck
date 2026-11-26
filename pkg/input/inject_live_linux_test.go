@@ -1,7 +1,9 @@
 package input
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -106,5 +108,52 @@ func TestLiveUinputInjector(t *testing.T) {
 	abs := readEvents(t, ptr, evdev.EvAbs, 2)
 	if len(abs) != 2 || abs[0].Code != evdev.AbsX || abs[0].Value < 65500 || abs[1].Value > 40 {
 		t.Errorf("abs %+v", abs)
+	}
+}
+
+// TestLiveXTestInjector moves the pointer on the X server of $DISPLAY and
+// reads its place back with xdotool.
+func TestLiveXTestInjector(t *testing.T) {
+	if os.Getenv("PLANCK_LIVE_INPUT_TEST") != "1" {
+		t.Skip("set PLANCK_LIVE_INPUT_TEST=1 to move the pointer")
+	}
+	if _, err := exec.LookPath("xdotool"); err != nil || os.Getenv("DISPLAY") == "" {
+		t.Skip("needs xdotool and an X server")
+	}
+	t.Setenv("PLANCK_INJECT_BACKEND", BackendXTest)
+	inj, err := NewInjector()
+	if err != nil {
+		t.Skip(err)
+	}
+	defer inj.Close()
+	locate := func() (x, y int) {
+		out, err := exec.Command("xdotool", "getmouselocation").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fmt.Sscanf(string(out), "x:%d y:%d", &x, &y); err != nil {
+			t.Fatalf("%q: %v", out, err)
+		}
+		return x, y
+	}
+	if err := inj.Inject(Event{Type: TypeMouseMoveAbs, MouseAbs: MouseMoveAbs{X: 0, Y: 0}}); err != nil {
+		t.Fatal(err)
+	}
+	if x, y := locate(); x != 0 || y != 0 {
+		t.Errorf("top-left = %d,%d", x, y)
+	}
+	if err := inj.Inject(Event{Type: TypeMouseMoveRel, MouseRel: MouseMoveRel{DX: 25, DY: 10}}); err != nil {
+		t.Fatal(err)
+	}
+	if x, y := locate(); x != 25 || y != 10 {
+		t.Errorf("after a relative move = %d,%d, want 25,10", x, y)
+	}
+	for _, k := range []bool{true, false} {
+		if err := inj.Inject(Event{Type: TypeKey, Key: KeyEvent{Usage: KeyLeftShift, Pressed: k}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := inj.Inject(Event{Type: TypeMouseWheel, Wheel: MouseWheel{DY: -WheelNotch}}); err != nil {
+		t.Fatal(err)
 	}
 }
