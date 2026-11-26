@@ -32,8 +32,8 @@ func present(surf *gpusurface.Surface, f decode.Frame) error {
 
 // watchPresents hands fn the time each picture reached the screen, where
 // the compositor tells (wp_presentation), for PaceSmooth.
-func watchPresents(surf *gpusurface.Surface, fn func(pts, submitted, presented int64)) {
-	surf.OnPresented(fn)
+func watchPresents(surf *gpusurface.Surface, fn func(pts, submitted, gpuDone, presented int64)) {
+	surf.OnPresented(func(pts, submitted, presented int64) { fn(pts, submitted, 0, presented) })
 }
 
 func screenNow() int64 { return gpusurface.Now() }

@@ -119,6 +119,14 @@ func (c *vsyncClock) deadline(now int64) (start, refresh int64, ok bool) {
 	return refresh - lead, refresh, true
 }
 
+// grid is the refresh period and a refresh time, once the clock is
+// locked.
+func (c *vsyncClock) grid() (period, anchor int64, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.period, c.anchor, c.fits >= lockFits
+}
+
 // aim records that the picture tagged tag is presented for refresh at.
 func (c *vsyncClock) aim(tag, at int64) {
 	c.mu.Lock()

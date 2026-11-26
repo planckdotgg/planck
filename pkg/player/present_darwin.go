@@ -31,8 +31,8 @@ func present(surf *gpusurface.Surface, f decode.Frame) error {
 
 // watchPresents hands fn the time each picture reached the screen, the
 // refresh times PaceSmooth follows.
-func watchPresents(surf *gpusurface.Surface, fn func(pts, submitted, presented int64)) {
-	surf.OnPresented(fn)
+func watchPresents(surf *gpusurface.Surface, fn func(pts, submitted, gpuDone, presented int64)) {
+	surf.OnPresentedGPU(fn)
 }
 
 func screenNow() int64 { return gpusurface.Now() }

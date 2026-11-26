@@ -21,6 +21,7 @@ import (
 	"github.com/planckdotgg/planck/internal/rtprio"
 	"github.com/planckdotgg/planck/pkg/capture"
 	"github.com/planckdotgg/planck/pkg/decode"
+	"github.com/planckdotgg/planck/pkg/phaselock"
 )
 
 // Timing is one picture's way through the player.
@@ -97,6 +98,10 @@ type Player struct {
 	glassObs atomic.Pointer[Observer]
 	// backlog counts the refreshes in a row a picture was left waiting.
 	backlog int
+	// ready holds when the last pictures were ready to present, by PTS,
+	// and phase measures them against the display's refreshes.
+	ready [readyRing]struct{ pts, at int64 }
+	phase phaselock.Estimator
 
 	hud hud
 }
@@ -108,7 +113,7 @@ func New(surf *gpusurface.Surface, dec decode.Decoder, keep int) *Player {
 	p := startWith(dec, keep, func(f decode.Frame) error { return present(surf, f) }, surf.Resize, screenNow)
 	p.surf = surf
 	p.hud.sink = surf
-	watchPresents(surf, p.onScreen)
+	watchPresents(surf, p.onScreenGPU)
 	return p
 }
 
@@ -143,17 +148,41 @@ func (p *Player) SetPacing(m Pacing) {
 	}
 }
 
+// readyRing bounds the pictures whose ready time is kept until they
+// reach the screen.
+const readyRing = 64
+
 // onScreen takes the time a picture presented at submitted reached the
 // screen, 0 when a newer one replaced it first.
 func (p *Player) onScreen(pts, submitted, presented int64) {
+	p.onScreenGPU(pts, submitted, 0, presented)
+}
+
+// onScreenGPU is onScreen with the time the GPU finished drawing the
+// picture, 0 where the platform does not tell.
+func (p *Player) onScreenGPU(pts, submitted, gpuDone, presented int64) {
 	if presented == 0 {
 		return
 	}
 	p.vsync.observe(pts, presented)
+	if period, anchor, ok := p.vsync.grid(); ok {
+		ready := submitted
+		p.mu.Lock()
+		if r := p.ready[uint64(pts)%readyRing]; r.pts == pts && r.at != 0 && r.at <= submitted {
+			ready = r.at
+		}
+		p.mu.Unlock()
+		p.phase.Observe(phaselock.Sample{Frame: uint32(pts), Ready: ready, GPUDone: gpuDone, Glass: presented}, phaselock.Grid{Period: period, Anchor: anchor})
+	}
 	if o := p.glassObs.Load(); o != nil {
 		(*o).Glass(pts, time.Duration(presented-submitted), time.Duration(p.now()-presented))
 	}
 }
+
+// Phase reports how the last pictures that reached the screen lined up
+// with its refreshes, and whether it showed them directly: see
+// phaselock.Estimator. Call it at a steady rate, as a few times a second.
+func (p *Player) Phase() phaselock.Report { return p.phase.Report() }
 
 // smooth reports whether pictures wait for their refresh now.
 func (p *Player) smooth() bool {
@@ -211,6 +240,7 @@ func (p *Player) Submit(au []byte, pts int64) (Timing, error) {
 	}
 	p.queue[p.queued] = f
 	p.queued++
+	p.ready[uint64(f.PTS)%readyRing] = struct{ pts, at int64 }{f.PTS, p.now()}
 	p.stats.Pictures++
 	p.stats.Superseded += n
 	p.mu.Unlock()

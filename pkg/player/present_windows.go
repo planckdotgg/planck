@@ -30,6 +30,6 @@ func present(surf *gpusurface.Surface, f decode.Frame) error {
 // observeGlass has nothing to report: the surface cannot tell when a
 // frame reached the screen.
 // watchPresents: no screen times here, so PaceSmooth is PaceLowestLatency.
-func watchPresents(*gpusurface.Surface, func(pts, submitted, presented int64)) {}
+func watchPresents(*gpusurface.Surface, func(pts, submitted, gpuDone, presented int64)) {}
 
 func screenNow() int64 { return monoNow() }
