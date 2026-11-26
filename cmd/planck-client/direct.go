@@ -10,6 +10,7 @@ import (
 	"github.com/egoist/mygo"
 
 	"github.com/planckdotgg/planck/pkg/defaults"
+	"github.com/planckdotgg/planck/pkg/player"
 )
 
 // directSettle is the least time between two swaps of the present path,
@@ -93,8 +94,13 @@ func (v *videoView) applyDirect() {
 }
 
 // SetProfile takes the session's resolved profile: whether direct display
-// is allowed.
+// is allowed, and the frame pacing.
 func (s *surfaceSink) SetProfile(p *defaults.ResolvedProfile) {
+	pacing := player.PaceLowestLatency
+	if p.VSync {
+		pacing = player.PaceSmooth
+	}
+	s.p.SetPacing(pacing)
 	s.v.mode.allowed.Store(p.DirectDisplay)
 	mygo.RunOnMain(s.v.applyDirect)
 }

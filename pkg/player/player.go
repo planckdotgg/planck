@@ -13,6 +13,7 @@ package player
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo/gpusurface"
@@ -68,8 +69,12 @@ type Player struct {
 	format        capture.Format
 	width, height int
 
-	mu      sync.Mutex
-	mailbox decode.Frame
+	mu sync.Mutex
+	// queue holds the pictures not shown yet, oldest first: one, the
+	// mailbox, or with PaceSmooth up to smoothQueue waiting for their
+	// refresh.
+	queue   [smoothQueue]decode.Frame
+	queued  int
 	closed  bool
 	stats   Stats
 	timings []Timing
@@ -84,6 +89,15 @@ type Player struct {
 	// decoder until a newer one replaces it.
 	shown decode.Frame
 
+	pacing atomic.Uint32
+	vsync  vsyncClock
+	// now reads the clock the screen times are on.
+	now func() int64
+	// glassObs sees the screen times, on the platform's thread.
+	glassObs atomic.Pointer[Observer]
+	// backlog counts the refreshes in a row a picture was left waiting.
+	backlog int
+
 	hud hud
 }
 
@@ -91,14 +105,23 @@ type Player struct {
 // Open), in surf, from a present thread of its own. It keeps the timing of
 // the last keep pictures shown.
 func New(surf *gpusurface.Surface, dec decode.Decoder, keep int) *Player {
-	p := start(dec, keep, func(f decode.Frame) error { return present(surf, f) }, surf.Resize)
+	p := startWith(dec, keep, func(f decode.Frame) error { return present(surf, f) }, surf.Resize, screenNow)
 	p.surf = surf
 	p.hud.sink = surf
+	watchPresents(surf, p.onScreen)
 	return p
 }
 
 func start(dec decode.Decoder, keep int, show func(decode.Frame) error, resize func(w, h int) error) *Player {
-	p := &Player{dec: dec, show: show, resize: resize, timings: make([]Timing, 0, keep),
+	return startWith(dec, keep, show, resize, monoNow)
+}
+
+var epoch = time.Now()
+
+func monoNow() int64 { return int64(time.Since(epoch)) }
+
+func startWith(dec decode.Decoder, keep int, show func(decode.Frame) error, resize func(w, h int) error, now func() int64) *Player {
+	p := &Player{dec: dec, show: show, resize: resize, now: now, timings: make([]Timing, 0, keep),
 		wake: make(chan struct{}, 1), calls: make(chan func()), quit: make(chan struct{}), done: make(chan struct{})}
 	go p.presentLoop()
 	return p
@@ -108,9 +131,37 @@ func start(dec decode.Decoder, keep int, show func(decode.Frame) error, resize f
 // the first Submit.
 func (p *Player) SetObserver(obs Observer) {
 	p.obs = obs
-	if p.surf != nil {
-		observeGlass(p.surf, obs)
+	p.glassObs.Store(&obs)
+}
+
+// SetPacing chooses when pictures are shown; PaceLowestLatency at first.
+func (p *Player) SetPacing(m Pacing) {
+	p.pacing.Store(uint32(m))
+	select {
+	case p.wake <- struct{}{}:
+	default:
 	}
+}
+
+// onScreen takes the time a picture presented at submitted reached the
+// screen, 0 when a newer one replaced it first.
+func (p *Player) onScreen(pts, submitted, presented int64) {
+	if presented == 0 {
+		return
+	}
+	p.vsync.observe(pts, presented)
+	if o := p.glassObs.Load(); o != nil {
+		(*o).Glass(pts, time.Duration(presented-submitted), time.Duration(p.now()-presented))
+	}
+}
+
+// smooth reports whether pictures wait for their refresh now.
+func (p *Player) smooth() bool {
+	if Pacing(p.pacing.Load()) != PaceSmooth {
+		return false
+	}
+	_, _, ok := p.vsync.deadline(p.now())
+	return ok
 }
 
 // Open makes the platform's hardware decoder on surf's device and a player
@@ -142,21 +193,29 @@ func (p *Player) Submit(au []byte, pts int64) (Timing, error) {
 		p.stats.FormatChanges++
 		p.mu.Unlock()
 	}
+	room := 1
+	if p.smooth() {
+		room = smoothQueue
+	}
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
 		p.dec.Release(f)
 		return Timing{PTS: pts}, errClosed
 	}
-	old := p.mailbox
-	p.mailbox = f
-	p.stats.Pictures++
-	if old.Surface != 0 {
-		p.stats.Superseded++
+	var old [smoothQueue]decode.Frame
+	n := 0
+	for p.queued >= room {
+		old[n] = p.popLocked()
+		n++
 	}
+	p.queue[p.queued] = f
+	p.queued++
+	p.stats.Pictures++
+	p.stats.Superseded += n
 	p.mu.Unlock()
-	if old.Surface != 0 {
-		p.dec.Release(old)
+	for i := range n {
+		p.dec.Release(old[i])
 	}
 	select {
 	case p.wake <- struct{}{}:
@@ -167,33 +226,116 @@ func (p *Player) Submit(au []byte, pts int64) (Timing, error) {
 
 var errClosed = errors.New("player: closed")
 
+// popLocked takes the oldest picture out of the queue.
+func (p *Player) popLocked() decode.Frame {
+	f := p.queue[0]
+	copy(p.queue[:], p.queue[1:p.queued])
+	p.queued--
+	p.queue[p.queued] = decode.Frame{}
+	return f
+}
+
 func (p *Player) presentLoop() {
 	defer close(p.done)
 	_ = rtprio.Boost()
+	tick := time.NewTimer(time.Hour)
+	tick.Stop()
+	var refresh int64
 	for {
+		// With PaceSmooth and a picture waiting, the next present starts
+		// at its refresh's deadline; otherwise at once.
+		var at <-chan time.Time
+		p.mu.Lock()
+		waiting := p.queued
+		p.mu.Unlock()
+		if waiting > 0 && Pacing(p.pacing.Load()) == PaceSmooth {
+			if start, r, ok := p.vsync.deadline(p.now()); ok {
+				refresh = r
+				tick.Reset(time.Duration(start - p.now()))
+				at = tick.C
+			}
+		}
 		select {
 		case <-p.quit:
+			tick.Stop()
 			p.mu.Lock()
 			p.closed = true
-			f := p.mailbox
-			p.mailbox = decode.Frame{}
+			var left [smoothQueue]decode.Frame
+			n := copy(left[:], p.queue[:p.queued])
+			p.queue, p.queued = [smoothQueue]decode.Frame{}, 0
 			p.mu.Unlock()
-			p.release(&f)
+			for i := range n {
+				p.release(&left[i])
+			}
 			p.release(&p.shown)
 			return
 		case fn := <-p.calls:
+			tick.Stop()
 			fn()
+		case <-at:
+			p.presentOldest(refresh)
 		case <-p.wake:
-			p.mu.Lock()
-			f := p.mailbox
-			p.mailbox = decode.Frame{}
-			p.mu.Unlock()
-			if f.Surface != 0 {
-				p.present(f)
-				p.hudResized()
+			// With PaceSmooth the loop sets the new picture's deadline.
+			tick.Stop()
+			if !p.smooth() {
+				p.presentNewest()
 			}
 		}
 	}
+}
+
+// presentNewest shows the newest picture and gives back older ones.
+func (p *Player) presentNewest() {
+	p.mu.Lock()
+	var old [smoothQueue]decode.Frame
+	n := 0
+	for p.queued > 1 {
+		old[n] = p.popLocked()
+		n++
+	}
+	var f decode.Frame
+	if p.queued == 1 {
+		f = p.popLocked()
+	}
+	p.stats.Superseded += n
+	p.backlog = 0
+	p.mu.Unlock()
+	for i := range n {
+		p.dec.Release(old[i])
+	}
+	if f.Surface != 0 {
+		p.present(f)
+		p.hudResized()
+	}
+}
+
+// presentOldest shows the oldest waiting picture at refresh, and drops one
+// more after catchUpTicks refreshes in a row left one waiting.
+func (p *Player) presentOldest(refresh int64) {
+	p.mu.Lock()
+	if p.queued == 0 {
+		p.mu.Unlock()
+		return
+	}
+	f := p.popLocked()
+	var drop decode.Frame
+	if p.queued > 0 {
+		p.backlog++
+		if p.backlog >= catchUpTicks {
+			drop = p.popLocked()
+			p.stats.Superseded++
+			p.backlog = 0
+		}
+	} else {
+		p.backlog = 0
+	}
+	p.mu.Unlock()
+	if drop.Surface != 0 {
+		p.dec.Release(drop)
+	}
+	p.vsync.aim(f.PTS, refresh)
+	p.present(f)
+	p.hudResized()
 }
 
 func (p *Player) present(f decode.Frame) {

@@ -3,8 +3,6 @@
 package player
 
 import (
-	"time"
-
 	"github.com/egoist/mygo/gpusurface"
 
 	"github.com/planckdotgg/planck/pkg/decode"
@@ -31,11 +29,10 @@ func present(surf *gpusurface.Surface, f decode.Frame) error {
 	return surf.PresentTagged(f.Surface, f.PTS)
 }
 
-func observeGlass(surf *gpusurface.Surface, obs Observer) {
-	surf.OnPresented(func(pts, submitted, presented int64) {
-		if presented == 0 {
-			return
-		}
-		obs.Glass(pts, time.Duration(presented-submitted), time.Duration(gpusurface.Now()-presented))
-	})
+// watchPresents hands fn the time each picture reached the screen, the
+// refresh times PaceSmooth follows.
+func watchPresents(surf *gpusurface.Surface, fn func(pts, submitted, presented int64)) {
+	surf.OnPresented(fn)
 }
+
+func screenNow() int64 { return gpusurface.Now() }
