@@ -26,15 +26,20 @@ import (
 type glassByPTS struct {
 	mu    sync.Mutex
 	glass map[int64]float64
-	errs  int
+	// present is how long each frame's present call took, mostly the wait
+	// for a drawable.
+	present map[int64]float64
+	errs    int
 }
 
-func (o *glassByPTS) Presented(_ player.Timing, err error) {
+func (o *glassByPTS) Presented(t player.Timing, err error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	if err != nil {
-		o.mu.Lock()
 		o.errs++
-		o.mu.Unlock()
+		return
 	}
+	o.present[t.PTS] = float64(t.Present) / 1e6
 }
 
 func (o *glassByPTS) Glass(pts int64, glass, _ time.Duration) {
@@ -196,7 +201,7 @@ func TestLiveDirectGlass(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	obs := &glassByPTS{glass: map[int64]float64{}}
+	obs := &glassByPTS{glass: map[int64]float64{}, present: map[int64]float64{}}
 	p.SetObserver(obs)
 
 	shots := os.Getenv("PLANCK_LIVE_SHOTS")
@@ -231,23 +236,27 @@ func TestLiveDirectGlass(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 		obs.mu.Lock()
-		var g []float64
+		var g, pr []float64
 		for pts := base + settle; pts < base+int64(per); pts++ {
 			if v, ok := obs.glass[pts]; ok {
 				g = append(g, v)
 			}
+			if v, ok := obs.present[pts]; ok {
+				pr = append(pr, v)
+			}
 		}
 		obs.mu.Unlock()
 		slices.Sort(g)
-		pct := func(q float64) float64 {
-			if len(g) == 0 {
+		slices.Sort(pr)
+		pct := func(v []float64, q float64) float64 {
+			if len(v) == 0 {
 				return 0
 			}
-			return g[min(len(g)-1, int(q*float64(len(g))))]
+			return v[min(len(v)-1, int(q*float64(len(v))))]
 		}
-		p50[ph.name] = pct(0.5)
-		t.Logf("%-11s %4d of %d frames reached glass: present to glass p50 %.2f p95 %.2f p99 %.2f ms",
-			ph.name, len(g), n, pct(0.5), pct(0.95), pct(0.99))
+		p50[ph.name] = pct(g, 0.5)
+		t.Logf("%-11s %4d of %d frames reached glass: present to glass p50 %.2f p95 %.2f p99 %.2f ms; present call p50 %.2f p99 %.2f ms",
+			ph.name, len(g), n, pct(g, 0.5), pct(g, 0.95), pct(g, 0.99), pct(pr, 0.5), pct(pr, 0.99))
 	}
 	onMain(func() { err = surf.SetDirect(false) })
 	if err := p.Close(); err != nil {
