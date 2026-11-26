@@ -112,6 +112,13 @@ func New(opts Options) (*Surface, error) {
 	return s, nil
 }
 
+// Accepts reports whether the surface shows DMA-BUFs of fourcc and
+// modifier as they are, which only a Wayland compositor with
+// zwp_linux_dmabuf_v1 does; others need the frames' planes in memory.
+func (s *Surface) Accepts(fourcc uint32, modifier uint64) bool {
+	return s.way != nil && s.way.dmabuf != 0 && s.way.takesDMABuf(fourcc, modifier)
+}
+
 // Wayland reports whether the surface shows frames in a subsurface of its
 // own; otherwise it is in picture mode (Bitmap).
 func (s *Surface) Wayland() bool { return s.way != nil }

@@ -14,6 +14,7 @@ import (
 	"github.com/planckdotgg/planck/pkg/decode"
 	"github.com/planckdotgg/planck/pkg/decode/internal/hostbuf"
 	"github.com/planckdotgg/planck/pkg/encode"
+	"github.com/planckdotgg/planck/pkg/gpu"
 )
 
 // picParamHEVC is VAPictureParameterBufferHEVC (604 bytes).
@@ -855,4 +856,16 @@ func closeFDs(d *capture.DMABuf) {
 		}
 	}
 	*d = capture.DMABuf{}
+}
+
+// HEVCProfiles reports whether a render node decodes HEVC Main, and Main
+// 10.
+func HEVCProfiles() (main, main10 bool) {
+	d, err := openDisplay(gpu.VendorUnknown)
+	if err != nil {
+		return false, false
+	}
+	defer d.close()
+	p := d.profiles()
+	return p[vaProfileHEVCMain], p[vaProfileHEVCMain10]
 }
