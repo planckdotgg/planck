@@ -2,7 +2,8 @@
 // with the hosts, pairing and settings screens and the stream view. With
 // -headless it connects without a window, decodes on the GPU for a while
 // and prints a latency and throughput summary, for benchmarks and
-// end-to-end tests against a live planck-host.
+// end-to-end tests against a live planck-host; with -calibrate it
+// measures the route to a host and picks the stream settings for it.
 package main
 
 import (
@@ -42,6 +43,11 @@ const (
 type options struct {
 	configDir string
 	name      string
+
+	// calibrate measures the route to the host and picks its stream
+	// settings; apply keeps them in client.json, and reset forgets the
+	// ones kept.
+	calibrate, apply, reset bool
 
 	headless bool
 	connect  string
@@ -85,9 +91,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, "planck-client:", err)
 		os.Exit(2)
 	}
-	if o.headless {
+	switch {
+	case o.calibrate || o.reset:
+		err = runCalibrate(o, os.Stdout)
+	case o.headless:
 		err = runHeadless(o, os.Stdout)
-	} else {
+	default:
 		err = runGUI(o)
 	}
 	if err != nil {
@@ -105,6 +114,9 @@ func parseOptions(args []string, out io.Writer) (options, error) {
 	fs.StringVar(&o.configDir, "config", "", "config directory (default: the user config dir /planck)")
 	fs.StringVar(&o.name, "name", "", "device name hosts pair this client under for this run (default: the one kept in Settings, or the machine name)")
 	fs.BoolVar(&o.headless, "headless", false, "connect without a window, decode for -duration and print a summary")
+	fs.BoolVar(&o.calibrate, "calibrate", false, "connect without a window, calibrate the route to the host (-connect or -discover) for about 40 s and print what it measured and picked")
+	fs.BoolVar(&o.apply, "apply", false, "calibrate: keep the result in client.json, so streams on this route take it where their settings are auto")
+	fs.BoolVar(&o.reset, "reset", false, "forget the calibration kept for the host (-connect or -discover) on -path-mode's routes, every route with auto; with -calibrate, before it runs")
 	fs.StringVar(&o.connect, "connect", "", "headless: host address, host[:port]")
 	fs.StringVar(&o.discover, "discover", "", "headless: find the host by name or host ID on the LAN and tailnet, and race its paths")
 	discoveryPort := fs.Uint("discovery-port", discovery.DefaultPort, "the hosts' discovery port, listened on for LAN beacons and probed on the LAN and the tailnet")
@@ -204,7 +216,11 @@ func parseOptions(args []string, out io.Writer) (options, error) {
 		return o, errors.New("-fps and -bitrate must not be negative, -slices 0 to 16")
 	case o.noAudio && o.silentAudio:
 		return o, errors.New("-no-audio and -silent-audio exclude each other")
-	case !o.headless && (o.connect != "" || o.discover != ""):
+	case o.apply && !o.calibrate:
+		return o, errors.New("-apply needs -calibrate")
+	case (o.calibrate || o.reset) && (o.connect == "") == (o.discover == ""):
+		return o, errors.New("-calibrate and -reset need one of -connect or -discover")
+	case !o.headless && !o.calibrate && !o.reset && (o.connect != "" || o.discover != ""):
 		return o, errors.New("-connect and -discover need -headless")
 	case o.headless && (o.connect == "") == (o.discover == ""):
 		return o, errors.New("-headless needs one of -connect or -discover")
