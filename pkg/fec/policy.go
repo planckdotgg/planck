@@ -112,10 +112,13 @@ func (p *Policy) Parity(data int) int {
 // BurstFloor is the parity a block carries whatever the loss estimate, for
 // the bursts a clean path still has: a NIC, switch or socket queue that
 // overflows drops consecutive datagrams, which an estimate of independent
-// loss does not foresee. A lost keyframe costs a round trip and the largest
-// frame again; a block of a multi-block slice, interleaved on the wire,
-// takes a third of a six-datagram burst. Small P frames stay bare: one lost
-// costs a reference invalidation, not a keyframe.
+// loss does not foresee, and on a clean LAN the estimate is back to zero
+// a sixth of a second after each loss. A lost keyframe costs a round trip
+// and the largest frame again; a lost P frame a reference invalidation and
+// a few frames skipped. One block with k parity rebuilds any k lost, so a
+// P frame carries enough for a six-datagram burst from 64 data shards and
+// four from 32; smaller ones stay bare. A block of a multi-block slice,
+// interleaved on the wire, takes a third of a six-datagram burst.
 func BurstFloor(data, blocks int, keyframe bool) int {
 	switch {
 	case keyframe && data >= 16:
@@ -125,7 +128,9 @@ func BurstFloor(data, blocks int, keyframe bool) int {
 	case blocks > 1:
 		return max(3, ceilPercent(data, 3))
 	case data >= 64:
-		return 2
+		return 6
+	case data >= 32:
+		return 4
 	}
 	return 0
 }

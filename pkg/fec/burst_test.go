@@ -69,3 +69,33 @@ func TestBlocksInterleaveOnTheWire(t *testing.T) {
 		prev = h
 	}
 }
+
+// TestSingleBlockPFramesSurviveBurst: on a clean path a one-block P frame
+// carries parity for a burst of consecutive datagrams: six from 64 data
+// shards (a 5120x1440 120 fps P frame is 60-130) and four from 32, at
+// every place in the frame. With two parity shards from 64 and none below,
+// live P frames lost to 4-6 datagram bursts went unrepaired.
+func TestSingleBlockPFramesSurviveBurst(t *testing.T) {
+	for _, tc := range []struct{ data, burst int }{{32, 4}, {63, 4}, {64, 6}, {90, 6}, {128, 6}} {
+		frame := frameBytes(tc.data*testShard-17, uint64(tc.data))
+		enc := NewEncoder(testShard, 0, 0)
+		var pk packets
+		if _, err := enc.EncodeFrame(wire.VideoInfo{FrameID: 1, SliceCount: 1}, frame, NewPolicy(), pk.emit(0)); err != nil {
+			t.Fatal(err)
+		}
+		for start := 0; start+tc.burst <= len(pk.bufs); start++ {
+			dec := NewDecoder(testShard, nil)
+			for i, b := range pk.bufs {
+				if i >= start && i < start+tc.burst {
+					continue
+				}
+				if _, err := dec.Push(b); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got, ok := dec.AppendFrame(nil, 1); !ok || !bytes.Equal(got, frame) {
+				t.Fatalf("%d data shards, %d datagrams: a burst of %d at %d lost the frame", tc.data, len(pk.bufs), tc.burst, start)
+			}
+		}
+	}
+}
