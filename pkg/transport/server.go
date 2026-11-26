@@ -341,7 +341,7 @@ func (sv *Server) handshake(parent context.Context, conn *quic.Conn) (*Session, 
 	if err != nil {
 		return nil, err
 	}
-	udp, err := net.ListenUDP("udp", ua)
+	udp, err := listenUDP(ua, remote.Addr())
 	if err != nil {
 		return nil, err
 	}

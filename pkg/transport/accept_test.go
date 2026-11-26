@@ -163,3 +163,20 @@ func TestDialAttemptTimeoutIsUnanswered(t *testing.T) {
 		t.Fatalf("dial with the caller's context done: %v; want the caller's error, not ErrUnanswered", err)
 	}
 }
+
+// TestDialBesideLoopbackSockets: a client connects and brings up media
+// while many sockets hold ports on 127.0.0.1, as other hosts and tests do.
+// macOS gives a dual-stack socket an ephemeral port one of them holds, and
+// that one then takes every reply.
+func TestDialBesideLoopbackSockets(t *testing.T) {
+	for range 3000 {
+		c, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { c.Close() })
+	}
+	for range 10 {
+		newPair(t, pairOpts{client: func(c *ClientConfig) { c.HandshakeTimeout = 3 * time.Second }})
+	}
+}
