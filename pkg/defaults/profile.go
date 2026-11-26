@@ -54,6 +54,9 @@ type ResolvedProfile struct {
 
 	DirectDisplay bool `json:"directDisplay"` // allowed; the client applies it only in full screen with the drawer closed
 	VSync         bool `json:"vsync"`
+	// PhaseLock: the client reports its display's phase and the host
+	// steers its frames by it, where its source can move them.
+	PhaseLock bool `json:"phaseLock,omitempty"`
 
 	FEC FECProfile `json:"fec"`
 

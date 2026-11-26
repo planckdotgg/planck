@@ -59,3 +59,22 @@ func TestValidate(t *testing.T) {
 		}
 	}
 }
+
+func TestPhaseLockOverride(t *testing.T) {
+	for _, c := range []struct {
+		o    Toggle
+		want bool
+	}{{"", true}, {ToggleOn, true}, {ToggleOff, false}} {
+		p := Resolve(bigboi(), m5Pro(), lan, UserOverrides{PhaseLock: c.o})
+		d := decision(p, "phaseLock")
+		if p.PhaseLock != c.want || d.Value != onOff(c.want) {
+			t.Errorf("phaseLock %q: %v (decision %+v), want %v", c.o, p.PhaseLock, d, c.want)
+		}
+	}
+	if err := (UserOverrides{PhaseLock: "maybe"}).Validate(); err == nil {
+		t.Error("phaseLock maybe validated")
+	}
+	if got := Merge(UserOverrides{PhaseLock: ToggleOff}, UserOverrides{}).PhaseLock; got != ToggleOff {
+		t.Errorf("an auto top replaced phaseLock off with %q", got)
+	}
+}

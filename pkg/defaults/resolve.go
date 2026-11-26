@@ -996,6 +996,13 @@ func (r *resolver) present() {
 		why = "smooth pacing over the route's jitter"
 	}
 	r.decide("vsync", onOff(r.p.VSync), src, why)
+	src = r.source(func(o UserOverrides) string { return string(o.PhaseLock) })
+	r.p.PhaseLock = r.o.PhaseLock != ToggleOff
+	why = "frames reach the client just before its refresh, where the host's source can move them"
+	if src != SourceAuto {
+		why = "override"
+	}
+	r.decide("phaseLock", onOff(r.p.PhaseLock), src, why)
 }
 
 // 11. FEC.

@@ -66,7 +66,10 @@ type UserOverrides struct {
 	NVENC2EngineSplit  Toggle     `json:"nvenc2EngineSplit,omitempty"`
 	MetalDirectDisplay Toggle     `json:"metalDirectDisplay,omitempty"`
 	VSyncMode          Toggle     `json:"vsyncMode,omitempty"` // auto = off
-	RoutePolicy        RoutePref  `json:"routePolicy,omitempty"`
+	// PhaseLock lets the host move its frames' phase so that they reach
+	// the client a little before its display refreshes (pkg/phaselock).
+	PhaseLock   Toggle    `json:"phaseLock,omitempty"` // auto = on
+	RoutePolicy RoutePref `json:"routePolicy,omitempty"`
 	// Display is the host display to capture, by HostDisplay.ID; "" lets
 	// the host choose. Picking one streams that physical display, not a
 	// virtual one.
@@ -111,6 +114,7 @@ func (o UserOverrides) Validate() error {
 		{"nvenc2EngineSplit", string(o.NVENC2EngineSplit), togglePrefs},
 		{"metalDirectDisplay", string(o.MetalDirectDisplay), togglePrefs},
 		{"vsyncMode", string(o.VSyncMode), togglePrefs},
+		{"phaseLock", string(o.PhaseLock), togglePrefs},
 		{"routePolicy", string(o.RoutePolicy), routePrefs},
 		{"hdr10", string(o.HDR10), hdrPrefs},
 	} {
@@ -148,6 +152,7 @@ func (o UserOverrides) Normalize() UserOverrides {
 	norm((*string)(&o.NVENC2EngineSplit))
 	norm((*string)(&o.MetalDirectDisplay))
 	norm((*string)(&o.VSyncMode))
+	norm((*string)(&o.PhaseLock))
 	norm((*string)(&o.RoutePolicy))
 	norm((*string)(&o.HDR10))
 	return o
@@ -177,6 +182,7 @@ func Merge(base, top UserOverrides) UserOverrides {
 	pick((*string)(&base.NVENC2EngineSplit), (*string)(&top.NVENC2EngineSplit))
 	pick((*string)(&base.MetalDirectDisplay), (*string)(&top.MetalDirectDisplay))
 	pick((*string)(&base.VSyncMode), (*string)(&top.VSyncMode))
+	pick((*string)(&base.PhaseLock), (*string)(&top.PhaseLock))
 	pick((*string)(&base.RoutePolicy), (*string)(&top.RoutePolicy))
 	pick(&base.Display, &top.Display)
 	pick((*string)(&base.HDR10), (*string)(&top.HDR10))
