@@ -130,6 +130,9 @@ func newStream(h *Host, sess *transport.Session) *stream {
 	if prof != nil {
 		st.profile = prof
 		st.params = paramsFromProfile(st.params, prof, sess.ShardSize())
+		if prof.Route == defaults.RouteLAN {
+			sess.SetPacing(transport.LANPacing(prof.LinkMbps))
+		}
 		var cc clientCaps
 		if json.Unmarshal(sess.PeerCapabilities(), &cc) == nil {
 			st.params.ScalePct = scalePercent(cc.Client.Display.Scale)

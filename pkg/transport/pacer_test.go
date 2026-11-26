@@ -120,3 +120,21 @@ func BenchmarkPacerWait(b *testing.B) {
 		p.Wait(pacedDatagram)
 	}
 }
+
+// TestLANPacingFollowsTheLink: on a LAN a frame goes out at no less than
+// 80% of the slowest link, however small; 1 Gbit/s when it is unknown.
+func TestLANPacingFollowsTheLink(t *testing.T) {
+	for _, tc := range []struct {
+		link int
+		want float64 // Mbit/s
+	}{{2500, 2000}, {1000, 800}, {0, 800}} {
+		got := LANPacing(tc.link).rate(50_000, false, 120, 48_000) * 8 / 1e6
+		if got < tc.want*0.99 || got > tc.want*1.01 {
+			t.Errorf("link %d Mbit/s: a 50 KB frame paced at %.0f Mbit/s, want %.0f", tc.link, got, tc.want)
+		}
+	}
+	// A frame too big for the link's share of its interval goes faster.
+	if got := LANPacing(1000).rate(700_000, true, 120, 200_000) * 8 / 1e6; got < 900 {
+		t.Errorf("a 700 KB keyframe at 120 fps on 1 Gbit/s paced at %.0f Mbit/s", got)
+	}
+}

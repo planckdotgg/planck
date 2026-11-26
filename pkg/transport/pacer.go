@@ -60,8 +60,29 @@ type Pacing struct {
 	// MinRate is a floor on the pacing rate, as a multiple of the rate
 	// controller's target, so small frames are not stretched out.
 	MinRate float64
+	// LinkMbps, on a LAN path, is the slowest link on it: frames go out at
+	// no less than linkShare of it, which only spreads them where the
+	// sender's link is faster than the receiver's. Over Tailscale and
+	// relays the path's capacity is not a link's; leave it 0.
+	LinkMbps int
 	// BurstDatagrams go back to back before pacing starts.
 	BurstDatagrams int
+}
+
+// linkShare of a LAN path's slowest link is the slowest a frame goes out:
+// spread over the frame interval alone, a 1080p frame of 50 KB took 2.6
+// ms that line rate sends in a fifth of one.
+const linkShare = 0.8
+
+// LANPacing is DefaultPacing on a LAN whose slowest link is linkMbps, or
+// 1 Gbit/s when not known.
+func LANPacing(linkMbps int) Pacing {
+	p := DefaultPacing
+	p.LinkMbps = linkMbps
+	if p.LinkMbps <= 0 {
+		p.LinkMbps = 1000
+	}
+	return p
 }
 
 // DefaultPacing adds a P frame at most a third of its interval (2.8 ms at
@@ -82,5 +103,5 @@ func (pc Pacing) rate(size int, keyframe bool, fps, targetKbps int) float64 {
 	// Parity and headers add about a tenth on the wire.
 	wire := float64(size) * 1.1
 	r := wire * float64(fps) / share
-	return max(r, pc.MinRate*float64(targetKbps)*1000/8)
+	return max(r, pc.MinRate*float64(targetKbps)*1000/8, linkShare*float64(pc.LinkMbps)*1e6/8)
 }
