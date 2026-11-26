@@ -141,3 +141,29 @@ func TestLANPacingFollowsTheLink(t *testing.T) {
 		t.Errorf("a 700 KB keyframe at 120 fps on 1 Gbit/s paced at %.0f Mbit/s", got)
 	}
 }
+
+// TestReceiveQueueSpreadsBigFrames: with a receive queue, a frame that
+// fits it keeps the LAN rate and a bigger one is spread so the excess
+// arrives no faster than the queue's drain.
+func TestReceiveQueueSpreadsBigFrames(t *testing.T) {
+	lan := LANPacing(2500)
+	mac := lan
+	mac.Queue = MacReceiveQueue
+	if a, b := lan.rate(140_000, false, 120, 212_000), mac.rate(140_000, false, 120, 212_000); a != b {
+		t.Fatalf("a 140 KB frame that fits the queue paced at %.0f Mbit/s, want the LAN %.0f", b*8/1e6, a*8/1e6)
+	}
+	for _, size := range []int{240_000, 300_000, 700_000} {
+		for _, key := range []bool{false, true} {
+			r := mac.rate(size, key, 120, 212_000)
+			wire := float64(size) * 1.1
+			excess := wire - float64(MacReceiveQueue.Bytes)
+			drain := float64(MacReceiveQueue.DrainMbps) * 1e6 / 8
+			if spread, need := wire/r, excess/drain; spread < need*0.999 {
+				t.Errorf("%d KB keyframe %v: spread over %.2f ms, the excess needs %.2f", size/1000, key, spread*1e3, need*1e3)
+			}
+			if lanRate := lan.rate(size, key, 120, 212_000); r >= lanRate {
+				t.Errorf("%d KB keyframe %v: %.0f Mbit/s, not under the LAN %.0f", size/1000, key, r*8/1e6, lanRate*8/1e6)
+			}
+		}
+	}
+}

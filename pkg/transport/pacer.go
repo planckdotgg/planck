@@ -78,7 +78,26 @@ type Pacing struct {
 	LinkMbps int
 	// BurstDatagrams go back to back before pacing starts.
 	BurstDatagrams int
+	// Queue, when set, is the receiver's path below its socket: a frame
+	// bigger than it is spread so the queue drains as it fills.
+	Queue ReceiveQueue
 }
+
+// ReceiveQueue is a receiver whose path below the socket holds Bytes and
+// at times drains them at no more than DrainMbps: a frame of Bytes plus x
+// is spread over at least the time DrainMbps takes to carry x, or what
+// does not fit is dropped.
+type ReceiveQueue struct {
+	Bytes, DrainMbps int
+}
+
+// MacReceiveQueue is a macOS client on wired Ethernet: a Thunderbolt Intel
+// I225 (DriverKit) on an M5 Pro kept the first 127 to 158 datagrams of a
+// burst and dropped the rest when its drain fell behind, and frames over
+// it were lost at 2 Gbit/s but not when the excess came at about 15
+// datagrams a millisecond (docs/perf/live-5k120-loss.md). 112 datagrams
+// of 1452 bytes leave a margin.
+var MacReceiveQueue = ReceiveQueue{Bytes: 112 * 1452, DrainMbps: 175}
 
 // linkShare of a LAN path's slowest link is the slowest a frame goes out:
 // spread over the frame interval alone, a 1080p frame of 50 KB took 2.6
@@ -114,5 +133,10 @@ func (pc Pacing) rate(size int, keyframe bool, fps, targetKbps int) float64 {
 	// Parity and headers add about a tenth on the wire.
 	wire := float64(size) * 1.1
 	r := wire * float64(fps) / share
-	return max(r, pc.MinRate*float64(targetKbps)*1000/8, linkShare*float64(pc.LinkMbps)*1e6/8)
+	r = max(r, pc.MinRate*float64(targetKbps)*1000/8, linkShare*float64(pc.LinkMbps)*1e6/8)
+	if q := pc.Queue; q.Bytes > 0 && q.DrainMbps > 0 && wire > float64(q.Bytes) {
+		spread := (wire - float64(q.Bytes)) / (float64(q.DrainMbps) * 1e6 / 8)
+		r = min(r, wire/spread)
+	}
+	return r
 }

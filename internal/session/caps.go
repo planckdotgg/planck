@@ -170,6 +170,16 @@ func scalePercent(s float64) int {
 	return int(math.Round(s * 100))
 }
 
+// lanPacing is the video pacing on a LAN whose slowest link is linkMbps,
+// to a client on clientOS (runtime.GOOS).
+func lanPacing(linkMbps int, clientOS string) transport.Pacing {
+	p := transport.LANPacing(linkMbps)
+	if clientOS == "darwin" {
+		p.Queue = transport.MacReceiveQueue
+	}
+	return p
+}
+
 // resizeDisplay is d as a Resize carries it.
 func resizeDisplay(d defaults.ClientDisplay) wire.ResizeDisplay {
 	u16 := func(v int) uint16 { return uint16(min(max(v, 0), math.MaxUint16)) }

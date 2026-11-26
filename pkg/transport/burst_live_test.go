@@ -25,7 +25,8 @@ import (
 //	  PLANCK_LIVE_BURST_CASES="500k@2000/16,500k@1000/16/nogso" go test -run TestLiveBurst -v ./pkg/transport
 //
 // A case is size[@mbps[/burst[/nogso]]]: frames of size bytes (k and m
-// suffixes) at the pacing rate in Mbit/s (0 unpaced) and burst datagrams;
+// suffixes) at the pacing rate in Mbit/s (0 unpaced, "mac" a 2.5 Gbit/s
+// LAN to a macOS client's receive queue) and burst datagrams;
 // size may be "130k+500k/20" for a 500 KB frame every 20th.
 // PLANCK_LIVE_BURST_SECONDS is each case's length (default 5) and
 // PLANCK_LIVE_FPS the frame rate (default 120). PLANCK_LIVE_BURST_TRICKLE_US
@@ -54,7 +55,7 @@ type burstCase struct {
 	name             string
 	size, big, every int
 	mbps, burst      int
-	gso              bool
+	gso, mac         bool
 }
 
 func parseBurstCases(t *testing.T, s string) []burstCase {
@@ -73,6 +74,7 @@ func parseBurstCases(t *testing.T, s string) []burstCase {
 		if len(parts) > 1 {
 			f := strings.Split(parts[1], "/")
 			bc.mbps, _ = strconv.Atoi(f[0])
+			bc.mac = f[0] == "mac"
 			if len(f) > 1 {
 				bc.burst, _ = strconv.Atoi(f[1])
 			}
@@ -146,7 +148,13 @@ func burstSend(t *testing.T, addr string) {
 				size, big = c.big, 1
 			}
 			count := (size + dgram - burstHeader - 1) / (dgram - burstHeader)
-			p.SetRate(float64(c.mbps)*1e6/8, c.burst*dgram)
+			rate := float64(c.mbps) * 1e6 / 8
+			if c.mac {
+				pc := LANPacing(2500)
+				pc.Queue = MacReceiveQueue
+				rate = pc.rate(size, big == 1, fps, 0)
+			}
+			p.SetRate(rate, c.burst*dgram)
 			var inCalls int64
 			first := Mono()
 			for i := 0; i < count; i++ {

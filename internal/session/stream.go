@@ -133,12 +133,12 @@ func newStream(h *Host, sess *transport.Session) *stream {
 	if prof != nil {
 		st.profile = prof
 		st.params = paramsFromProfile(st.params, prof, sess.ShardSize())
-		if prof.Route == defaults.RouteLAN {
-			sess.SetPacing(transport.LANPacing(prof.LinkMbps))
-		}
 		var cc clientCaps
 		if json.Unmarshal(sess.PeerCapabilities(), &cc) == nil {
 			st.params.ScalePct = scalePercent(cc.Client.Display.Scale)
+		}
+		if prof.Route == defaults.RouteLAN {
+			sess.SetPacing(lanPacing(prof.LinkMbps, cc.Client.OS))
 		}
 		h.logf("planck: profile %s %dx%d@%d %d-bit 4:4:4=%v on %s (%s), virtual display %v, %d/%d kbps, slices %d split %v",
 			prof.Codec, prof.Width, prof.Height, prof.FPS, prof.BitDepth, prof.Chroma444, prof.EncodeAdapter.Name, prof.EncoderAPI,
