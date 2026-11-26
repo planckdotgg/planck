@@ -336,6 +336,8 @@ type conn struct {
 	frameTimes *window
 	lastShown  int64
 	keyframes  uint64
+	// since is the session's counters when the current stream began.
+	since transport.SessionStats
 
 	lastPLI                             atomic.Int64
 	dropped, sinkErr, audioPkts, inputs atomic.Uint64
@@ -1051,6 +1053,9 @@ func (c *Client) switchRoute(cc *conn, r resolved) error {
 	cc.policy.Store(hostPolicy(rt.sess))
 	cc.ref.reset()
 	cc.stream.Store(&streamState{sink: cur})
+	cc.mu.Lock()
+	cc.since = transport.SessionStats{}
+	cc.mu.Unlock()
 	if cc.jb != nil {
 		cc.jb.Restart()
 	}
@@ -1384,6 +1389,13 @@ func (cc *conn) stats() ClientStats {
 	rt := cc.live.Load()
 	sess := rt.sess
 	ss := sess.Stats()
+	cc.mu.Lock()
+	since := cc.since
+	cc.mu.Unlock()
+	ss.FramesComplete -= min(since.FramesComplete, ss.FramesComplete)
+	ss.FramesLost -= min(since.FramesLost, ss.FramesLost)
+	ss.SlicesRecovered -= min(since.SlicesRecovered, ss.SlicesRecovered)
+	ss.FramesPartial -= min(since.FramesPartial, ss.FramesPartial)
 	acc := sess.Config()
 	s := ClientStats{
 		Connected: true, HostName: cc.name, HostID: cc.hostID, Identity: sess.Identity(), Addr: rt.addr, Path: rt.kind.String(),
@@ -1873,6 +1885,10 @@ func (cc *conn) switchStream(rt *route, m *wire.Stream, logf func(string, ...any
 	cc.needKey.Store(true)
 	cc.decoding.Store(false)
 	cc.stream.Store(&streamState{epoch: m.Epoch, sink: dcfg})
+	cc.mu.Lock()
+	cc.since, cc.keyframes = rt.sess.Stats(), 0
+	cc.mu.Unlock()
+	cc.dropped.Store(0)
 	logf("planck: the host streams %v at %dx%d@%d (stream %d)", p.Codec, p.Width, p.Height, p.FPS, m.Epoch)
 }
 

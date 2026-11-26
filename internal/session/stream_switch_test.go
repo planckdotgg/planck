@@ -285,3 +285,44 @@ func TestVirtualDisplayTakesClientScale(t *testing.T) {
 		waitFor(t, "the display removed", func() bool { live, _, _ := vdd.state(); return live == 0 })
 	}
 }
+
+// TestStreamSwitchResetsCounters: the counters a client shows are its
+// current stream's. Before, the PyroWave intra frames of a 1280x768 window
+// stayed in the Keyframes and frame counts of the 5120x1440 HEVC stream it
+// went full screen to.
+func TestStreamSwitchResetsCounters(t *testing.T) {
+	wiredLAN(t)
+	h := startSwitchHost(t, &fakeVDD{}, &pipeLog{})
+	sinks := &switchSinks{sink: &NullSink{}}
+	var view atomic.Uint64
+	view.Store(packView(1280, 768))
+	c, err := NewClient(ClientConfig{
+		ConfigDir: t.TempDir(), Name: "switch-client", PIN: h.PIN(), NoAudio: true, Capabilities: ultrawideClientCaps,
+		OpenSink: sinks.opener, OpenAudioPlayer: func() (audio.Player, error) { return &fakePlayer{}, nil },
+		Tailscale: noTailscale{}, Logf: t.Logf,
+		ViewSize: func() (int, int) { v := view.Load(); return int(v >> 32), int(uint32(v)) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Disconnect)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := c.Connect(ctx, Target{Addr: h.Addr().String()}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "PyroWave keyframes", func() bool { return c.Stats().Keyframes >= 30 })
+	pyro := c.Stats()
+	if err := c.Resize(5120, 1440); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "HEVC frames", func() bool {
+		s := c.Stats()
+		return s.Codec == encode.HEVC.String() && s.FramesReceived >= 20 && s.FramesReceived < pyro.FramesReceived
+	})
+	s := c.Stats()
+	t.Logf("PyroWave: %d keyframes of %d frames; then HEVC: %d keyframes of %d frames, %d dropped", pyro.Keyframes, pyro.FramesReceived, s.Keyframes, s.FramesReceived, s.FramesDropped)
+	if s.Keyframes > 3 || s.Keyframes >= pyro.Keyframes {
+		t.Fatalf("HEVC stream shows %d keyframes (PyroWave had %d): the counters carried over", s.Keyframes, pyro.Keyframes)
+	}
+}
