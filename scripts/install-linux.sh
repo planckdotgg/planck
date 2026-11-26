@@ -80,6 +80,7 @@ sed "s|^Exec=.*|Exec=$bin/planck-client|" "$desktop" > "$prefix/share/applicatio
 
 echo "==> icons"
 if [[ "$mode" == archive ]]; then
+  mkdir -p "$prefix/share/icons"
   cp -r "$icons" "$prefix/share/icons/"
 else
   for png in "$src"/assets/png/linux-hicolor/planck-*.png; do
