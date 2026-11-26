@@ -116,6 +116,10 @@ func (c *Capture) scan() {
 			continue
 		}
 		pad, err := openEvdevPad(path)
+		if err == nil && strings.HasPrefix(pad.caps.Name, virtualPadPrefix) {
+			pad.close()
+			err = errNotGamepad
+		}
 		if err != nil {
 			if !errors.Is(err, os.ErrPermission) {
 				c.skipped[path] = struct{}{}
@@ -149,7 +153,7 @@ func openEvdevPad(path string) (*evdevPad, error) {
 		return nil, err
 	}
 	p := &evdevPad{path: path, fd: fd, effectID: -1}
-	if err := p.readCaps(); err != nil || !p.caps.isGamepad() || strings.HasPrefix(p.caps.Name, virtualPadPrefix) {
+	if err := p.readCaps(); err != nil || !p.caps.isGamepad() {
 		unix.Close(fd)
 		if err == nil {
 			err = errNotGamepad
