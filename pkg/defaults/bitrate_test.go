@@ -34,9 +34,18 @@ func TestBitrateOverrideKeepsLANCeiling(t *testing.T) {
 			t.Fatalf("override %d Mbps: bitrate %d, max %d", mbps, p.BitrateKbps, p.MaxBitrateKbps)
 		}
 	}
-	p := Resolve(bigboi(), m5Pro(), lan, UserOverrides{Codec: "hevc"})
-	if p.MaxBitrateKbps != lanCeilingKbps {
-		t.Fatalf("auto: max %d, want the %d LAN ceiling for the rate controller", p.MaxBitrateKbps, lanCeilingKbps)
+}
+
+// TestAutoBitrateCeiling: with the bitrate on auto the rate controller may
+// climb to 1.2x the target, not to the 300 Mbps LAN ceiling; 5120x1440 at
+// 120 fps went from 125 to 300 Mbps in 15 s on a 2.5G LAN.
+func TestAutoBitrateCeiling(t *testing.T) {
+	p := Resolve(bigboi(), m5Pro(), lan, UserOverrides{Codec: "hevc", Resolution: "custom", CustomWidth: 5120, CustomHeight: 1440, FPS: "120"})
+	if p.Width != 5120 || p.Height != 1440 || p.FPS != 120 {
+		t.Fatalf("stream %dx%d@%d, want 5120x1440@120: %+v", p.Width, p.Height, p.FPS, p.Decisions)
+	}
+	if want := int(float64(p.BitrateKbps) * autoHeadroom); p.MaxBitrateKbps != want || p.MaxBitrateKbps > 155_000 {
+		t.Fatalf("auto 5120x1440@120: start %d, max %d kbps, want %d (about 150 Mbps)", p.BitrateKbps, p.MaxBitrateKbps, want)
 	}
 }
 

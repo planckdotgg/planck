@@ -118,7 +118,7 @@ func TestResolveWorkedCases(t *testing.T) {
 
 	caseA := golden{
 		Adapter: rtx4080.Name, API: APINVENC, VirtualDisplay: true, Codec: CodecHEVC, BitDepth: 10,
-		W: 3024, H: 1964, FPS: 120, Bitrate: 106389, Max: 300000, Split: true, Slices: 1,
+		W: 3024, H: 1964, FPS: 120, Bitrate: 106389, Max: 127666, Split: true, Slices: 1,
 		Datagram: 1452, Direct: true, FEC: fecLAN,
 	}
 	pyro1080 := golden{
@@ -130,7 +130,7 @@ func TestResolveWorkedCases(t *testing.T) {
 	pyroNative := pyro1080
 	pyroNative.W, pyroNative.H, pyroNative.Bitrate, pyroNative.Max = 3024, 1964, 1345570, 1345570
 	caseA444 := caseA
-	caseA444.Chroma444, caseA444.Bitrate = true, 132986
+	caseA444.Chroma444, caseA444.Bitrate, caseA444.Max = true, 132986, 159583
 
 	caseB := golden{
 		Adapter: rtx4080.Name, API: APINVENC, VirtualDisplay: true, Codec: CodecHEVC, BitDepth: 10,
@@ -144,7 +144,7 @@ func TestResolveWorkedCases(t *testing.T) {
 	}
 	caseC := golden{
 		Adapter: rx6700.Name, API: APIAMF, VirtualDisplay: true, Codec: CodecHEVC, BitDepth: 8,
-		W: 2216, H: 1440, FPS: 120, Bitrate: 66765, Max: 300000, Slices: 1,
+		W: 2216, H: 1440, FPS: 120, Bitrate: 66765, Max: 80118, Slices: 1,
 		Datagram: 1452, Direct: true, FEC: fecLAN,
 	}
 	// 1080p60 PyroWave 4:4:4 needs 235 Mbps, inside the 500 Mbps budget,
@@ -159,7 +159,7 @@ func TestResolveWorkedCases(t *testing.T) {
 	noVDDNoPyro.Encoders = slices.DeleteFunc(noVDDNoPyro.Encoders, func(e EncoderCap) bool { return e.API == APIPyroWave })
 	caseCNoVDDHEVC := golden{
 		Adapter: rx6700.Name, API: APIAMF, CaptureDisplay: `\\.\DISPLAY1`, Codec: CodecHEVC, BitDepth: 8,
-		W: 1920, H: 1080, FPS: 60, Bitrate: 24883, Max: 300000, Slices: 1,
+		W: 1920, H: 1080, FPS: 60, Bitrate: 24883, Max: 29859, Slices: 1,
 		Datagram: 1452, Direct: true, FEC: fecLAN,
 	}
 

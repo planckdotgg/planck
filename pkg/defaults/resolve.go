@@ -25,6 +25,7 @@ const (
 	tailscaleDirectKbps = 100_000
 	wanKbps             = 20_000 // tailscale.RelayMaxBitrateKbps
 	hevc444Factor       = 1.25
+	autoHeadroom        = 1.2 // auto bitrate: the rate controller may climb this far past the target
 	pyroProbedShare     = 0.8
 	maxAutoFPS          = 240
 	lanDatagram         = 1452 // wire.MaxLANDatagram
@@ -872,7 +873,10 @@ func (r *resolver) bitrate() {
 	r.p.BitrateKbps = min(target, ceiling)
 	switch v := r.o.BitrateMbps * 1000; {
 	case v == 0:
-		why := fmt.Sprintf("%.3f bpp target, ceiling %s", float64(target)*1000/float64(r.pixelRate()), mbps(ceiling))
+		// Past the target the picture barely improves, while each frame's
+		// burst and the decoder's time grow with the bits.
+		r.p.MaxBitrateKbps = min(ceiling, int(float64(target)*autoHeadroom))
+		why := fmt.Sprintf("%.3f bpp target, ceiling %s", float64(target)*1000/float64(r.pixelRate()), mbps(r.p.MaxBitrateKbps))
 		if target > ceiling {
 			why = "route ceiling " + mbps(ceiling)
 		}
