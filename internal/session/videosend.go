@@ -1,6 +1,7 @@
 package session
 
 import (
+	"runtime"
 	"sync"
 
 	"github.com/planckdotgg/planck/pkg/transport"
@@ -188,6 +189,13 @@ func (s *videoSender) dropOldestLocked() (uint32, bool) {
 
 func (s *videoSender) run() {
 	defer close(s.done)
+	// The pacer spins between trains of datagrams; preempted for a
+	// scheduler quantum, a frame would take twice its share to go out.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if revert, err := boostVideoThread(); err == nil {
+		defer revert()
+	}
 	var j sendJob
 	for {
 		s.mu.Lock()
