@@ -68,6 +68,9 @@ type stream struct {
 	pts      [ptsRingSize]struct {
 		id  uint32
 		pts int64
+		// dropped: the sender dropped this frame; invalidated: the encoder
+		// no longer predicts from it.
+		dropped, invalidated bool
 	}
 
 	mu        sync.Mutex
@@ -559,6 +562,15 @@ func (st *stream) end() {
 	})
 }
 
+// senderDropped runs on the video loop for a frame the sender dropped.
+func (st *stream) senderDropped(id uint32) {
+	st.dropped.Add(1)
+	if slot := &st.pts[id%ptsRingSize]; slot.id == id {
+		slot.dropped = true
+	}
+	st.invalidate(id)
+}
+
 func (st *stream) invalidate(frameID uint32) {
 	select {
 	case st.invalid <- frameID:
@@ -596,9 +608,10 @@ func (st *stream) videoLoop() {
 		}
 	}()
 	// Frames go out from a sender goroutine of their own; one that falls
-	// two frames behind drops the oldest, and the client's RefInvalidate
-	// for the gap stops the encoder predicting from it.
-	send := newVideoSender(st.sess, 2, func(uint32) { st.dropped.Add(1) }, st.frameSent)
+	// two frames behind drops the oldest, and the encoder stops predicting
+	// from it before the next frame, a round trip before the client's
+	// RefInvalidate for the gap would arrive.
+	send := newVideoSender(st.sess, 2, st.senderDropped, st.frameSent)
 	defer send.close()
 	buf := send.buffer()
 	kbps := st.params.BitrateKbps
@@ -665,7 +678,10 @@ func (st *stream) videoLoop() {
 		if st.sess.KeyframeRequested() || st.keyNeeded.Swap(false) {
 			forceKey = true
 		}
-		key, rec := st.applyInvalidations(pipe, frameID)
+		key, rec, why := st.applyInvalidations(pipe, frameID)
+		if why != "" {
+			st.h.logf("planck: reference invalidation fell back to a keyframe: %s", why)
+		}
 		forceKey, recovery = forceKey || key, recovery || rec
 		var setRate int64
 		if t := st.sess.TargetBitrateKbps(); t > 0 && abs(t-kbps)*20 > kbps {
@@ -724,7 +740,7 @@ func (st *stream) videoLoop() {
 		info := wire.VideoInfo{FrameID: frameID, Keyframe: pkt.Keyframe, Recovery: recovery && !pkt.Keyframe, CaptureTS: captureTS, EncodeTS: transport.Mono(), Epoch: st.epoch}
 		recovery = false
 		slot := &st.pts[frameID%ptsRingSize]
-		slot.id, slot.pts = frameID, pkt.PTS
+		slot.id, slot.pts, slot.dropped, slot.invalidated = frameID, pkt.PTS, false, false
 		job := &sendJob{kind: sendFrame, info: info, data: pkt.Data, buf: pkt.Data, bytes: len(pkt.Data), sent: true}
 		switch {
 		case streamed:
@@ -832,29 +848,37 @@ const maxInvalidSpan = 4
 
 // applyInvalidations tells the encoder to stop predicting from each frame
 // a client lost and every frame encoded since, up to next, the frame about
-// to be encoded. key says only a keyframe recovers; recovery that the next
-// frame recovers without one, and must say so (wire.VideoInfo.Recovery).
-func (st *stream) applyInvalidations(pipe VideoPipe, next uint32) (key, recovery bool) {
+// to be encoded. key says only a keyframe recovers, and why says why;
+// recovery that the next frame recovers without one, and must say so
+// (wire.VideoInfo.Recovery). A frame the sender dropped is invalidated at
+// once; the client's report of the gap it left changes nothing.
+func (st *stream) applyInvalidations(pipe VideoPipe, next uint32) (key, recovery bool, why string) {
 	for {
 		select {
 		case id := <-st.invalid:
 			span := int32(next - id)
 			switch {
 			case key || span <= 0:
+			case st.pts[id%ptsRingSize].id == id && st.pts[id%ptsRingSize].dropped && st.pts[id%ptsRingSize].invalidated:
 			case span > maxInvalidSpan:
-				key = true
+				key, why = true, fmt.Sprintf("frame %d is %d frames back, past %d", id, span, maxInvalidSpan)
 			default:
 				for f := id; f != next; f++ {
-					slot := st.pts[f%ptsRingSize]
-					if slot.id != f || pipe.InvalidateRefs(slot.pts) != nil {
-						key = true
+					slot := &st.pts[f%ptsRingSize]
+					if slot.id != f {
+						key, why = true, fmt.Sprintf("frame %d is no longer in the PTS ring", f)
 						break
 					}
+					if err := pipe.InvalidateRefs(slot.pts); err != nil {
+						key, why = true, fmt.Sprintf("frame %d: %v", f, err)
+						break
+					}
+					slot.invalidated = true
 				}
 				recovery = true
 			}
 		default:
-			return key, recovery && !key
+			return key, recovery && !key, why
 		}
 	}
 }

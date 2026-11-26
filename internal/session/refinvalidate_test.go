@@ -176,20 +176,20 @@ func TestApplyInvalidations(t *testing.T) {
 	}
 	pipe := &invalidPipe{}
 	st.invalidate(17)
-	if key, rec := st.applyInvalidations(pipe, 20); key || !rec || len(pipe.got) != 3 || pipe.got[0] != 1017 || pipe.got[2] != 1019 {
+	if key, rec, _ := st.applyInvalidations(pipe, 20); key || !rec || len(pipe.got) != 3 || pipe.got[0] != 1017 || pipe.got[2] != 1019 {
 		t.Fatalf("frame 17 before 20: key %v recovery %v, invalidated %v", key, rec, pipe.got)
 	}
 	st.invalidate(10)
-	if key, rec := st.applyInvalidations(pipe, 20); !key || rec {
+	if key, rec, _ := st.applyInvalidations(pipe, 20); !key || rec {
 		t.Fatalf("frame 10 before 20: key %v recovery %v, want a keyframe", key, rec)
 	}
 	st.invalidate(21)
-	if key, rec := st.applyInvalidations(pipe, 20); key || rec {
+	if key, rec, _ := st.applyInvalidations(pipe, 20); key || rec {
 		t.Fatalf("a frame not encoded yet: key %v recovery %v", key, rec)
 	}
 	pipe.unsupported = true
 	st.invalidate(19)
-	if key, rec := st.applyInvalidations(pipe, 20); !key || rec {
+	if key, rec, _ := st.applyInvalidations(pipe, 20); !key || rec {
 		t.Fatalf("unsupported: key %v recovery %v, want a keyframe", key, rec)
 	}
 	for range 20 {
@@ -197,6 +197,32 @@ func TestApplyInvalidations(t *testing.T) {
 	}
 	if !st.keyNeeded.Load() {
 		t.Fatal("invalidations past the queue asked for no keyframe")
+	}
+}
+
+// TestSenderDropInvalidatesAtOnce: a frame the sender dropped is
+// invalidated before the next frame is encoded, with no round trip, and the
+// client's RefInvalidate for the gap, arriving frames later, neither
+// invalidates again nor forces a keyframe. Before, every sender drop on a
+// throttled host waited for the client and came back past maxInvalidSpan
+// as a keyframe.
+func TestSenderDropInvalidatesAtOnce(t *testing.T) {
+	st := &stream{invalid: make(chan uint32, 16)}
+	for id := uint32(0); id < 40; id++ {
+		st.pts[id%ptsRingSize].id, st.pts[id%ptsRingSize].pts = id, 1000+int64(id)
+	}
+	pipe := &invalidPipe{}
+	st.senderDropped(18)
+	if key, rec, why := st.applyInvalidations(pipe, 20); key || !rec || len(pipe.got) != 2 || pipe.got[0] != 1018 {
+		t.Fatalf("dropped 18 before 20: key %v (%s) recovery %v, invalidated %v", key, why, rec, pipe.got)
+	}
+	st.invalidate(18)
+	if key, rec, why := st.applyInvalidations(pipe, 18+maxInvalidSpan+2); key || rec || len(pipe.got) != 2 {
+		t.Fatalf("the client's report of dropped 18: key %v (%s) recovery %v, invalidated %v; want nothing", key, why, rec, pipe.got)
+	}
+	st.invalidate(30)
+	if key, _, why := st.applyInvalidations(pipe, 30+maxInvalidSpan+1); !key || why == "" {
+		t.Fatalf("a lost frame past the span: key %v, why %q", key, why)
 	}
 }
 
