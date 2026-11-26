@@ -38,14 +38,20 @@ func TestAdaptersAndDisplays(t *testing.T) {
 	if len(displays) > 0 && primary != 1 {
 		t.Fatalf("want one primary display, got %d", primary)
 	}
+	if _, err := OpenDevice(1); err == nil {
+		t.Fatal("OpenDevice of an unknown LUID succeeded")
+	}
 	dev, err := OpenDevice(adapters[0].LUID)
+	// A GPU-less VM (a CI runner) lists only the Basic Render Driver, and
+	// without DXGI's software flag, so it passes the hardware filter.
+	const vendorMicrosoft = 0x1414
+	if adapters[0].Vendor == vendorMicrosoft && errors.Is(err, win.DXGI_ERROR_UNSUPPORTED) {
+		t.Skipf("no hardware D3D11 device on %s: %v", adapters[0].Name, err)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
 	dev.Close()
-	if _, err := OpenDevice(1); err == nil {
-		t.Fatal("OpenDevice of an unknown LUID succeeded")
-	}
 }
 
 // animate shows a small square in a corner of the primary display so the

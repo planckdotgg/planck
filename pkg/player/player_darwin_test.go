@@ -167,6 +167,9 @@ func TestPresentThread(t *testing.T) {
 		// Core Animation now and then has no drawable within its 1 s
 		// timeout on a loaded machine; the picture goes back unshown.
 		t.Fatalf("%d present errors, first %v", st.PresentErrors, obs.firstErr)
+	case len(obs.glass) == 0 && os.Getenv("CI") != "":
+		// A headless CI VM has no display scanout, so presentedTime stays 0.
+		t.Skipf("no glass time for %d pictures shown on a headless CI runner", st.Presented)
 	case len(obs.glass) < st.Presented/2:
 		t.Fatalf("glass time for %d of %d pictures shown", len(obs.glass), st.Presented)
 	}
