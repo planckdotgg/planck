@@ -148,16 +148,22 @@ func (r *rawMouse) wndProc(hwnd, msg, wparam, lparam uintptr) uintptr {
 		size := uint32(len(buf))
 		n, _, _ := procGetRawInputData.Call(lparam, ridInput, uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&size)), rawInputHeader)
 		if int32(n) == rawInputMouseLen && *(*uint32)(unsafe.Pointer(&buf[0])) == rimTypeMouse {
-			if r.buttons != nil {
-				rawSideButtons(buf[rawInputHeader:], r.buttons)
-			}
-			if dx, dy, ok := rawMotion(buf[rawInputHeader:]); ok && on {
-				r.motion(dx, dy)
-			}
+			r.report(buf[rawInputHeader:], on)
 		}
 	}
 	ret, _, _ := procDefWindowProcW.Call(hwnd, msg, wparam, lparam)
 	return ret
+}
+
+// report passes on a RAWMOUSE: its motion, while on, before its side
+// buttons, which a frame may send before this thread is back.
+func (r *rawMouse) report(m []byte, on bool) {
+	if dx, dy, ok := rawMotion(m); ok && on {
+		r.motion(dx, dy)
+	}
+	if r.buttons != nil {
+		rawSideButtons(m, r.buttons)
+	}
 }
 
 // rawMotion reads a RAWMOUSE's relative motion; a tablet's or a remote

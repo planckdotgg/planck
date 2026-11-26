@@ -298,8 +298,8 @@ func TestSideButtonsFromRawInput(t *testing.T) {
 	if b := buttonLog(*got); !slices.Equal(b, want) {
 		t.Fatalf("sent %v, want %v", b, want)
 	}
-	// The bar's X1 release, X2's press and X2's release.
-	if notified != 3 {
+	// The bar's X1 press and release, which its frame drops, and X2's.
+	if notified != 4 {
 		t.Fatalf("asked for %d frames, want one per side button queued", notified)
 	}
 	f.sideButton(input.ButtonX1, true)

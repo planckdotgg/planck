@@ -48,8 +48,11 @@ type inputForwarder struct {
 	// buttons are the buttons down on the host, as 1<<Button: only a press
 	// begun on the picture goes to the host.
 	buttons uint8
-	// sideOK is whether a side button pressed now goes to the host.
-	sideOK atomic.Bool
+	// reached is whether the last frame found the pointer where the view
+	// hears the releases.
+	reached bool
+	// live is whether the stream view takes side buttons' presses.
+	live atomic.Bool
 	// bw and bh are the view's size; wx and wy the scrolling not sent
 	// yet, under a wheel unit.
 	bw, bh, wx, wy float32
@@ -70,9 +73,20 @@ type buttonSys interface {
 }
 
 // buttonEdge is a press, begun on the picture or not (in), or a release.
+// at tells x, y, in the view's DIPs, is where it came. A side press from
+// raw input knows neither: the frame that sends it finds where the pointer
+// is. cancel lets go of every button.
 type buttonEdge struct {
-	b        input.Button
-	down, in bool
+	b                          input.Button
+	down, in, side, at, cancel bool
+	x, y                       float32
+}
+
+// framePointer is where the frame finds the pointer, on the host's
+// picture, where ok.
+type framePointer struct {
+	x, y uint16
+	ok   bool
 }
 
 // view builds the stream's input surface, which fills the stream view.
@@ -113,20 +127,28 @@ func (f *inputForwarder) view(c *mui.Context) {
 		}
 	}
 	in := relative
+	var at framePointer
 	if over && b.W > 0 && b.H > 0 && !relative {
 		in = onPicture(x, y, b.W, b.H, fw, fh, dw, dh)
-		if in || f.buttons != 0 {
-			nx, ny := mapPointer(x, y, b.W, b.H, fw, fh, dw, dh)
-			if !f.over || nx != f.x || ny != f.y {
-				f.send(input.Event{Type: input.TypeMouseMoveAbs, MouseAbs: input.MouseMoveAbs{X: nx, Y: ny}})
-			}
-			f.x, f.y = nx, ny
-		}
+		at.x, at.y = mapPointer(x, y, b.W, b.H, fw, fh, dw, dh)
+		at.ok = true
 	}
-	f.over = in || (over && f.buttons != 0)
 	reaches := over && hovered && x >= 0 && y >= 0 && x <= b.W && y <= b.H
-	f.sideOK.Store(active && (relative || in && reaches))
-	f.buttonsFrame(active, reaches)
+	f.live.Store(true)
+	held := f.buttons
+	f.buttonsFrame(active, reaches, active && (relative || in && reaches), !relative, at)
+	if at.ok && (in || held|f.buttons != 0) {
+		f.moveAbs(at.x, at.y)
+	}
+	f.over = in || (over && held|f.buttons != 0)
+}
+
+// moveAbs puts the host's pointer at x, y, unless it is there.
+func (f *inputForwarder) moveAbs(x, y uint16) {
+	if !f.over || x != f.x || y != f.y {
+		f.send(input.Event{Type: input.TypeMouseMoveAbs, MouseAbs: input.MouseMoveAbs{X: x, Y: y}})
+	}
+	f.x, f.y, f.over = x, y, true
 }
 
 // handle takes the wheel, and sees the releases MyGo gives the view as the
@@ -139,17 +161,23 @@ func (f *inputForwarder) handle(ev mui.InputEvent) bool {
 	return f.scroll(ev)
 }
 
-// observe queues each button's press over the view, and its release, for
-// the frame to send after the pointer's move.
+// observe queues each button's press over the view, and its release, with
+// where it came, for the frame to send in order. A canceled release, the
+// system taking the press, lets go of every button: MyGo gives one release
+// of the lot.
 func (f *inputForwarder) observe(ev mui.InputEvent) {
 	if ev.Kind != mui.InputPointerDown && ev.Kind != mui.InputPointerUp {
+		return
+	}
+	if ev.Kind == mui.InputPointerUp && ev.Canceled {
+		f.queue(buttonEdge{cancel: true})
 		return
 	}
 	b, ok := f.hostButton(ev.Button)
 	if !ok {
 		return
 	}
-	e := buttonEdge{b: b, down: ev.Kind == mui.InputPointerDown}
+	e := buttonEdge{b: b, down: ev.Kind == mui.InputPointerDown, at: true, x: ev.X, y: ev.Y}
 	if e.down {
 		fw, fh, dw, dh := f.videoSize()
 		e.in = f.lock != nil && f.lock.held() == pointerRelative ||
@@ -159,12 +187,13 @@ func (f *inputForwarder) observe(ev mui.InputEvent) {
 }
 
 // sideButton takes a side button's press or release, which MyGo does not
-// report, from any goroutine.
+// report, from any goroutine. Whether a press goes to the host is the
+// next frame's to say, once it knows where the pointer is.
 func (f *inputForwarder) sideButton(b input.Button, down bool) {
-	if down && !f.sideOK.Load() {
+	if down && !f.live.Load() {
 		return
 	}
-	f.queue(buttonEdge{b: b, down: down, in: true})
+	f.queue(buttonEdge{b: b, down: down, side: down})
 	if f.notify != nil {
 		f.notify()
 	}
@@ -193,10 +222,13 @@ func (f *inputForwarder) hostButton(b int) (input.Button, bool) {
 }
 
 // buttonsFrame sends the presses and releases queued since the last frame,
-// each button on its own. With the window inactive every button goes up;
-// with the pointer where the view hears no release, as off the window or
-// over the overlay, a button the system no longer holds goes up.
-func (f *inputForwarder) buttonsFrame(active, reaches bool) {
+// each button on its own and, unless the pointer is held relative (abs
+// false), at its place: its own, or the frame's (at). A side press goes
+// where sideIn. With the window inactive every button goes up; with the
+// pointer where the view hears no release, as off the window or over the
+// overlay, or just back from there, a button the system no longer holds
+// goes up.
+func (f *inputForwarder) buttonsFrame(active, reaches, sideIn, abs bool, at framePointer) {
 	f.edgeMu.Lock()
 	edges := f.edges
 	f.edges, f.edgesSpare = f.edgesSpare[:0], edges
@@ -204,30 +236,53 @@ func (f *inputForwarder) buttonsFrame(active, reaches bool) {
 	for _, e := range edges {
 		bit := uint8(1) << e.b
 		switch {
-		case e.down && e.in && active && f.buttons&bit == 0:
+		case e.cancel:
+			f.releaseButtons(func(input.Button) bool { return true })
+		case e.down && active && f.buttons&bit == 0 && (e.side && sideIn || !e.side && e.in):
 			if f.lock != nil && f.lock.clickPicture() {
 				continue
 			}
+			f.edgeAt(e, abs, at)
 			f.buttons |= bit
 			f.sendButton(e.b, true)
 		case !e.down && f.buttons&bit != 0:
+			f.edgeAt(e, abs, at)
 			f.buttons &^= bit
 			f.sendButton(e.b, false)
 		}
 	}
+	check := f.btnSys != nil && (!reaches || !f.reached)
+	f.reached = reaches
+	f.releaseButtons(func(b input.Button) bool { return !active || check && !f.btnSys.down(b) })
+}
+
+// releaseButtons lets go of the buttons held on the host that up says to.
+func (f *inputForwarder) releaseButtons(up func(input.Button) bool) {
 	for b := input.ButtonLeft; b <= input.ButtonX2 && f.buttons != 0; b++ {
 		bit := uint8(1) << b
-		if f.buttons&bit != 0 && (!active || !reaches && f.btnSys != nil && !f.btnSys.down(b)) {
+		if f.buttons&bit != 0 && up(b) {
 			f.buttons &^= bit
 			f.sendButton(b, false)
 		}
 	}
 }
 
+// edgeAt puts the host's pointer where e came, before e goes.
+func (f *inputForwarder) edgeAt(e buttonEdge, abs bool, at framePointer) {
+	switch {
+	case !abs:
+	case e.at && f.bw > 0 && f.bh > 0:
+		fw, fh, dw, dh := f.videoSize()
+		f.moveAbs(mapPointer(e.x, e.y, f.bw, f.bh, fw, fh, dw, dh))
+	case at.ok:
+		f.moveAbs(at.x, at.y)
+	}
+}
+
 // streamEnded forgets the buttons held, as the host lets go of them as the
 // stream ends.
 func (f *inputForwarder) streamEnded() {
-	f.sideOK.Store(false)
+	f.live.Store(false)
 	f.edgeMu.Lock()
 	f.edges = f.edges[:0]
 	f.edgeMu.Unlock()
