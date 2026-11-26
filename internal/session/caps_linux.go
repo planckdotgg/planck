@@ -13,6 +13,7 @@ import (
 	"github.com/planckdotgg/planck/pkg/encode"
 	"github.com/planckdotgg/planck/pkg/encode/all"
 	"github.com/planckdotgg/planck/pkg/encode/nvenc"
+	"github.com/planckdotgg/planck/pkg/encode/vaapi"
 	"github.com/planckdotgg/planck/pkg/gpu"
 )
 
@@ -46,6 +47,13 @@ func probeDevice(a gpu.Adapter) (defaults.EncoderCap, bool) {
 			e.Codecs = append(e.Codecs, defaults.CodecCap{Codec: defaults.Codec(codec), MaxWidth: c.MaxWidth, MaxHeight: c.MaxHeight,
 				TenBit: slices.Contains(ch, encode.P010), Chroma444: slices.Contains(ch, encode.YUV444)})
 		}
+	case gpu.VendorAMD, gpu.VendorIntel:
+		c, err := vaapi.Probe(a)
+		if err != nil {
+			return e, false
+		}
+		e.API = defaults.APIVAAPI
+		e.Codecs = []defaults.CodecCap{{Codec: defaults.CodecHEVC, TenBit: slices.Contains(c.Chroma[encode.HEVC], encode.P010)}}
 	default:
 		return e, false
 	}

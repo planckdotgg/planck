@@ -678,6 +678,8 @@ func (r *resolver) depthAndChroma() {
 	switch {
 	case tenOK && c != CodecPyroWave && r.enc.API == APIAMF:
 		depthWhy = "AMF Main10 from BGRA capture is unmeasured"
+	case tenOK && c != CodecPyroWave && r.enc.API == APIVAAPI:
+		depthWhy = "VA-API Main10 from BGRA capture is unmeasured"
 	case tenOK:
 		autoDepth, depthWhy = 10, "10-bit on both ends"
 	default:

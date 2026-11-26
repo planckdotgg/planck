@@ -80,6 +80,7 @@ const (
 	APINVENC        = "NVENC"
 	APIAMF          = "AMF"
 	APIOneVPL       = "oneVPL"
+	APIVAAPI        = "VA-API"
 	APIVideoToolbox = "VideoToolbox"
 	APIPyroWave     = "PyroWave"
 )

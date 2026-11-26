@@ -8,6 +8,7 @@ import (
 	mui "github.com/egoist/mygo/ui"
 
 	"github.com/planckdotgg/planck/internal/ui"
+	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/encode/all"
 	"github.com/planckdotgg/planck/pkg/gpu"
 	"github.com/planckdotgg/planck/pkg/player"
@@ -58,9 +59,9 @@ func localEncoders() []ui.EncoderInfo {
 	var out []ui.EncoderInfo
 	seen := map[string]bool{}
 	for _, d := range all.Devices() {
-		api := "VA-API"
+		api := defaults.APIVAAPI
 		if d.Adapter.Vendor == gpu.VendorNVIDIA {
-			api = "NVENC"
+			api = defaults.APINVENC
 		}
 		if seen[d.Adapter.Name+api] {
 			continue
