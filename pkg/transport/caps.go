@@ -93,6 +93,7 @@ func (s *Session) SendChunkedFrame(info wire.VideoInfo, frame []byte, ends []int
 	info.SliceCount = uint8(len(ends))
 	s.videoMu.Lock()
 	defer s.videoMu.Unlock()
+	s.paceFrame(info, len(frame))
 	lo := 0
 	for i, end := range ends {
 		pol := &s.pol.normal

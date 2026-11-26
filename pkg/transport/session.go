@@ -161,6 +161,11 @@ type Session struct {
 	emitVideo func([]byte) error
 	policy    *fec.Policy
 	pol       policies
+	pacing    Pacing
+	pacer     Pacer
+	// pacedID is the frame the pacer's rate was set for.
+	pacedID uint32
+	paced   bool
 
 	ringMu sync.Mutex
 	sent   [sentRingSize]sentFrame
@@ -293,7 +298,8 @@ func newSession(p sessionParams) (*Session, error) {
 	s.intra.Store(p.ready.Config.Codec == wire.CodecPyroWave)
 	if s.isHost {
 		s.enc = fec.NewEncoder(s.shardSize, AEADHeaderLen, AEADTagLen)
-		s.emitVideo = s.sendSealed
+		s.emitVideo = s.sendPaced
+		s.pacing = DefaultPacing
 		s.policy = p.fecPolicy
 		if s.policy == nil {
 			s.policy = fec.NewPolicy()
@@ -446,6 +452,7 @@ func (s *Session) SendVideoFrame(info wire.VideoInfo, frame []byte) error {
 	}
 	s.videoMu.Lock()
 	defer s.videoMu.Unlock()
+	s.paceFrame(info, len(frame))
 	_, err := s.enc.EncodeFrame(info, frame, s.policyFor(info), s.emitVideo)
 	s.recordSent(info.FrameID, len(frame))
 	return err
@@ -459,9 +466,36 @@ func (s *Session) SendVideoSlice(info wire.VideoInfo, slice int, data []byte) er
 	}
 	s.videoMu.Lock()
 	defer s.videoMu.Unlock()
+	// The first slice stands for the frame's size.
+	s.paceFrame(info, len(data)*max(int(info.SliceCount), 1))
 	_, err := s.enc.EncodeSlice(info, slice, data, s.policyFor(info), s.emitVideo)
 	s.recordSent(info.FrameID, len(data))
 	return err
+}
+
+// SetPacing changes how video datagrams are spread over each frame's
+// interval (host only); the zero Pacing sends them unpaced.
+func (s *Session) SetPacing(p Pacing) {
+	s.videoMu.Lock()
+	s.pacing, s.paced = p, false
+	s.videoMu.Unlock()
+}
+
+// paceFrame sets the pacer's rate for the frame of info, once a frame.
+// Call it with videoMu held.
+func (s *Session) paceFrame(info wire.VideoInfo, size int) {
+	if s.paced && s.pacedID == info.FrameID {
+		return
+	}
+	s.paced, s.pacedID = true, info.FrameID
+	r := s.pacing.rate(size, info.Keyframe, int(s.cfg.Load().FPS), int(s.target.Load()))
+	s.pacer.SetRate(r, s.pacing.BurstDatagrams*s.maxDgram)
+}
+
+// sendPaced is sendSealed after the pacer lets the datagram go.
+func (s *Session) sendPaced(pkt []byte) error {
+	s.pacer.Wait(len(pkt) + AEADTagLen)
+	return s.sendSealed(pkt)
 }
 
 func (s *Session) recordSent(id uint32, n int) {
