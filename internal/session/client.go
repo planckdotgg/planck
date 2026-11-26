@@ -1378,6 +1378,21 @@ func (o viewObserver) Glass(pts int64, glass, since time.Duration) {
 	}
 }
 
+func (o viewObserver) GPUDone(pts int64, toGlass time.Duration) {
+	cc := o.cc
+	id := uint32(pts)
+	cc.mu.Lock()
+	c := cc.captured[id%captureRing]
+	cc.mu.Unlock()
+	if c.frame == id {
+		cc.trace.update(c.row, func(r *clientTraceRow) {
+			if r.GlassAt != 0 {
+				r.GPUDoneAt = r.GlassAt - int64(toGlass)
+			}
+		})
+	}
+}
+
 func (cc *conn) onAudio(h wire.AudioHeader, opus []byte) {
 	if cc.jb == nil {
 		return

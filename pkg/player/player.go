@@ -113,6 +113,7 @@ func New(surf *gpusurface.Surface, dec decode.Decoder, keep int) *Player {
 	p := startWith(dec, keep, func(f decode.Frame) error { return present(surf, f) }, surf.Resize, screenNow)
 	p.surf = surf
 	p.hud.sink = surf
+	p.phase.SetNominalPeriod(nominalPeriod(surf))
 	watchPresents(surf, p.onScreenGPU)
 	return p
 }
@@ -165,18 +166,30 @@ func (p *Player) onScreenGPU(pts, submitted, gpuDone, presented int64) {
 		return
 	}
 	p.vsync.observe(pts, presented)
+	var g phaselock.Grid
 	if period, anchor, ok := p.vsync.grid(); ok {
-		ready := submitted
-		p.mu.Lock()
-		if r := p.ready[uint64(pts)%readyRing]; r.pts == pts && r.at != 0 && r.at <= submitted {
-			ready = r.at
-		}
-		p.mu.Unlock()
-		p.phase.Observe(phaselock.Sample{Frame: uint32(pts), Ready: ready, GPUDone: gpuDone, Glass: presented}, phaselock.Grid{Period: period, Anchor: anchor})
+		g = phaselock.Grid{Period: period, Anchor: anchor}
 	}
+	ready := submitted
+	p.mu.Lock()
+	if r := p.ready[uint64(pts)%readyRing]; r.pts == pts && r.at != 0 && r.at <= submitted {
+		ready = r.at
+	}
+	p.mu.Unlock()
+	p.phase.Observe(phaselock.Sample{Frame: uint32(pts), Ready: ready, GPUDone: gpuDone, Glass: presented}, g)
 	if o := p.glassObs.Load(); o != nil {
 		(*o).Glass(pts, time.Duration(presented-submitted), time.Duration(p.now()-presented))
+		if g, ok := (*o).(GPUObserver); ok && gpuDone != 0 {
+			g.GPUDone(pts, time.Duration(presented-gpuDone))
+		}
 	}
+}
+
+// GPUObserver is an Observer that also hears, where the platform tells
+// (macOS), how long before reaching the screen the GPU finished drawing
+// each picture.
+type GPUObserver interface {
+	GPUDone(pts int64, toGlass time.Duration)
 }
 
 // Phase reports how the last pictures that reached the screen lined up

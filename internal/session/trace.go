@@ -71,6 +71,9 @@ type clientTraceRow struct {
 	// the picture, and GlassAt when it reached the screen; 0 when it was
 	// superseded unshown or the platform cannot tell.
 	PresentAt, GlassAt int64
+	// GPUDoneAt is when the GPU finished drawing the picture, where the
+	// platform tells (macOS); 0 otherwise.
+	GPUDoneAt int64
 }
 
 // inputTraceRow is one input event received by the host. Sent is the
