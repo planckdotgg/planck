@@ -108,6 +108,9 @@ type sourcePipe struct {
 	openEnc func(encode.Config, ...gpu.Device) (encode.Encoder, error)
 	// opened hears of each encoder before it encodes its first picture.
 	opened func(encode.Config)
+	// gate runs between a picture's capture and its encode; true forces a
+	// keyframe.
+	gate func() bool
 	// emit and emitTS are the current NextSlices call's; encSlice, made
 	// once, forwards the encoder's slices to them.
 	emit     sliceEmit
@@ -158,6 +161,9 @@ func (p *sourcePipe) next(timeout time.Duration, forceKey bool, dst []byte, emit
 		if err := p.openEncoder(f); err != nil {
 			return encode.Packet{}, 0, false, err
 		}
+		forceKey = true
+	}
+	if p.gate != nil && p.gate() {
 		forceKey = true
 	}
 	p.st.EncStart = transport.Mono()
@@ -275,6 +281,8 @@ func (p *sourcePipe) openEncoder(f capture.Frame) error {
 }
 
 func (p *sourcePipe) watchEncoder(fn func(encode.Config)) { p.opened = fn }
+
+func (p *sourcePipe) gateEncode(fn func() bool) { p.gate = fn }
 
 func (p *sourcePipe) SetBitrate(kbps int) error {
 	p.params.BitrateKbps = kbps

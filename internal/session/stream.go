@@ -351,6 +351,12 @@ type encoderWatcher interface {
 	watchEncoder(fn func(encode.Config))
 }
 
+// encodeGate is a VideoPipe that runs fn after it captured a picture and
+// before it encodes it (sourcePipe); fn true makes the picture a keyframe.
+type encodeGate interface {
+	gateEncode(fn func() bool)
+}
+
 // hdrCaptured8Bit is why a stream the profile settled as HDR10 is SDR.
 const hdrCaptured8Bit = "the host captured its HDR desktop 8-bit"
 
@@ -671,6 +677,18 @@ func (st *stream) videoLoop() {
 					}
 				})
 			}
+			if g, ok := pipe.(encodeGate); ok {
+				// An invalidation that comes while the pipe waits for the
+				// display applies to the picture captured, not the next:
+				// a frame sooner, which at 120 fps keeps a report of a lost
+				// frame inside maxInvalidSpan instead of a keyframe.
+				g.gateEncode(func() bool {
+					key, rec := st.takeInvalidations(pipe, frameID)
+					forceKey, recovery = forceKey || key, recovery || rec
+					out.recovery = recovery
+					return forceKey
+				})
+			}
 			info := pipe.Info()
 			st.mu.Lock()
 			st.info = info
@@ -683,10 +701,7 @@ func (st *stream) videoLoop() {
 		if st.sess.KeyframeRequested() || st.keyNeeded.Swap(false) {
 			forceKey = true
 		}
-		key, rec, why := st.applyInvalidations(pipe, frameID)
-		if why != "" {
-			st.h.logf("planck: reference invalidation fell back to a keyframe: %s", why)
-		}
+		key, rec := st.takeInvalidations(pipe, frameID)
 		forceKey, recovery = forceKey || key, recovery || rec
 		var setRate int64
 		if t := st.sess.TargetBitrateKbps(); t > 0 && abs(t-kbps)*20 > kbps {
@@ -850,6 +865,16 @@ func (st *stream) frameSent(j *sendJob, err error) {
 // keeps refDPB (5) pictures, and invalidating more than four of them may
 // leave it nothing the client still holds to predict from.
 const maxInvalidSpan = 4
+
+// takeInvalidations is applyInvalidations, logging a fallback to a
+// keyframe.
+func (st *stream) takeInvalidations(pipe VideoPipe, next uint32) (key, recovery bool) {
+	key, recovery, why := st.applyInvalidations(pipe, next)
+	if why != "" {
+		st.h.logf("planck: reference invalidation fell back to a keyframe: %s", why)
+	}
+	return key, recovery
+}
 
 // applyInvalidations tells the encoder to stop predicting from each frame
 // a client lost and every frame encoded since, up to next, the frame about
