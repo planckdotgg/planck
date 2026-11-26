@@ -92,6 +92,13 @@ macOS also has `Device()` and `Queue()`; Windows `Device()`, `Context()`,
 frame of the decoder's pool was wrapped; the presented-time callbacks (`Timings`)
 allocate, on Core Animation's thread.
 
+Display phase lock (macOS GPU end times) added:
+
+| File | What |
+|---|---|
+| `gpusurface/gpusurface_darwin.go` | `OnPresentedGPU(f func(tag, submitted, gpuDone, presented int64))`: `OnPresented` with the time the GPU finished drawing the frame (`MTLCommandBuffer.GPUEndTime`, on `Now`'s clock), 0 when Metal did not say. While it is set, `PresentTagged` retains each drawable's command buffer in its pending slot (`retain` through `syscall6`, no allocation) and the presented handler reads `GPUEndTime` and releases it; `Close` releases what is left. A direct surface scans a frame out at the first refresh after `gpuDone`; a composited one a refresh or more later, which is how the player tells them apart. The read is a `purego.RegisterFunc` call (a float return, which `syscall6` cannot give): 4 allocations a frame on Core Animation's thread, measured with `testing.AllocsPerRun` against `OnPresented` (12 a frame for the purego callback either way). A `addCompletedHandler:` block was tried first: it cost 12 more a frame for its own callback. |
+| `gpusurface/gpudone_darwin_test.go` | `TestGPUEndTime` (a committed command buffer's end time on `Now`'s clock, 0 before commit) and `TestPresentedGPUReleases` (no slot keeps a command buffer once handled; the handler costs at most 4 allocations a frame over `OnPresented`'s). A window that is never shown drops its drawables before the GPU finishes, so these do not read the times from the handler. |
+
 ## Upstream PR plan
 
 1. `gpusurface` as is, behind its own package so apps that do not import it

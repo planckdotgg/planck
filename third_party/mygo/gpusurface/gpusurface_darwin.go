@@ -85,6 +85,8 @@ var (
 	selPresentDrawable  = objc.RegisterName("presentDrawable:")
 	selCommit           = objc.RegisterName("commit")
 	selPresentedTime    = objc.RegisterName("presentedTime")
+	selGPUEndTime       = objc.RegisterName("GPUEndTime")
+	selRetain           = objc.RegisterName("retain")
 	selLayer            = objc.RegisterName("layer")
 	selRelease          = objc.RegisterName("release")
 	selNewTexture       = objc.RegisterName("newTextureWithDescriptor:iosurface:plane:")
@@ -224,6 +226,9 @@ type pending struct {
 	index      int64 // atomic: the Timing's index, or -1
 	tag        int64 // atomic
 	submitted  int64 // atomic
+	// cb is the drawable's command buffer, retained, for its GPU end
+	// time: whoever swaps it out releases it.
+	cb atomic.Uintptr
 }
 
 // Surface presents frames into a window.
@@ -246,6 +251,7 @@ type Surface struct {
 	pending                    [pendingRing]pending
 	timings                    timings
 	onPresented                atomic.Pointer[func(tag, submitted, presented int64)]
+	onPresentedGPU             atomic.Pointer[func(tag, submitted, gpuDone, presented int64)]
 	scale                      float64
 
 	// size is the drawables' size, width << 32 | height. sizeMu orders
@@ -531,6 +537,14 @@ func (s *Surface) OnPresented(f func(tag, submitted, presented int64)) {
 	s.onPresented.Store(&f)
 }
 
+// OnPresentedGPU is OnPresented with the time the GPU finished drawing
+// the frame, before it reached the screen, 0 when Metal did not say. On a
+// surface scanned out directly a frame shows at the first refresh after
+// that time; a compositor shows it a refresh or more later.
+func (s *Surface) OnPresentedGPU(f func(tag, submitted, gpuDone, presented int64)) {
+	s.onPresentedGPU.Store(&f)
+}
+
 // Present draws the frame in surface, an IOSurfaceRef in BGRA ('BGRA'),
 // NV12 ('420v') or P010 ('x420'), and presents it at once. A frame of
 // another shape than the drawable shows whole between black bars.
@@ -583,13 +597,18 @@ func (s *Surface) PresentTagged(surface uintptr, tag int64) error {
 	}
 	msg(enc, selEndEncoding)
 	i := s.timings.start(submitted)
-	if i >= 0 || s.onPresented.Load() != nil {
+	if i >= 0 || s.onPresented.Load() != nil || s.onPresentedGPU.Load() != nil {
 		id := int64(msg(d, selDrawableID))
 		p := &s.pending[id%pendingRing]
 		atomic.StoreInt64(&p.index, int64(i))
 		atomic.StoreInt64(&p.tag, tag)
 		atomic.StoreInt64(&p.submitted, submitted)
 		atomic.StoreInt64(&p.drawableID, id)
+		if s.onPresentedGPU.Load() != nil {
+			if old := p.cb.Swap(msg(cb, selRetain)); old != 0 {
+				msg(old, selRelease)
+			}
+		}
 		msg1(d, selAddPresented, uintptr(lib.presented))
 	}
 	msg1(cb, selPresentDrawable, d)
@@ -627,10 +646,28 @@ func onPresented(_ objc.Block, d objc.ID) {
 	if at > 0 {
 		presented = int64(at * 1e9)
 	}
-	s.timings.resolve(int(atomic.LoadInt64(&p.index)), presented)
-	if f := s.onPresented.Load(); f != nil {
-		(*f)(atomic.LoadInt64(&p.tag), atomic.LoadInt64(&p.submitted), presented)
+	var gpuDone int64
+	if cb := p.cb.Swap(0); cb != 0 {
+		gpuDone = gpuEndTime(cb)
+		msg(cb, selRelease)
 	}
+	s.timings.resolve(int(atomic.LoadInt64(&p.index)), presented)
+	tag, submitted := atomic.LoadInt64(&p.tag), atomic.LoadInt64(&p.submitted)
+	if f := s.onPresented.Load(); f != nil {
+		(*f)(tag, submitted, presented)
+	}
+	if f := s.onPresentedGPU.Load(); f != nil {
+		(*f)(tag, submitted, gpuDone, presented)
+	}
+}
+
+// gpuEndTime is when the GPU finished cb on the clock Now reads, 0 while
+// it has not: a frame that reaches the screen has finished.
+func gpuEndTime(cb uintptr) int64 {
+	if end := lib.msgFloat(cb, selGPUEndTime); end > 0 {
+		return int64(end * 1e9)
+	}
+	return 0
 }
 
 // wrap returns the textures of the frame in surface, wrapping it on its
@@ -725,6 +762,11 @@ func (s *Surface) Close() {
 	for i := range s.cache {
 		release(&s.cache[i].tex[0])
 		release(&s.cache[i].tex[1])
+	}
+	for i := range s.pending {
+		if cb := s.pending[i].cb.Swap(0); cb != 0 {
+			msg(cb, selRelease)
+		}
 	}
 	s.closeOverlay()
 	for _, p := range []*uintptr{&s.host, &s.layer, &s.pass, &s.rgbPipeline, &s.yuvPipe, &s.overlayPipe, &s.yuv2020Pipe, &s.overlayPQPipe, &s.queue, &s.device} {
