@@ -4,6 +4,7 @@ package dxgi
 
 import (
 	"errors"
+	"os"
 	"runtime"
 	"testing"
 	"time"
@@ -60,7 +61,13 @@ func animate(t *testing.T, d capture.Display) {
 	time.Sleep(200 * time.Millisecond)
 }
 
+// TestDuplicatePrimary needs a live, composed desktop: a CI runner or a
+// session nobody is looking at gives no frames. Run it with
+// PLANCK_LIVE_VIDEO_TEST=1.
 func TestDuplicatePrimary(t *testing.T) {
+	if os.Getenv("PLANCK_LIVE_VIDEO_TEST") != "1" {
+		t.Skip("set PLANCK_LIVE_VIDEO_TEST=1 to duplicate the primary display")
+	}
 	src, err := OpenDisplay("", Options{})
 	if err != nil {
 		t.Skipf("no duplicable display: %v", err)
