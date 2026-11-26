@@ -10,7 +10,7 @@
 #   -InstallDir           default $env:LOCALAPPDATA\Programs\Planck
 #   -NoShortcut           no Start Menu shortcut
 #   -HostTaskName         default "Planck Host"
-#   -HostArgs             planck-host arguments, default "-listen :41001 -media-port 41002 -discovery-port 41000"
+#   -HostArgs             planck-host arguments, default none: the built-in ports 41000-41002
 #   -NoHostTask           leave the Scheduled Task and any running planck-host.exe alone
 #   -LaunchClient         start planck-client.exe afterwards
 #   -RegenerateResources  run `go run .\scripts\winres generate` even if the .syso files exist
@@ -19,7 +19,7 @@ param(
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'Programs\Planck'),
     [switch]$NoShortcut,
     [string]$HostTaskName = 'Planck Host',
-    [string]$HostArgs = '-listen :41001 -media-port 41002 -discovery-port 41000',
+    [string]$HostArgs = '',
     [switch]$NoHostTask,
     [switch]$LaunchClient,
     [switch]$RegenerateResources,

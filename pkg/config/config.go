@@ -26,12 +26,22 @@ const (
 	ClientConfigFile = "client.json"
 )
 
-// The host's default ports, the first discovery.DefaultPort: below
-// 47981-48500, the range Sunshine uses.
+// The host's default ports, the first discovery.DefaultPort. They sit
+// below 44620-48715, which WSL's mirrored networking reserves on the
+// Windows host for both TCP and UDP, hidden from netstat and from
+// excludedportrange, and below Windows' dynamic ports from 49152.
 const (
-	DefaultDiscoveryPort = 47700
-	DefaultControlPort   = 47701
-	DefaultMediaPort     = 47702
+	DefaultDiscoveryPort = 41000
+	DefaultControlPort   = 41001
+	DefaultMediaPort     = 41002
+)
+
+// The default ports before 41000-41002. Hosts saved them into host.json;
+// on a Windows machine with WSL mirrored networking none of them binds.
+const (
+	oldDiscoveryPort = 47700
+	oldControlPort   = 47701
+	oldMediaPort     = 47702
 )
 
 // Codec and chroma values use the same names as the encoder flags in the
@@ -306,7 +316,21 @@ func LoadHostConfig(dir string) (HostConfig, error) {
 	if err := loadJSON(filepath.Join(dir, HostConfigFile), &cfg); err != nil {
 		return HostConfig{}, err
 	}
+	cfg.moveOldDefaultPorts()
 	return cfg, cfg.Validate()
+}
+
+// moveOldDefaultPorts gives a host.json that still holds the old default
+// ports, as every host wrote them on its first run, the new ones. Ports a
+// user chose stay.
+func (c *HostConfig) moveOldDefaultPorts() {
+	if c.ControlPort != oldControlPort || c.MediaPort != oldMediaPort {
+		return
+	}
+	if c.DiscoveryPort != oldDiscoveryPort && c.DiscoveryPort != DefaultDiscoveryPort {
+		return
+	}
+	c.ControlPort, c.MediaPort, c.DiscoveryPort = DefaultControlPort, DefaultMediaPort, DefaultDiscoveryPort
 }
 
 func SaveHostConfig(dir string, cfg HostConfig) error {

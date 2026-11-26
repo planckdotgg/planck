@@ -45,12 +45,12 @@ type HostConfig struct {
 	// Name overrides host.json's name for this run; SetName renames for
 	// good.
 	Name string
-	// ListenAddr is the QUIC control address; empty means ":47701".
+	// ListenAddr is the QUIC control address; empty means ":41001".
 	ListenAddr string
 	// MediaPort is the UDP media port; 0 picks a free one per session.
 	MediaPort int
 	// DiscoveryAddr answers LAN probes and sends beacons; empty means
-	// ":47700", "off" disables discovery.
+	// ":41000", "off" disables discovery.
 	DiscoveryAddr string
 
 	Display string
@@ -655,10 +655,21 @@ func (h *Host) startDiscovery(ctx context.Context) error {
 	}
 	h.wg.Go(func() { _ = conn.Serve(ctx, beacon) })
 	if ua, ok := conn.LocalAddr().(*net.UDPAddr); ok && !ua.IP.IsLoopback() {
-		dst := discovery.BroadcastAddrs(uint16(ua.Port))
+		dst := beaconAddrs(uint16(ua.Port))
 		h.wg.Go(func() { _ = discovery.AnnounceFunc(ctx, conn, beacon, dst, 2*time.Second) })
 	}
 	return nil
+}
+
+// beaconAddrs is where a host on discovery port port broadcasts beacons:
+// that port, and the default one too when it is another, so that clients
+// left on the default still list the host as online.
+func beaconAddrs(port uint16) []netip.AddrPort {
+	dst := discovery.BroadcastAddrs(port)
+	if port != discovery.DefaultPort {
+		dst = append(dst, discovery.BroadcastAddrs(discovery.DefaultPort)...)
+	}
+	return dst
 }
 
 func (h *Host) acceptLoop(ctx context.Context) {

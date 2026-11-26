@@ -38,8 +38,8 @@ func TestBackendMergesRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := newTestBackend(t, dir, nil)
-	b.finder.add(discovery.Announcement{Beacon: bigboi, Addr: netip.MustParseAddrPort("192.168.188.126:47700"), Kind: discovery.PathLANDirect, RTT: time.Millisecond})
-	b.finder.add(discovery.Announcement{Beacon: bigboi, Addr: netip.MustParseAddrPort("100.104.23.37:47700"), Kind: discovery.PathTailscaleDirect, RTT: 3 * time.Millisecond})
+	b.finder.add(discovery.Announcement{Beacon: bigboi, Addr: netip.MustParseAddrPort("192.168.188.126:41000"), Kind: discovery.PathLANDirect, RTT: time.Millisecond})
+	b.finder.add(discovery.Announcement{Beacon: bigboi, Addr: netip.MustParseAddrPort("100.104.23.37:41000"), Kind: discovery.PathTailscaleDirect, RTT: 3 * time.Millisecond})
 
 	hosts := b.Hosts()
 	if len(hosts) != 1 {
@@ -141,7 +141,7 @@ func TestBackendHostOrder(t *testing.T) {
 func TestBackendRenameHost(t *testing.T) {
 	dir := t.TempDir()
 	b, changes := newTestBackend(t, dir, nil)
-	b.finder.add(discovery.Announcement{Beacon: bigboi, Addr: netip.MustParseAddrPort("192.168.188.126:47700"), Kind: discovery.PathLANDirect})
+	b.finder.add(discovery.Announcement{Beacon: bigboi, Addr: netip.MustParseAddrPort("192.168.188.126:41000"), Kind: discovery.PathLANDirect})
 	before := changes.Load()
 	if err := b.RenameHost(bigboi.HostID, "  Gaming Rig "); err != nil {
 		t.Fatal(err)
@@ -154,7 +154,7 @@ func TestBackendRenameHost(t *testing.T) {
 	}
 
 	again, _ := newTestBackend(t, dir, nil)
-	again.finder.add(discovery.Announcement{Beacon: bigboi, Addr: netip.MustParseAddrPort("192.168.188.126:47700"), Kind: discovery.PathLANDirect})
+	again.finder.add(discovery.Announcement{Beacon: bigboi, Addr: netip.MustParseAddrPort("192.168.188.126:41000"), Kind: discovery.PathLANDirect})
 	if h := again.Hosts()[0]; h.Name != "Gaming Rig" {
 		t.Fatalf("after a restart: %+v", h)
 	}
@@ -368,7 +368,7 @@ func TestBackendHostsLeaveOutSelf(t *testing.T) {
 	next := newClient()
 	next.finder.add(discovery.Announcement{Beacon: discovery.Beacon{HostID: selfID, Name: "me", CertFingerprint: strings.ToUpper(b.selfFingerprint(t))},
 		Addr: disc, Kind: discovery.PathLANDirect})
-	next.finder.add(discovery.Announcement{Beacon: bigboi, Addr: netip.MustParseAddrPort("192.168.188.126:47700"), Kind: discovery.PathLANDirect})
+	next.finder.add(discovery.Announcement{Beacon: bigboi, Addr: netip.MustParseAddrPort("192.168.188.126:41000"), Kind: discovery.PathLANDirect})
 	if hs := next.Hosts(); len(hs) != 1 || hs[0].ID != bigboi.HostID || hs[0].Paired {
 		t.Fatalf("next run: %+v, want bigboi alone, not paired", hs)
 	}
@@ -416,7 +416,7 @@ func TestBackendRemoveHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, changes := newTestBackend(t, dir, nil)
-	b.finder.add(discovery.Announcement{Beacon: bigboi, Addr: netip.MustParseAddrPort("192.168.188.126:47700"), Kind: discovery.PathLANDirect})
+	b.finder.add(discovery.Announcement{Beacon: bigboi, Addr: netip.MustParseAddrPort("192.168.188.126:41000"), Kind: discovery.PathLANDirect})
 	if hs := b.Hosts(); len(hs) != 2 {
 		t.Fatalf("before: %+v", hs)
 	}
@@ -447,7 +447,7 @@ func TestBackendRemoveHost(t *testing.T) {
 	if hs := b.Hosts(); len(hs) != 0 {
 		t.Fatalf("an offline paired host after its removal: %+v", hs)
 	}
-	b.finder.add(discovery.Announcement{Beacon: bigboi, Addr: netip.MustParseAddrPort("192.168.188.126:47700"), Kind: discovery.PathLANDirect})
+	b.finder.add(discovery.Announcement{Beacon: bigboi, Addr: netip.MustParseAddrPort("192.168.188.126:41000"), Kind: discovery.PathLANDirect})
 	if hs := b.Hosts(); len(hs) != 1 || hs[0].Paired {
 		t.Fatalf("bigboi heard again: %+v, want it back, not paired", hs)
 	}
@@ -457,5 +457,40 @@ func TestBackendRemoveHost(t *testing.T) {
 	b.mu.Unlock()
 	if err := b.RemoveHost(bigboi.HostID); err == nil {
 		t.Fatal("removed the host streaming now")
+	}
+}
+
+// TestBackendPinnedHostMovedPorts: with client.json as it was on the Mac,
+// an address pin from before discovery found bigboi beside its pin by ID,
+// both on the old control port, bigboi heard on a new control port shows
+// as one card, online, at the port its beacon gives, and no offline card
+// is left for the old address.
+func TestBackendPinnedHostMovedPorts(t *testing.T) {
+	dir := t.TempDir()
+	err := config.UpdateClientConfig(dir, func(c *config.ClientConfig) error {
+		for _, p := range []config.PinnedHost{
+			{HostID: "addr:192.168.188.126:41001", CertFingerprint: bigboi.CertFingerprint, LastAddr: "192.168.188.126:41001"},
+			{HostID: bigboi.HostID, Name: "bigboi", CertFingerprint: bigboi.CertFingerprint, LastAddr: "192.168.188.126:41001",
+				LastLANAddr: "192.168.188.126:41001", LastTailscaleAddr: "100.104.23.37:41001"},
+		} {
+			if err := c.Pin(p); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := newTestBackend(t, dir, nil)
+	if hs := b.Hosts(); len(hs) != 1 || hs[0].Online {
+		t.Fatalf("not heard yet: %+v, want one offline card", hs)
+	}
+	moved := bigboi
+	moved.ControlPort = 41005
+	b.finder.add(discovery.Announcement{Beacon: moved, Addr: netip.MustParseAddrPort("192.168.188.126:41000"), Kind: discovery.PathLANDirect})
+	hs := b.Hosts()
+	if len(hs) != 1 || hs[0].ID != bigboi.HostID || !hs[0].Online || hs[0].Address != "192.168.188.126:41005" {
+		t.Fatalf("heard on the new port: %+v, want bigboi alone, online at 192.168.188.126:41005", hs)
 	}
 }

@@ -31,7 +31,7 @@ func TestHostConfigRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(first.HostID) != 32 || first.ControlPort != 47701 || first.MediaPort != 47702 || !first.RequirePINForLAN || !first.AllowTailscaleSameUser {
+	if len(first.HostID) != 32 || first.ControlPort != 41001 || first.MediaPort != 41002 || first.DiscoveryPort != 41000 || !first.RequirePINForLAN || !first.AllowTailscaleSameUser {
 		t.Fatalf("defaults = %+v", first)
 	}
 	if first.CertPath != filepath.Join(dir, "host-cert.pem") {
@@ -346,5 +346,33 @@ func TestTelemetryEnabledDefaultsOnAndPersistsOff(t *testing.T) {
 	}
 	if TelemetryOn(dir) {
 		t.Fatal("telemetry is on with a client.json that cannot be read")
+	}
+}
+
+// TestOldDefaultPortsMove: a host.json holding the old default ports,
+// which no Windows machine with WSL mirrored networking can bind, loads
+// with the new ones; ports a user chose stay.
+func TestOldDefaultPortsMove(t *testing.T) {
+	for _, tc := range []struct {
+		name, ports              string
+		control, media, discover uint16
+	}{
+		{"old defaults", `"controlPort":47701,"mediaPort":47702,"discoveryPort":47700`, 41001, 41002, 41000},
+		{"old defaults, before discoveryPort", `"controlPort":47701,"mediaPort":47702`, 41001, 41002, 41000},
+		{"discovery off", `"controlPort":47701,"mediaPort":47702,"discoveryPort":0`, 47701, 47702, 0},
+		{"chosen", `"controlPort":45001,"mediaPort":45002,"discoveryPort":45000`, 45001, 45002, 45000},
+	} {
+		dir := t.TempDir()
+		body := `{"hostID":"h1",` + tc.ports + `,"codec":"hevc","chroma":"nv12","fps":60,"maxBitrateKbps":1000,"certPath":"c","keyPath":"k"}`
+		if err := os.WriteFile(filepath.Join(dir, HostConfigFile), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		c, err := LoadHostConfig(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.ControlPort != tc.control || c.MediaPort != tc.media || c.DiscoveryPort != tc.discover {
+			t.Errorf("%s: ports %d %d %d, want %d %d %d", tc.name, c.ControlPort, c.MediaPort, c.DiscoveryPort, tc.control, tc.media, tc.discover)
+		}
 	}
 }

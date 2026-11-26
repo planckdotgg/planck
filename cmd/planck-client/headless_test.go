@@ -251,7 +251,7 @@ func TestParseOptions(t *testing.T) {
 		o.pin != "012345" || !o.json || o.duration != 5*time.Second || o.pathMode != pathTailscale {
 		t.Errorf("got %+v", o)
 	}
-	if got := withDefaultPort(o.connect); got != "10.0.0.2:47701" {
+	if got := withDefaultPort(o.connect); got != "10.0.0.2:41001" {
 		t.Errorf("default port: %q", got)
 	}
 	if got := withDefaultPort("[fd7a::1]:5000"); got != "[fd7a::1]:5000" {

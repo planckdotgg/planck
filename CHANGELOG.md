@@ -4,6 +4,10 @@ Each release has a section `## [X.Y.Z]`. The Release workflow publishes that sec
 
 ## [Unreleased]
 
+- Breaking: the default ports are now UDP 41000 (discovery), 41001 (control) and 41002 (media). The old 47700-47702 fall in the range WSL's mirrored networking reserves on Windows, where the host could not start. A host.json that still holds the old defaults moves to the new ones; ports you chose stay. Update the host and the client together: an older client listens for hosts on 47700.
+- A host on a discovery port of its own also announces itself on the default one, so clients on the default list it as online.
+- A lost frame reported while the host waits for the display now recovers on the next picture, instead of falling back to a keyframe one frame later.
+
 ## [0.1.0]
 
 The first public release.

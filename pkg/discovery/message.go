@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	DefaultPort = 47700
+	DefaultPort = 41000
 
 	// SafeShardPayload is the media payload that fits a Tailscale 1280-byte
 	// MTU after IPv6, UDP, and Planck's AEAD and media headers. LAN paths use

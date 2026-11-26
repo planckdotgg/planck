@@ -69,7 +69,7 @@ func TestQuickConnectResolve(t *testing.T) {
 	}}
 	for in, want := range map[string]string{
 		"h-cabin": "h-cabin", "cabin-pc": "h-cabin", "CABIN": "h-cabin", strings.ToUpper(testFP): "h-cabin",
-		"studio-mac": "100.101.102.103:47701", "studio-mac.tail1234.ts.net": "100.101.102.103:47701",
+		"studio-mac": "100.101.102.103:41001", "studio-mac.tail1234.ts.net": "100.101.102.103:41001",
 		"10.0.0.5": "10.0.0.5", "shop-rig.local": "shop-rig.local",
 	} {
 		if got, err := b.quickConnect(in); err != nil || got != want {
@@ -198,7 +198,7 @@ func TestBackendHostSettings(t *testing.T) {
 	b, _ := newTestBackend(t, dir, nil)
 	s := b.HostSettings()
 	if !s.RequirePINForLAN || !s.AllowTailscaleSameUser || !s.AllowInput || s.Clipboard != ui.ClipboardOff ||
-		s.Ports != (ui.HostPorts{Control: 47701, Media: 47702, Discovery: 47700}) {
+		s.Ports != (ui.HostPorts{Control: 41001, Media: 41002, Discovery: 41000}) {
 		t.Fatalf("defaults: %+v", s)
 	}
 	s.Name, s.Encoder, s.Display, s.VDDPrimary, s.FixedPIN = " studio ", "Test GPU", "2", true, "000111"
