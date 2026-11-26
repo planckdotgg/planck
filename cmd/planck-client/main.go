@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/planckdotgg/planck/internal/session"
+	"github.com/planckdotgg/planck/internal/version"
 	"github.com/planckdotgg/planck/pkg/config"
 	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/discovery"
@@ -27,6 +28,8 @@ import (
 // defaultControlPort is planck-host's QUIC port, used when an address
 // leaves the port out.
 const defaultControlPort = config.DefaultControlPort
+
+var errShowVersion = errors.New("-version")
 
 type pathMode string
 
@@ -72,6 +75,10 @@ type options struct {
 func main() {
 	o, err := parseOptions(os.Args[1:], os.Stderr)
 	if errors.Is(err, flag.ErrHelp) {
+		return
+	}
+	if errors.Is(err, errShowVersion) {
+		fmt.Println("planck-client", version.Full())
 		return
 	}
 	if err != nil {
@@ -127,8 +134,12 @@ func parseOptions(args []string, out io.Writer) (options, error) {
 	fs.DurationVar(&o.inputEvery, "input-probe-every", time.Second, "headless: how often -input-probe sends")
 	fs.BoolVar(&o.json, "json", false, "headless: print the summary as JSON")
 	fs.StringVar(&mode, "path-mode", string(pathAuto), "auto, lan or tailscale; headless, lan and tailscale race only those paths and fail on another")
+	showVersion := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); err != nil {
 		return o, err
+	}
+	if *showVersion {
+		return o, errShowVersion
 	}
 	if fs.NArg() > 0 {
 		return o, fmt.Errorf("unexpected argument %q", fs.Arg(0))

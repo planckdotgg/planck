@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	mui "github.com/egoist/mygo/ui"
+	"github.com/planckdotgg/planck/internal/version"
 	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/discovery"
 )
@@ -269,4 +270,12 @@ func TestPortsRecheckedOnReturn(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSettingsShowsVersion(t *testing.T) {
+	_, tt := settingsAt(t, newFake(), catGeneral)
+	if want := "Planck " + version.String(); !tt.HasText(want) {
+		t.Fatalf("Settings does not show %q: %q", want, tt.Texts())
+	}
+	snapshot(t, tt, "settings-version")
 }

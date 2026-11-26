@@ -401,3 +401,11 @@ func TestParseOptionsOverrides(t *testing.T) {
 		}
 	}
 }
+
+func TestParseOptionsVersion(t *testing.T) {
+	for _, args := range [][]string{{"-version"}, {"--version"}, {"-version", "-headless"}} {
+		if _, err := parseOptions(args, io.Discard); !errors.Is(err, errShowVersion) {
+			t.Errorf("%q: err = %v, want errShowVersion", args, err)
+		}
+	}
+}

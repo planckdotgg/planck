@@ -6,6 +6,7 @@ import (
 
 	mui "github.com/egoist/mygo/ui"
 	"github.com/planckdotgg/planck/internal/ui/theme"
+	"github.com/planckdotgg/planck/internal/version"
 )
 
 const minBitrateMbps = 5
@@ -220,6 +221,8 @@ func (a *App) settingsNav(c *mui.Context, f *settingsFrame) {
 				a.categoryRow(c, f, cat, len(found[cat]))
 			}
 		})
+		mui.Spacer(c)
+		mono(c, "Planck "+version.String()).FontSize(theme.TextMini).TextColor(theme.RoleText3).PaddingX(10)
 	})
 }
 

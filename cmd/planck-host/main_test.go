@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"io"
 	"testing"
 
@@ -93,6 +94,14 @@ func TestParseConfigPolicy(t *testing.T) {
 	for _, args := range [][]string{{"-vdd", "maybe"}, {"-res", "wide"}, {"-bit-depth", "12"}, {"-subframe-slices", "3"}} {
 		if _, _, err := parseConfig(args, io.Discard); err == nil {
 			t.Errorf("%v: accepted", args)
+		}
+	}
+}
+
+func TestParseOptionsVersion(t *testing.T) {
+	for _, args := range [][]string{{"-version"}, {"--version"}, {"-synth", "-version"}} {
+		if _, err := parseOptions(args, io.Discard); !errors.Is(err, errShowVersion) {
+			t.Errorf("%q: err = %v, want errShowVersion", args, err)
 		}
 	}
 }

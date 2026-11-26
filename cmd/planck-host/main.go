@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/planckdotgg/planck/internal/session"
+	"github.com/planckdotgg/planck/internal/version"
 	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/encode"
@@ -27,6 +28,10 @@ import (
 func main() {
 	o, err := parseOptions(os.Args[1:], os.Stderr)
 	if errors.Is(err, flag.ErrHelp) {
+		return
+	}
+	if errors.Is(err, errShowVersion) {
+		fmt.Println("planck-host", version.Full())
 		return
 	}
 	if err != nil {
@@ -38,6 +43,8 @@ func main() {
 		os.Exit(1)
 	}
 }
+
+var errShowVersion = errors.New("-version")
 
 type options struct {
 	cfg        session.HostConfig
@@ -90,8 +97,12 @@ func parseOptions(args []string, out io.Writer) (options, error) {
 	fs.StringVar(&cfg.MicDevice, "mic-device", "", `virtual input device the client's microphone plays into, by part of its name (default: Planck Virtual Audio, then Steam Streaming Microphone, VB-Cable or BlackHole); "off" refuses the microphone`)
 	clip := fs.String("clipboard", "both", "share the clipboard: both, host-to-client, client-to-host or off")
 	fs.BoolVar(&cfg.Synth, "synth", false, "stream a generated test pattern at -width x -height and -fps instead of a display")
+	showVersion := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); err != nil {
 		return o, err
+	}
+	if *showVersion {
+		return o, errShowVersion
 	}
 	if fs.NArg() > 0 {
 		return o, fmt.Errorf("unexpected argument %q", fs.Arg(0))
