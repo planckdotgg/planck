@@ -41,7 +41,7 @@ esac
 prefix=$(mkdir -p "$prefix" && cd "$prefix" && pwd -P)
 
 here=$(cd "$(dirname "$0")" && pwd)
-if [[ -x "$here/bin/planck-client" && -x "$here/bin/planck-host" ]]; then
+if [[ -f "$here/bin/planck-client" && -f "$here/bin/planck-host" ]]; then
   mode=archive
   src=$here
   desktop=$src/share/applications/planck.desktop
