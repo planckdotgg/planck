@@ -419,7 +419,7 @@ func TestGamepadDisableDuringInject(t *testing.T) {
 		t.Fatal(err)
 	}
 	injected := make(chan struct{})
-	go func() { h.onInput(ev); close(injected) }()
+	go func() { h.onInput(nil, ev); close(injected) }()
 	select {
 	case <-inj.entered:
 	case <-time.After(5 * time.Second):

@@ -255,9 +255,12 @@ type Host struct {
 	inject input.Injector
 	// held is what inject holds down, let go of as each client leaves.
 	held input.Held
-	// heldBy is the stream whose client held is from, nil once no client
-	// connected since the last release.
-	heldBy *stream
+	// inputOwner is the session whose input is injected and held, nil
+	// until the next session sends or is admitted. retired are sessions
+	// taken over or ended whose callbacks may still be running; their
+	// input is dropped.
+	inputOwner *transport.Session
+	retired    map[*transport.Session]struct{}
 	// injMu orders every use of inject against Stop closing it; injClosed
 	// is set once Stop let go of held and closed inject.
 	injMu     sync.Mutex
@@ -688,7 +691,7 @@ func (h *Host) acceptLoop(ctx context.Context) {
 		if old != nil {
 			h.stopWithin(old)
 		}
-		h.claimHeld(st)
+		h.claimInput(sess)
 		h.logf("planck: %s connected from %v (%s)", sess.Identity(), sess.RemoteControlAddr(), st.path)
 		h.wg.Go(func() {
 			st.run(ctx)
@@ -698,7 +701,8 @@ func (h *Host) acceptLoop(ctx context.Context) {
 			}
 			replaced := h.cur != nil
 			h.mu.Unlock()
-			h.releaseHeld(st)
+			h.retireInput(sess)
+			h.forgetRetired(sess)
 			if !replaced {
 				h.releasePads()
 			}
@@ -776,12 +780,12 @@ func (h *Host) Err() error {
 	return nil
 }
 
-// stopStream ends st, which the caller took out of h.cur, lets go of what
-// its client held once no more of its input can arrive, and waits for its
-// teardown.
+// stopStream ends st, which the caller took out of h.cur: it drops the
+// rest of its client's input and lets go of what that client held before
+// the teardown, which an input callback still running can hold up.
 func (h *Host) stopStream(st *stream) {
+	h.retireInput(st.sess)
 	st.end()
-	h.releaseHeld(st)
 	<-st.done
 }
 
@@ -842,7 +846,7 @@ func (h *Host) preempt() {
 	if st == nil {
 		// What is held is from a client that already left, whose stream
 		// may not have let go yet; the one authorizing has sent nothing.
-		h.releaseHeld(nil)
+		h.retireInput(nil)
 		return
 	}
 	h.stopWithin(st)
@@ -947,7 +951,7 @@ func (h *Host) chroma(acc wire.SessionConfig) encode.Chroma {
 	return encode.NV12
 }
 
-func (h *Host) onInput(in wire.Input) {
+func (h *Host) onInput(from *transport.Session, in wire.Input) {
 	recv := transport.Mono()
 	if h.inputTrace != nil {
 		defer h.traceInput(in, recv)
@@ -964,7 +968,7 @@ func (h *Host) onInput(in wire.Input) {
 	}
 	if h.inject != nil {
 		h.secureAttention(ev)
-		injected, err := h.injectHeld(ev)
+		injected, err := h.injectHeld(from, ev)
 		if err != nil {
 			h.inputErr.Add(1)
 			return
@@ -976,15 +980,21 @@ func (h *Host) onInput(in wire.Input) {
 	}
 }
 
-// injectHeld injects ev and notes what it holds down, unless Stop closed
-// the injector or the gamepad settings drop it. Noting under injMu keeps
-// a press from landing after Stop let go of everything held.
-func (h *Host) injectHeld(ev input.Event) (bool, error) {
+// injectHeld injects ev from the session from and notes what it holds
+// down, unless Stop closed the injector, another session owns the input,
+// from was retired, or the gamepad settings drop it. Checking and noting
+// under injMu keeps a press from landing after its client's keys were let
+// go of.
+func (h *Host) injectHeld(from *transport.Session, ev input.Event) (bool, error) {
 	h.injMu.Lock()
 	defer h.injMu.Unlock()
 	if h.injClosed {
 		return false, nil
 	}
+	if _, gone := h.retired[from]; gone || h.inputOwner != nil && h.inputOwner != from {
+		return false, nil
+	}
+	h.inputOwner = from
 	if ev.Type == input.TypeGamepad {
 		if dropped, err := h.injectGamepad(ev); dropped || err != nil {
 			return false, err
@@ -996,26 +1006,56 @@ func (h *Host) injectHeld(ev input.Event) (bool, error) {
 	return true, nil
 }
 
-// claimHeld makes st the stream whose client's input is held.
-func (h *Host) claimHeld(st *stream) {
-	h.injMu.Lock()
-	h.heldBy = st
-	h.injMu.Unlock()
-}
-
-// releaseHeld lets go of every key and button held down when they are
-// from's client's, or whoever's for a nil from. A stream that ended after
-// another client took over leaves that client's keys down.
-func (h *Host) releaseHeld(from *stream) {
+// claimInput makes sess, just admitted, the session whose input is
+// injected, letting go of what another session held.
+func (h *Host) claimInput(sess *transport.Session) {
 	h.injMu.Lock()
 	defer h.injMu.Unlock()
-	if from != nil && h.heldBy != from {
+	if h.inputOwner != nil && h.inputOwner != sess {
+		h.retireLocked(h.inputOwner)
+	}
+	delete(h.retired, sess)
+	h.inputOwner = sess
+}
+
+// retireInput drops the rest of sess's input and lets go of what it held
+// when it owns the input; a nil sess retires whichever session does. A
+// session that ends after another took over leaves that one's keys down.
+func (h *Host) retireInput(sess *transport.Session) {
+	h.injMu.Lock()
+	defer h.injMu.Unlock()
+	if sess == nil {
+		sess = h.inputOwner
+		if sess == nil {
+			if h.inject != nil && !h.injClosed {
+				h.releaseLocked()
+			}
+			return
+		}
+	}
+	h.retireLocked(sess)
+}
+
+func (h *Host) retireLocked(sess *transport.Session) {
+	if h.retired == nil {
+		h.retired = make(map[*transport.Session]struct{})
+	}
+	h.retired[sess] = struct{}{}
+	if h.inputOwner != sess {
 		return
 	}
-	h.heldBy = nil
+	h.inputOwner = nil
 	if h.inject != nil && !h.injClosed {
 		h.releaseLocked()
 	}
+}
+
+// forgetRetired drops sess from retired once its session closed, when no
+// callback of it can run any more.
+func (h *Host) forgetRetired(sess *transport.Session) {
+	h.injMu.Lock()
+	delete(h.retired, sess)
+	h.injMu.Unlock()
 }
 
 // closeInput lets go of what is held and closes an injector the host
@@ -1200,7 +1240,7 @@ func (h *Host) Stop() {
 		}
 		if !h.within(func() {
 			if st != nil {
-				st.stop()
+				h.stopStream(st)
 			}
 			h.wg.Wait()
 		}) {

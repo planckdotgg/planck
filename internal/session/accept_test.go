@@ -602,3 +602,68 @@ func TestTakeoverReleasesFirstClientKey(t *testing.T) {
 		t.Fatalf("after the first stream ended: injected %+v; want %+v", got, want)
 	}
 }
+
+// TestTakeoverWithInputInFlight: when another client takes over while the
+// first client's input callback is paused before injection, the first
+// client's held key goes up before the new client's press, and the paused
+// press is dropped when it resumes.
+func TestTakeoverWithInputInFlight(t *testing.T) {
+	key := func(usage uint16, pressed bool) input.Event {
+		return input.Event{Type: input.TypeKey, Key: input.KeyEvent{Usage: usage, Pressed: pressed}}
+	}
+	inj := &recordInjector{}
+	entered, resume := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(resume) }) }
+	h := newTestHost(t, HostConfig{InjectInput: true, Injector: inj, OnInput: func(ev input.Event) {
+		if ev.Key.Usage == input.KeyC {
+			close(entered)
+			<-resume
+		}
+	}}, &logBuf{})
+	h.stopWait = 300 * time.Millisecond
+	startTestHost(t, h)
+	t.Cleanup(unblock)
+	addr, dir := h.Addr().String(), t.TempDir()
+	send := func(r *clientRig, ev input.Event) {
+		t.Helper()
+		if err := r.client.SendInput(ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	first := newClient(t, dir, h.PIN())
+	if err := connect(t, first, addr); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "video on the first stream", func() bool { return first.sink.Units.Load() >= 5 })
+	old := h.current()
+	send(first, key(input.KeyB, true))
+	waitFor(t, "the first client's B at the host", func() bool { return len(inj.events()) == 1 })
+	send(first, key(input.KeyC, true))
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first client's C did not reach the host")
+	}
+
+	second := newClient(t, dir, "")
+	if err := connect(t, second, addr); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "video on the second stream", func() bool { return second.sink.Units.Load() >= 5 })
+	a := key(input.KeyA, true)
+	send(second, a)
+	waitFor(t, "the second client's A at the host", func() bool { return len(inj.events()) == 3 })
+
+	unblock()
+	select {
+	case <-old.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first stream did not end")
+	}
+	want := []input.Event{key(input.KeyB, true), key(input.KeyB, false), a}
+	if got := inj.events(); !slices.Equal(got, want) {
+		t.Fatalf("injected %+v; want %+v", got, want)
+	}
+}
