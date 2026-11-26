@@ -57,3 +57,34 @@ func TestRefInvalidationSendsNoKeyframeRequest(t *testing.T) {
 		}
 	}
 }
+
+// TestRefInvalidateCarriesGapEnd: a host with reference invalidation says
+// it reads RefInvalidate.Through, and a gap's last frame reaches it.
+func TestRefInvalidateCarriesGapEnd(t *testing.T) {
+	got := make(chan wire.RefInvalidate, 1)
+	p := newPair(t, pairOpts{
+		server: func(c *ServerConfig) {
+			c.RefInvalidation = true
+			c.Handlers.Control = func(m wire.Message) {
+				if m, ok := m.(*wire.RefInvalidate); ok {
+					got <- *m
+				}
+			}
+		},
+		client: func(c *ClientConfig) { c.RefInvalidation = true },
+	})
+	if p.client.PeerFeatures()&wire.FeatureRefInvalidateThrough == 0 {
+		t.Fatal("host did not offer FeatureRefInvalidateThrough")
+	}
+	if err := p.client.SendControl(&wire.RefInvalidate{FrameID: 18, Through: 20}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case m := <-got:
+		if m.FrameID != 18 || m.Last() != 20 {
+			t.Fatalf("host got %+v, want 18 through 20", m)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("host got no RefInvalidate")
+	}
+}

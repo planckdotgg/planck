@@ -392,3 +392,31 @@ func TestSwitchDisplayNeedsAnID(t *testing.T) {
 		}
 	}
 }
+
+// TestRefInvalidateThrough: a gap of one frame keeps the 4-byte body older
+// hosts read, a longer one adds its last frame, and a Through that is not
+// after FrameID is refused.
+func TestRefInvalidateThrough(t *testing.T) {
+	b, _ := AppendMessage(nil, &RefInvalidate{FrameID: 18, Through: 18})
+	if got := hex.EncodeToString(b); got != "000000050700000012" {
+		t.Errorf("one-frame gap: %s", got)
+	}
+	want := RefInvalidate{FrameID: 18, Through: 20}
+	b, _ = AppendMessage(nil, &want)
+	if got := hex.EncodeToString(b); got != "00000009070000001200000014" {
+		t.Errorf("gap 18-20: %s", got)
+	}
+	got, err := DecodeMessage(b[4:])
+	if err != nil || *got.(*RefInvalidate) != want || got.(*RefInvalidate).Last() != 20 {
+		t.Fatalf("round trip: %+v, %v", got, err)
+	}
+	if _, err := DecodeMessage([]byte{byte(MsgRefInvalidate), 0, 0, 0, 18, 0, 0, 0, 17}); !errors.Is(err, ErrMalformed) {
+		t.Errorf("Through before FrameID: %v, want ErrMalformed", err)
+	}
+	for _, f := range []uint32{FeatureLANDatagram, FeatureInputDedup, FeatureCapabilities, FeatureResize, FeaturePeerState, FeatureMic,
+		FeatureClipboard, FeatureHostStats, FeatureCursorState, FeatureStreamSwitch, FeatureResizeDisplay, FeatureCursorShape, FeatureSwitchDisplay, FeatureRefInvalidate} {
+		if f&FeatureRefInvalidateThrough != 0 {
+			t.Errorf("FeatureRefInvalidateThrough %#x shares a bit with %#x", FeatureRefInvalidateThrough, f)
+		}
+	}
+}

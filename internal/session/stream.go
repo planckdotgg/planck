@@ -46,7 +46,7 @@ type stream struct {
 	// inputDone is set under h.injMu once the stream's input is torn down.
 	inputDone bool
 
-	invalid chan uint32
+	invalid chan invalidGap
 	// keyNeeded asks the video loop for a keyframe: an invalidation that
 	// did not fit in invalid.
 	keyNeeded atomic.Bool
@@ -117,7 +117,7 @@ func newStream(h *Host, sess *transport.Session) *stream {
 	if p.BitrateKbps <= 0 {
 		p.BitrateKbps = int(acc.BitrateKbps)
 	}
-	st := &stream{h: h, sess: sess, params: p, done: make(chan struct{}), invalid: make(chan uint32, 16), resize: make(chan resizeReq, 1), switchTo: make(chan string, 1),
+	st := &stream{h: h, sess: sess, params: p, done: make(chan struct{}), invalid: make(chan invalidGap, 16), resize: make(chan resizeReq, 1), switchTo: make(chan string, 1),
 		encodeMs: newWindow(encodeWindow), captureW: newWindow(encodeWindow), encodeW: newWindow(encodeWindow)}
 	if ua, ok := sess.RemoteControlAddr().(*net.UDPAddr); ok {
 		st.addr = ua.String()
@@ -571,9 +571,14 @@ func (st *stream) senderDropped(id uint32) {
 	st.invalidate(id)
 }
 
-func (st *stream) invalidate(frameID uint32) {
+func (st *stream) invalidate(frameID uint32) { st.invalidateGap(frameID, frameID) }
+
+// invalidGap is a run of frames a client lost, from to through inclusive.
+type invalidGap struct{ from, through uint32 }
+
+func (st *stream) invalidateGap(from, through uint32) {
 	select {
-	case st.invalid <- frameID:
+	case st.invalid <- invalidGap{from, through}:
 	default:
 		st.keyNeeded.Store(true)
 	}
@@ -851,15 +856,16 @@ const maxInvalidSpan = 4
 // to be encoded. key says only a keyframe recovers, and why says why;
 // recovery that the next frame recovers without one, and must say so
 // (wire.VideoInfo.Recovery). A frame the sender dropped is invalidated at
-// once; the client's report of the gap it left changes nothing.
+// once; the client's report of the gap it left changes nothing, unless the
+// gap runs on past the frames invalidated with it.
 func (st *stream) applyInvalidations(pipe VideoPipe, next uint32) (key, recovery bool, why string) {
 	for {
 		select {
-		case id := <-st.invalid:
+		case g := <-st.invalid:
+			id, handled := st.unhandled(g)
 			span := int32(next - id)
 			switch {
-			case key || span <= 0:
-			case st.pts[id%ptsRingSize].id == id && st.pts[id%ptsRingSize].dropped && st.pts[id%ptsRingSize].invalidated:
+			case key || span <= 0 || handled:
 			case span > maxInvalidSpan:
 				key, why = true, fmt.Sprintf("frame %d is %d frames back, past %d", id, span, maxInvalidSpan)
 			default:
@@ -881,6 +887,23 @@ func (st *stream) applyInvalidations(pipe VideoPipe, next uint32) (key, recovery
 			return key, recovery && !key, why
 		}
 	}
+}
+
+// unhandled is the first frame of g that still needs invalidating. A gap
+// that starts at a frame the sender dropped skips the frames invalidated
+// since; handled says that covered all of g, and the Recovery frame after
+// them is still the client's to receive.
+func (st *stream) unhandled(g invalidGap) (id uint32, handled bool) {
+	id = g.from
+	if slot := &st.pts[id%ptsRingSize]; slot.id != id || !slot.dropped || !slot.invalidated {
+		return id, false
+	}
+	for ; int32(g.through-id) >= 0; id++ {
+		if slot := &st.pts[id%ptsRingSize]; slot.id != id || !slot.invalidated {
+			return id, false
+		}
+	}
+	return id, true
 }
 
 func (st *stream) sleep(d time.Duration) bool {

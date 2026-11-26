@@ -1149,7 +1149,7 @@ func (h *Host) onControl(m wire.Message) {
 		st := h.cur
 		h.mu.Unlock()
 		if st != nil {
-			st.invalidate(m.FrameID)
+			st.invalidateGap(m.FrameID, m.Last())
 		}
 	case *wire.StatsReport:
 		h.mu.Lock()

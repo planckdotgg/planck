@@ -1091,7 +1091,11 @@ func (cc *conn) onFrame(info wire.VideoInfo, frame []byte) {
 	if sess.RefInvalidation() && !cc.intra.Load() {
 		a := cc.ref.admit(info, now)
 		if a.invalidate {
-			_ = sess.SendControl(&wire.RefInvalidate{FrameID: a.invalidFrom})
+			m := &wire.RefInvalidate{FrameID: a.invalidFrom}
+			if sess.PeerFeatures()&wire.FeatureRefInvalidateThrough != 0 {
+				m.Through = a.invalidThrough
+			}
+			_ = sess.SendControl(m)
 		}
 		switch {
 		case a.giveUp:

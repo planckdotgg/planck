@@ -31,9 +31,10 @@ type refRecovery struct {
 // admission is what to do with one complete frame.
 type admission struct {
 	decode bool
-	// invalidate asks the host to stop predicting from invalidFrom on.
-	invalidate  bool
-	invalidFrom uint32
+	// invalidate asks the host to stop predicting from invalidFrom on;
+	// the client lost invalidFrom through invalidThrough.
+	invalidate                  bool
+	invalidFrom, invalidThrough uint32
 	// giveUp: no Recovery frame came in time; wait for a keyframe.
 	giveUp bool
 }
@@ -53,7 +54,7 @@ func (r *refRecovery) admit(info wire.VideoInfo, now int64) admission {
 	}
 	var a admission
 	if r.haveLast && info.FrameID != r.last+1 {
-		a.invalidate, a.invalidFrom = true, r.last+1
+		a.invalidate, a.invalidFrom, a.invalidThrough = true, r.last+1, info.FrameID-1
 		r.loseLocked(info.FrameID-1, now)
 	}
 	r.last, r.haveLast = info.FrameID, true

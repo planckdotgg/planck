@@ -135,6 +135,10 @@ const (
 	// the host's next Recovery frame (or keyframe), and the host answers
 	// it so; neither end then turns a lost frame into a keyframe request.
 	FeatureRefInvalidate uint32 = 1 << 14
+	// FeatureRefInvalidateThrough, from a host, says it reads
+	// RefInvalidate.Through. A client sends Through only to such a host:
+	// an older one refuses the longer message.
+	FeatureRefInvalidateThrough uint32 = 1 << 15
 )
 
 type AuthMethod uint8
@@ -214,8 +218,18 @@ type PLI struct{}
 
 // RefInvalidate tells the host that FrameID and every later frame are
 // unusable as references, so it can recover with a non-IDR frame.
+// Through, when after FrameID, is the last frame the client lost in this
+// gap; otherwise the gap is FrameID alone.
 type RefInvalidate struct {
-	FrameID uint32
+	FrameID, Through uint32
+}
+
+// Last is the last frame of the gap.
+func (m *RefInvalidate) Last() uint32 {
+	if int32(m.Through-m.FrameID) > 0 {
+		return m.Through
+	}
+	return m.FrameID
 }
 
 type StatsReport struct {
@@ -437,10 +451,23 @@ func (*PLI) appendBody(b []byte) []byte { return b }
 func (*PLI) decodeBody(*decoder)        {}
 
 func (m *RefInvalidate) appendBody(b []byte) []byte {
-	return binary.BigEndian.AppendUint32(b, m.FrameID)
+	b = binary.BigEndian.AppendUint32(b, m.FrameID)
+	if m.Last() != m.FrameID {
+		b = binary.BigEndian.AppendUint32(b, m.Through)
+	}
+	return b
 }
 
-func (m *RefInvalidate) decodeBody(d *decoder) { m.FrameID = d.u32() }
+func (m *RefInvalidate) decodeBody(d *decoder) {
+	m.FrameID = d.u32()
+	if len(d.b) == 0 {
+		return
+	}
+	m.Through = d.u32()
+	if m.Last() == m.FrameID {
+		d.bad = true
+	}
+}
 
 func (m *StatsReport) appendBody(b []byte) []byte {
 	b = binary.BigEndian.AppendUint32(b, m.RTTMicros)

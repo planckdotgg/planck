@@ -279,7 +279,7 @@ func (sv *Server) handshake(parent context.Context, conn *quic.Conn) (*Session, 
 		features |= wire.FeatureSwitchDisplay
 	}
 	if sv.cfg.RefInvalidation {
-		features |= wire.FeatureRefInvalidate
+		features |= wire.FeatureRefInvalidate | wire.FeatureRefInvalidateThrough
 	}
 	if err := wire.WriteMessage(ctrl, &wire.Hello{Version: wire.Version, Role: wire.RoleHost, Name: *sv.name.Load(), Features: features}); err != nil {
 		return nil, err

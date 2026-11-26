@@ -170,7 +170,7 @@ func (p *invalidPipe) InvalidateRefs(pts int64) error {
 // encoded since; one too far back, or an encoder that cannot invalidate,
 // takes a keyframe instead.
 func TestApplyInvalidations(t *testing.T) {
-	st := &stream{invalid: make(chan uint32, 16)}
+	st := &stream{invalid: make(chan invalidGap, 16)}
 	for id := uint32(0); id < 20; id++ {
 		st.pts[id%ptsRingSize].id, st.pts[id%ptsRingSize].pts = id, 1000+int64(id)
 	}
@@ -207,7 +207,7 @@ func TestApplyInvalidations(t *testing.T) {
 // throttled host waited for the client and came back past maxInvalidSpan
 // as a keyframe.
 func TestSenderDropInvalidatesAtOnce(t *testing.T) {
-	st := &stream{invalid: make(chan uint32, 16)}
+	st := &stream{invalid: make(chan invalidGap, 16)}
 	for id := uint32(0); id < 40; id++ {
 		st.pts[id%ptsRingSize].id, st.pts[id%ptsRingSize].pts = id, 1000+int64(id)
 	}
@@ -271,5 +271,60 @@ func TestLateKeyframeKeepsWaitingForKeyframe(t *testing.T) {
 	}
 	if cc.dropped.Load() != 1 || len(cc.frames) != 0 {
 		t.Fatalf("late keyframe: dropped %d, queued %d; want it dropped", cc.dropped.Load(), len(cc.frames))
+	}
+}
+
+// TestSenderDropThenRecoveryLost: the sender drops 18, so 18 and 19 are
+// invalidated and 20 is the Recovery frame; the link then loses 19 and 20,
+// and the client's first frame after 17 is 21. Its report of 18 through 20
+// must recover at once, not leave the client skipping frames until its
+// keyframe fallback. A report of only the invalidated frames still does
+// nothing, and a gap that reaches a later drop still recovers the frames
+// in between.
+func TestSenderDropThenRecoveryLost(t *testing.T) {
+	setup := func() (*stream, *invalidPipe) {
+		host := &stream{invalid: make(chan invalidGap, 16)}
+		for id := uint32(16); id <= 30; id++ {
+			slot := &host.pts[id%ptsRingSize]
+			slot.id, slot.pts = id, 1000+int64(id)
+		}
+		pipe := &invalidPipe{}
+		host.senderDropped(18)
+		if key, rec, _ := host.applyInvalidations(pipe, 20); key || !rec {
+			t.Fatalf("setup: frame 20 isn't recovery")
+		}
+		return host, pipe
+	}
+
+	host, pipe := setup()
+	client := &refRecovery{}
+	client.admit(wire.VideoInfo{FrameID: 17, Keyframe: true}, 0)
+	a := client.admit(wire.VideoInfo{FrameID: 21}, 1)
+	if !a.invalidate || a.invalidFrom != 18 || a.invalidThrough != 20 || a.decode {
+		t.Fatalf("admission of 21 after 17: %+v", a)
+	}
+	host.invalidateGap(a.invalidFrom, a.invalidThrough)
+	key, rec, why := host.applyInvalidations(pipe, 22)
+	if key || !rec || len(pipe.got) != 4 || pipe.got[2] != 1020 || pipe.got[3] != 1021 {
+		t.Fatalf("gap 18-20 before 22: key %v (%s) recovery %v, invalidated %v; want 20 and 21 invalidated and a Recovery frame", key, why, rec, pipe.got)
+	}
+	if a := client.admit(wire.VideoInfo{FrameID: 22, Recovery: true}, 2); !a.decode {
+		t.Fatalf("Recovery frame 22: %+v, want it decoded", a)
+	}
+
+	host, pipe = setup()
+	host.invalidateGap(18, 19)
+	if key, rec, why := host.applyInvalidations(pipe, 23); key || rec || len(pipe.got) != 2 {
+		t.Fatalf("gap 18-19, all invalidated: key %v (%s) recovery %v, invalidated %v; want nothing", key, why, rec, pipe.got)
+	}
+
+	host, pipe = setup()
+	host.senderDropped(22)
+	if key, rec, _ := host.applyInvalidations(pipe, 23); key || !rec {
+		t.Fatalf("setup: frame 23 isn't recovery")
+	}
+	host.invalidateGap(18, 22)
+	if key, rec, why := host.applyInvalidations(pipe, 24); key || !rec || len(pipe.got) != 7 || pipe.got[3] != 1020 {
+		t.Fatalf("gap 18-22 over two drops: key %v (%s) recovery %v, invalidated %v; want 20 on invalidated", key, why, rec, pipe.got)
 	}
 }
