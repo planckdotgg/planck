@@ -3,6 +3,7 @@ package theme
 import (
 	"encoding/json"
 	"os"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -33,6 +34,22 @@ func TestRegisterFonts(t *testing.T) {
 func TestMonoFontIsMonospaced(t *testing.T) {
 	if err := RegisterFonts(); err != nil {
 		t.Fatal(err)
+	}
+	for _, weight := range []int{400, 500} {
+		var first float32
+		for i, g := range ui.Shape("0123456789", ui.Font{Family: FontMono, Size: 13, Weight: weight}) {
+			if i == 0 {
+				first = g.Advance
+			}
+			if g.Advance <= 0 || g.Advance != first {
+				t.Fatalf("%s %d: digit %d advances %v, digit 0 %v: live digits would jitter", FontMono, weight, i, g.Advance, first)
+			}
+		}
+	}
+	// fontconfig sets no spacing for Martian Mono, so Pango does not flag
+	// it monospace; the digits above are what the readouts rely on.
+	if runtime.GOOS == "linux" {
+		return
 	}
 	for _, f := range ui.FontFamilies() {
 		if f.Name == FontMono && !f.Monospaced {

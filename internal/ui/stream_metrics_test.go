@@ -361,10 +361,16 @@ func TestMetricsCompactStallStaysInSlot(t *testing.T) {
 }
 
 // TestMetricsCompactNeverEllipsizes: each compact readout keeps its
-// natural width, never one clipped to a slot. Martian Mono advances
-// 0.652 em per character; the widest figures are checked on every path.
+// natural width, as this platform's text engine shapes it, never one
+// clipped to a slot; the widest figures are checked on every path.
 func TestMetricsCompactNeverEllipsizes(t *testing.T) {
-	const advance = 0.64
+	natural := func(s string, size float32, weight int) float32 {
+		var w float32
+		for _, g := range mui.Shape(s, mui.Font{Family: theme.FontMono, Size: size, Weight: weight}) {
+			w = max(w, g.X+g.Advance)
+		}
+		return w
+	}
 	for _, k := range []discovery.PathKind{discovery.PathLANDirect, discovery.PathTailscaleDirect, discovery.PathTailscaleDERP, discovery.PathKind(99)} {
 		for _, ms := range []float64{8.4, 124.5, 999.9, 10000} {
 			f := streamFake()
@@ -376,15 +382,20 @@ func TestMetricsCompactNeverEllipsizes(t *testing.T) {
 			snapshot(t, tt, fmt.Sprintf("metrics-compact-%v-%v", k, ms))
 			num := a.ovl.metrics.text.compactTotal()
 			for _, c := range []struct {
-				text string
-				size float32
-			}{{num, 15}, {"ms", theme.TextMicro}, {"240", theme.TextCaption}, {"fps", theme.TextMicro}, {pathShort(k), theme.TextMicro}} {
+				text   string
+				size   float32
+				weight int
+			}{{num, 15, 500}, {"ms", theme.TextMicro, 400}, {"240", theme.TextCaption, 400}, {"fps", theme.TextMicro, 400}, {pathShort(k), theme.TextMicro, 400}} {
 				r, ok := tt.Find(c.text)
 				if !ok {
 					t.Fatalf("path %v %v ms: no %q in %q", k, ms, c.text, tt.Texts())
 				}
-				if want := float32(len([]rune(c.text))) * c.size * advance; r.W < want {
-					t.Errorf("path %v %v ms: %q is %.1f px wide, natural width is at least %.1f (clipped)", k, ms, c.text, r.W, want)
+				want := natural(c.text, c.size, c.weight)
+				if want <= 0 {
+					t.Fatalf("path %v %v ms: %q shapes to no width", k, ms, c.text)
+				}
+				if r.W < want-0.01 {
+					t.Errorf("path %v %v ms: %q is %.2f px wide, natural width is %.2f (clipped)", k, ms, c.text, r.W, want)
 				}
 			}
 		}
