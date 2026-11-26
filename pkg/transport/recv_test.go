@@ -20,7 +20,10 @@ func TestMediaReader(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Close()
-	const n = 200
+	// Every datagram is queued before the first read, and Linux charges
+	// each about 1.1 KB of a default buffer near 200 KB: a dropped one
+	// would block the last read forever.
+	const n = 64
 	type result struct {
 		allocs  float64
 		badFrom int

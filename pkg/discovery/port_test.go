@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -191,12 +192,21 @@ func TestPortYieldsUnicastToAnotherProcess(t *testing.T) {
 	defer cancel()
 	go browser.Listen(ctx, func(a Announcement) { heard <- a.Beacon.Name })
 
-	if b, err := foreignProbe(t, port); err != nil || b.Name != "other-process" {
-		t.Fatalf("probe the other process's host: %+v, %v", b, err)
+	// BSD and Windows give a unicast datagram to the oldest socket on the
+	// port, the browser; Linux hashes its source port across the sockets,
+	// so only some probes from fresh ports reach the browser.
+	yielded := false
+	for i := 0; i < 24 && !yielded; i++ {
+		if b, err := foreignProbe(t, port); err != nil || b.Name != "other-process" {
+			t.Fatalf("probe the other process's host: %+v, %v", b, err)
+		}
+		browser.mu.Lock()
+		yielded = !browser.lastYield.IsZero()
+		browser.mu.Unlock()
+		if runtime.GOOS != "linux" {
+			break
+		}
 	}
-	browser.mu.Lock()
-	yielded := !browser.lastYield.IsZero()
-	browser.mu.Unlock()
 	if !yielded {
 		t.Fatal("the host answered without the browser yielding: the test no longer covers the oldest-socket case")
 	}

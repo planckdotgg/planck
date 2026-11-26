@@ -81,6 +81,7 @@ func TestHostsListAndConnect(t *testing.T) {
 		defer a.mu.Unlock()
 		return a.connecting == ""
 	})
+	tt.Frame()
 	if _, ok := tt.Access("Stream controls"); !ok {
 		t.Fatalf("overlay button missing after connect: %q", tt.Texts())
 	}
