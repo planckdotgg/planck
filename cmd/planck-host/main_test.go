@@ -3,7 +3,11 @@ package main
 import (
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/planckdotgg/planck/internal/session"
 	"github.com/planckdotgg/planck/pkg/config"
@@ -140,5 +144,36 @@ func TestHostTelemetryFollowsTheAppSetting(t *testing.T) {
 	defer forced.Close(0)
 	if forced.Active() || on() {
 		t.Fatal("-no-telemetry left it on")
+	}
+}
+
+// TestHostSendsNothingAfterTheAppTurnsTelemetryOff: signals queued behind a
+// refused send are dropped, not flushed on shutdown, once client.json says
+// off.
+func TestHostSendsNothingAfterTheAppTurnsTelemetryOff(t *testing.T) {
+	var requests atomic.Int32
+	got := make(chan struct{}, 10)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		got <- struct{}{}
+	}))
+	defer srv.Close()
+	t.Setenv("PLANCK_TELEMETRY_APP_ID", "APP")
+	t.Setenv("PLANCK_TELEMETRY_ENDPOINT", srv.URL+"/v2/")
+	dir := t.TempDir()
+	tel, _ := hostTelemetry(dir, false)
+	tel.Launched()
+	select {
+	case <-got:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no first send")
+	}
+	if err := config.UpdateClientConfig(dir, func(c *config.ClientConfig) error { off := false; c.TelemetryEnabled = &off; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	tel.Close(5 * time.Second)
+	if n := requests.Load(); n != 1 {
+		t.Fatalf("%d requests, want only the one before telemetry was turned off", n)
 	}
 }

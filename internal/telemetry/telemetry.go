@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -72,6 +73,13 @@ const platformTag = "desktop"
 // maxQueued bounds the signals kept while TelemetryDeck cannot be reached.
 const maxQueued = 50
 
+// lockWait bounds the wait for telemetry.json's lock; a lock older than
+// staleLock was left by a process that died holding it.
+const (
+	lockWait  = 2 * time.Second
+	staleLock = 10 * time.Second
+)
+
 // Options set up a Client.
 type Options struct {
 	AppID    string
@@ -86,6 +94,9 @@ type Options struct {
 	HTTP *http.Client
 	// RetryAfter is the wait after a failed send; 0 is one minute.
 	RetryAfter time.Duration
+	// Enabled, if set, reads the user's setting again before each send,
+	// shutdown's included; false turns the client off as SetEnabled(false).
+	Enabled func() bool
 }
 
 // OptionsForThisBuild are the options of this build: the App ID, the
@@ -182,8 +193,11 @@ type Client struct {
 	mu       sync.Mutex
 	enabled  bool
 	launched bool
-	st       state
-	queue    []Signal
+	// claimed: this client holds the install's app.installed claim, so a
+	// retry of its batch sends app.installed again.
+	claimed bool
+	st      state
+	queue   []Signal
 	// gen changes when telemetry is turned off, so a send that started
 	// before does not put its signals back for a retry.
 	gen    int
@@ -308,8 +322,17 @@ func (c *Client) Close(wait time.Duration) {
 
 func (c *Client) enqueueLocked(typ string, extra map[string]string) {
 	if c.st.InstallID == "" {
-		c.st.InstallID = newUUID()
-		c.saveStateLocked()
+		c.updateStateLocked(func(s *state) bool {
+			if s.InstallID != "" {
+				return false
+			}
+			s.InstallID = newUUID()
+			return true
+		})
+		if c.st.InstallID == "" {
+			c.st.InstallID = newUUID()
+			c.saveStateLocked()
+		}
 	}
 	payload := map[string]string{"os": runtime.GOOS, "arch": runtime.GOARCH, "appVersion": c.o.AppVersion,
 		"buildChannel": c.o.Channel, "platform": platformTag, "mode": c.o.Mode}
@@ -357,15 +380,40 @@ func (c *Client) flush() bool {
 		c.mu.Unlock()
 		return true
 	}
+	c.mu.Unlock()
+	if c.o.Enabled != nil && !c.o.Enabled() {
+		c.SetEnabled(false)
+		return true
+	}
+	c.mu.Lock()
+	if len(c.queue) == 0 || !c.activeLocked() {
+		c.queue = nil
+		c.mu.Unlock()
+		return true
+	}
 	batch, gen := c.queue, c.gen
 	c.queue = nil
-	// app.installed is marked sent before it leaves: a send cut off by off
-	// or a timeout may still have reached the server, and a second one would
-	// count the install twice.
+	// app.installed is claimed in telemetry.json before it leaves: a send cut
+	// off by off or a timeout may still have reached the server, and the app
+	// and the host share one install, so a second one would count it twice.
 	marked := false
-	if !c.st.FirstLaunchSent && hasType(batch, TypeInstalled) {
-		c.st.FirstLaunchSent, marked = true, true
-		c.saveStateLocked()
+	if !c.claimed && hasType(batch, TypeInstalled) {
+		c.updateStateLocked(func(s *state) bool {
+			if s.FirstLaunchSent {
+				return false
+			}
+			s.FirstLaunchSent, marked = true, true
+			return true
+		})
+		if marked {
+			c.claimed = true
+		} else {
+			batch = withoutType(batch, TypeInstalled)
+		}
+	}
+	if len(batch) == 0 {
+		c.mu.Unlock()
+		return true
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancel = cancel
@@ -379,8 +427,8 @@ func (c *Client) flush() bool {
 	c.cancel = nil
 	var refused statusError
 	if marked && errors.As(err, &refused) {
-		c.st.FirstLaunchSent = false
-		c.saveStateLocked()
+		c.claimed = false
+		c.updateStateLocked(func(s *state) bool { s.FirstLaunchSent = false; return true })
 	}
 	if gen != c.gen || !c.activeLocked() {
 		return true // turned off meanwhile: nothing goes back
@@ -429,6 +477,65 @@ func hasType(batch []Signal, typ string) bool {
 		}
 	}
 	return false
+}
+
+func withoutType(batch []Signal, typ string) []Signal {
+	out := make([]Signal, 0, len(batch))
+	for _, s := range batch {
+		if s.Type != typ {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// updateStateLocked reads telemetry.json, lets change edit it, and saves it
+// if change says so, all under the file's lock, so another process on the
+// same install sees each change. c.st ends as the file's state. Without the
+// lock it changes nothing.
+func (c *Client) updateStateLocked(change func(*state) bool) {
+	if c.o.StateFile == "" {
+		change(&c.st)
+		return
+	}
+	unlock, err := lockFile(c.o.StateFile + ".lock")
+	if err != nil {
+		slog.Warn("telemetry: could not lock state", "err", err)
+		return
+	}
+	defer unlock()
+	c.st = loadState(c.o.StateFile)
+	if change(&c.st) {
+		c.saveStateLocked()
+	}
+}
+
+// lockFile takes a lock that holds across processes: the file exists while
+// it is held.
+func lockFile(path string) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	deadline := time.Now().Add(lockWait)
+	for {
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			f.Close()
+			return func() { os.Remove(path) }, nil
+		}
+		// Windows answers access denied while another process deletes it.
+		if !errors.Is(err, fs.ErrExist) && !errors.Is(err, fs.ErrPermission) {
+			return nil, err
+		}
+		if fi, serr := os.Stat(path); serr == nil && time.Since(fi.ModTime()) > staleLock {
+			os.Remove(path)
+			continue
+		}
+		if time.Now().After(deadline) {
+			return nil, err
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func (c *Client) saveStateLocked() {

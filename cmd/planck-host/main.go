@@ -349,8 +349,8 @@ func statsLine(s session.HostStats) string {
 }
 
 // hostTelemetry is this run's usage telemetry and the setting it follows:
-// on unless -no-telemetry or the app's Settings turned it off. Without a
-// config directory it sends nothing.
+// on unless -no-telemetry or the app's Settings turned it off, read again
+// before each send. Without a config directory it sends nothing.
 func hostTelemetry(dir string, off bool) (*telemetry.Client, func() bool) {
 	if dir == "" {
 		d, err := config.Dir()
@@ -360,7 +360,9 @@ func hostTelemetry(dir string, off bool) (*telemetry.Client, func() bool) {
 		dir = d
 	}
 	on := func() bool { return !off && config.TelemetryOn(dir) }
-	return telemetry.New(telemetry.OptionsForThisBuild(dir, version.Version, version.IsOfficialBuild(), telemetry.ModeHost), on()), on
+	o := telemetry.OptionsForThisBuild(dir, version.Version, version.IsOfficialBuild(), telemetry.ModeHost)
+	o.Enabled = on
+	return telemetry.New(o, on()), on
 }
 
 // sessionTelemetry counts each client's stream. on reads the setting again

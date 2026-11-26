@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -623,5 +624,91 @@ func TestLdflagsChild(t *testing.T) {
 	o := OptionsForThisBuild(t.TempDir(), version.Version, version.IsOfficialBuild(), ModeHost)
 	if DefaultAppID != "LDFLAGS-APP-ID" || o.AppID != "LDFLAGS-APP-ID" || o.TestMode || o.Channel != ChannelRelease {
 		t.Fatalf("DefaultAppID %q, options %+v", DefaultAppID, o)
+	}
+}
+
+// TestSettingReadBeforeEachSend: Options.Enabled turning false drops the
+// queue, so the flush on Close sends nothing.
+func TestSettingReadBeforeEachSend(t *testing.T) {
+	in := newIngest(t)
+	in.status = http.StatusServiceUnavailable
+	o := in.options(t)
+	o.RetryAfter = time.Hour
+	var on atomic.Bool
+	on.Store(true)
+	o.Enabled = on.Load
+	c := New(o, true)
+	c.Launched()
+	in.waitRequest(t)
+	on.Store(false)
+	in.mu.Lock()
+	in.status = http.StatusOK
+	in.mu.Unlock()
+	settle(c)
+	if n := in.requests(); n != 1 {
+		t.Fatalf("%d requests, want none after the setting turned off", n)
+	}
+	if c.Active() {
+		t.Fatal("still active after the setting turned off")
+	}
+}
+
+// TestTwoClientsOnOneStateFileCountTheInstallOnce: the app and the host
+// start together on a new install.
+func TestTwoClientsOnOneStateFileCountTheInstallOnce(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		in := newIngest(t)
+		o := in.options(t)
+		a, b := New(o, true), New(o, true)
+		var wg sync.WaitGroup
+		for _, c := range []*Client{a, b} {
+			wg.Add(1)
+			go func(c *Client) { defer wg.Done(); c.Launched(); settle(c) }(c)
+		}
+		wg.Wait()
+		sigs := in.signals()
+		installed := 0
+		for _, s := range sigs {
+			if s["type"] == TypeInstalled {
+				installed++
+			}
+			if s["clientUser"] != sigs[0]["clientUser"] {
+				t.Fatalf("run %d: two install IDs on one install", i)
+			}
+		}
+		if installed != 1 || len(sigs) != 3 {
+			t.Fatalf("run %d: sent %v, want one %s", i, types(sigs), TypeInstalled)
+		}
+		if _, err := os.Stat(o.StateFile + ".lock"); !os.IsNotExist(err) {
+			t.Fatalf("run %d: the lock file was left behind", i)
+		}
+	}
+}
+
+// TestRefusedInstalledFreesTheClaim: a 503 on app.installed lets the next
+// client on the same install send it.
+func TestRefusedInstalledFreesTheClaim(t *testing.T) {
+	in := newIngest(t)
+	in.status = http.StatusServiceUnavailable
+	o := in.options(t)
+	o.RetryAfter = time.Hour
+	a := New(o, true)
+	a.Launched()
+	in.waitRequest(t)
+	for deadline := time.Now().Add(5 * time.Second); loadState(o.StateFile).FirstLaunchSent; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the refused app.installed is still claimed")
+		}
+	}
+	in.mu.Lock()
+	in.status, in.bodies = http.StatusOK, nil
+	in.mu.Unlock()
+	b := New(o, true)
+	b.Launched()
+	settle(b)
+	a.SetEnabled(false)
+	settle(a)
+	if got := types(in.signals()); len(got) != 2 || got[0] != TypeInstalled {
+		t.Fatalf("sent %v", got)
 	}
 }
