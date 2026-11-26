@@ -326,3 +326,56 @@ func TestStreamSwitchResetsCounters(t *testing.T) {
 		t.Fatalf("HEVC stream shows %d keyframes (PyroWave had %d): the counters carried over", s.Keyframes, pyro.Keyframes)
 	}
 }
+
+// TestFrameDecodedAcrossSwitchCountsForOldStream: a PyroWave frame still in
+// the decoder when the stream switches to HEVC finishes after the switch
+// reset the counters; it must not count as an HEVC keyframe.
+func TestFrameDecodedAcrossSwitchCountsForOldStream(t *testing.T) {
+	wiredLAN(t)
+	h := startSwitchHost(t, &fakeVDD{}, &pipeLog{})
+	oldEntered, oldRelease := make(chan struct{}), make(chan struct{})
+	newEntered, newRelease := make(chan struct{}), make(chan struct{})
+	var once, releaseOld, releaseNew sync.Once
+	old := &NullSink{OnUnit: func([]byte, int64) { once.Do(func() { close(oldEntered); <-oldRelease }) }}
+	var view atomic.Uint64
+	view.Store(packView(1280, 768))
+	c, err := NewClient(ClientConfig{ConfigDir: t.TempDir(), PIN: h.PIN(), NoAudio: true, Capabilities: ultrawideClientCaps, Tailscale: noTailscale{}, Logf: t.Logf,
+		ViewSize: func() (int, int) { v := view.Load(); return int(v >> 32), int(uint32(v)) },
+		OpenSink: func(cfg decode.Config) (Sink, error) {
+			if cfg.Codec == encode.HEVC {
+				close(newEntered)
+				<-newRelease
+				return &NullSink{}, nil
+			}
+			return old, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Disconnect)
+	t.Cleanup(func() { releaseOld.Do(func() { close(oldRelease) }); releaseNew.Do(func() { close(newRelease) }) })
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err = c.Connect(ctx, Target{Addr: h.Addr().String()}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-oldEntered:
+	case <-ctx.Done():
+		t.Fatal("old decode never entered")
+	}
+	if err = c.Resize(5120, 1440); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "HEVC epoch and reset", func() bool { p := c.Stats(); return p.Codec == encode.HEVC.String() && p.Keyframes == 0 })
+	releaseOld.Do(func() { close(oldRelease) })
+	select {
+	case <-newEntered:
+	case <-ctx.Done():
+		t.Fatal("new decoder never opened")
+	}
+	if got := c.Stats().Keyframes; got != 0 {
+		t.Fatalf("HEVC keyframes = %d, want zero before HEVC sink has opened", got)
+	}
+}

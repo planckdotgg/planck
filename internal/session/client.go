@@ -1194,7 +1194,8 @@ func (cc *conn) decodeLoop(sink Sink, sinkCfg decode.Config, logf func(string, .
 			return
 		case fb = <-cc.frames:
 		}
-		if st := cc.stream.Load(); fb.info.Epoch != st.epoch {
+		st := cc.stream.Load()
+		if fb.info.Epoch != st.epoch {
 			cc.free <- fb
 			continue
 		} else if newSinkFor(sinkCfg, st.sink) {
@@ -1233,10 +1234,13 @@ func (cc *conn) decodeLoop(sink Sink, sinkCfg decode.Config, logf func(string, .
 			}
 			continue
 		}
-		if err == nil {
+		cc.mu.Lock()
+		// A switch while this frame decoded started the next stream's
+		// counts; the frame belongs to the stream before it.
+		current := cc.stream.Load() == st
+		if err == nil && current {
 			cc.decoding.Store(true)
 		}
-		cc.mu.Lock()
 		cc.encodeMs = ms(info.EncodeTS - info.CaptureTS)
 		cc.decodeMs = ms(int64(t.Decode))
 		cc.encodeW.add(cc.encodeMs)
@@ -1246,7 +1250,7 @@ func (cc *conn) decodeLoop(sink Sink, sinkCfg decode.Config, logf func(string, .
 				cc.frameTimes.add(ms(shown - cc.lastShown))
 			}
 			cc.lastShown = shown
-			if info.Keyframe {
+			if info.Keyframe && current {
 				cc.keyframes++
 			}
 		}
@@ -1883,9 +1887,9 @@ func (cc *conn) switchStream(rt *route, m *wire.Stream, logf func(string, ...any
 	cc.profile.Store(p)
 	cc.intra.Store(dcfg.Codec == encode.PyroWave)
 	cc.needKey.Store(true)
-	cc.decoding.Store(false)
-	cc.stream.Store(&streamState{epoch: m.Epoch, sink: dcfg})
 	cc.mu.Lock()
+	cc.stream.Store(&streamState{epoch: m.Epoch, sink: dcfg})
+	cc.decoding.Store(false)
 	cc.since, cc.keyframes = rt.sess.Stats(), 0
 	cc.mu.Unlock()
 	cc.dropped.Store(0)
