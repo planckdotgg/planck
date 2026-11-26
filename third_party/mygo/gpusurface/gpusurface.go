@@ -84,6 +84,10 @@ type Options struct {
 	// the overlay mapped to PQ at SDR reference white. SetHDR10 turns it
 	// off and on again. Windows ignores it.
 	HDR10 bool
+	// Redraw, on Linux in picture mode (Surface.Bitmap), is called on the
+	// presenting thread after each frame, to have the window draw it. Any
+	// goroutine may be calling it.
+	Redraw func()
 }
 
 // Timing is the way of one frame from Present to the screen, in
