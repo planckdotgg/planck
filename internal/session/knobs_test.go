@@ -14,7 +14,7 @@ func TestKnobsOverrides(t *testing.T) {
 	}
 	want := defaults.UserOverrides{Codec: "pyrowave", Chroma: "444", BitDepth: "10", Resolution: "custom", CustomWidth: 1662,
 		CustomHeight: 1080, FPS: "120", BitrateMbps: 400, VirtualDisplay: "on", VirtualDisplayGPU: "4080", SubFrameSlices: "4",
-		NVENC2EngineSplit: "off", MetalDirectDisplay: "on", VSyncMode: "auto", RoutePolicy: "lan", HDR10: "auto"}
+		NVENC2EngineSplit: "off", MetalDirectDisplay: "on", VSyncMode: "auto", PhaseLock: "auto", RoutePolicy: "lan", HDR10: "auto"}
 	if o != want {
 		t.Fatalf("got %+v\nwant %+v", o, want)
 	}
