@@ -1660,6 +1660,16 @@ func (c *Client) RequestKeyframe() error {
 // move a stream to another display.
 var ErrNoDisplaySwitch = errors.New("session: this host cannot switch displays")
 
+// HostCapabilities are what the host streaming now said it can do, nil
+// without a stream or from an older host.
+func (c *Client) HostCapabilities() *defaults.HostCapabilities {
+	sess := c.liveSession()
+	if sess == nil {
+		return nil
+	}
+	return hostCaps(sess)
+}
+
 // HostDisplays lists the displays the host streaming now advertised, nil
 // without a stream or from an older host.
 func (c *Client) HostDisplays() []defaults.HostDisplay {
