@@ -182,6 +182,22 @@ type ClientConfig struct {
 	// gone, is the system's default.
 	AudioOutputDevice string `json:"audioOutputDevice,omitempty"`
 	MicDevice         string `json:"micDevice,omitempty"`
+	// TelemetryEnabled is anonymous usage telemetry, for the app and for
+	// planck-host on this machine; nil is on (TelemetryOn).
+	TelemetryEnabled *bool `json:"telemetryEnabled,omitempty"`
+}
+
+// TelemetryOn reports whether anonymous usage telemetry may send: on
+// unless the user turned it off.
+func (c ClientConfig) TelemetryOn() bool {
+	return c.TelemetryEnabled == nil || *c.TelemetryEnabled
+}
+
+// TelemetryOn is client.json's TelemetryOn in dir, on when the file is
+// missing and off when it cannot be read.
+func TelemetryOn(dir string) bool {
+	c, err := LoadClientConfig(dir)
+	return err == nil && c.TelemetryOn()
 }
 
 // StreamsOpenFullscreen reports whether a stream's window opens in full

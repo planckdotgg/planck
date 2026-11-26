@@ -5,6 +5,8 @@ import (
 	"io"
 	"testing"
 
+	"github.com/planckdotgg/planck/internal/session"
+	"github.com/planckdotgg/planck/pkg/config"
 	"github.com/planckdotgg/planck/pkg/encode"
 )
 
@@ -103,5 +105,40 @@ func TestParseOptionsVersion(t *testing.T) {
 		if _, err := parseOptions(args, io.Discard); !errors.Is(err, errShowVersion) {
 			t.Errorf("%q: err = %v, want errShowVersion", args, err)
 		}
+	}
+}
+
+func TestNoTelemetryFlag(t *testing.T) {
+	o, err := parseOptions([]string{"-no-telemetry"}, io.Discard)
+	if err != nil || !o.noTelemetry {
+		t.Fatalf("-no-telemetry: %+v, %v", o.noTelemetry, err)
+	}
+	if o, _ := parseOptions(nil, io.Discard); o.noTelemetry {
+		t.Fatal("telemetry is off without -no-telemetry")
+	}
+}
+
+// TestHostTelemetryFollowsTheAppSetting: the host reads client.json's
+// switch, and again before each session, and -no-telemetry beats it.
+func TestHostTelemetryFollowsTheAppSetting(t *testing.T) {
+	t.Setenv("PLANCK_TELEMETRY_APP_ID", "APP")
+	t.Setenv("PLANCK_TELEMETRY_ENDPOINT", "http://127.0.0.1:1/v2/")
+	dir := t.TempDir()
+	tel, on := hostTelemetry(dir, false)
+	defer tel.Close(0)
+	if !tel.Active() || !on() {
+		t.Fatal("off by default")
+	}
+	if err := config.UpdateClientConfig(dir, func(c *config.ClientConfig) error { off := false; c.TelemetryEnabled = &off; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	sessionTelemetry(tel, on)(session.SessionEvent{Started: true, Codec: encode.HEVC})
+	if tel.Active() {
+		t.Fatal("still on after the app turned it off")
+	}
+	forced, on := hostTelemetry(t.TempDir(), true)
+	defer forced.Close(0)
+	if forced.Active() || on() {
+		t.Fatal("-no-telemetry left it on")
 	}
 }

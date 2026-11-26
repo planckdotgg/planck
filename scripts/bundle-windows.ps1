@@ -36,6 +36,12 @@ if (-not $commit) { $commit = 'unknown' }
 $buildDate = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
 $pkg = 'github.com/planckdotgg/planck/internal/version'
 $ldflags = "-s -w -X $pkg.Commit=$commit -X $pkg.BuildDate=$buildDate"
+# A release (PLANCK_OFFICIAL_BUILD=1, set by the Release workflow) sends its
+# telemetry as a release, not as test signals. PLANCK_TELEMETRY_APP_ID is the
+# TelemetryDeck App ID of the official app (internal\telemetry); without it
+# the build sends no telemetry.
+if ($env:PLANCK_OFFICIAL_BUILD -eq '1') { $ldflags += " -X $pkg.OfficialBuild=1" }
+if ($env:PLANCK_TELEMETRY_APP_ID) { $ldflags += " -X github.com/planckdotgg/planck/internal/telemetry.DefaultAppID=$($env:PLANCK_TELEMETRY_APP_ID)" }
 
 $env:CGO_ENABLED = '0'
 $env:GOOS = 'windows'

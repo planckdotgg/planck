@@ -319,3 +319,32 @@ func TestStreamWindows(t *testing.T) {
 		}
 	}
 }
+
+func TestTelemetryEnabledDefaultsOnAndPersistsOff(t *testing.T) {
+	dir := t.TempDir()
+	if !TelemetryOn(dir) {
+		t.Fatal("telemetry is off without a client.json")
+	}
+	if err := os.WriteFile(filepath.Join(dir, ClientConfigFile), []byte(`{"targetFPS": 60, "maxBitrateKbps": 1000, "preferredCodec": "hevc", "preferredChroma": "nv12"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !TelemetryOn(dir) {
+		t.Fatal("telemetry is off in a client.json that does not name it")
+	}
+	if err := UpdateClientConfig(dir, func(c *ClientConfig) error { off := false; c.TelemetryEnabled = &off; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(filepath.Join(dir, ClientConfigFile))
+	if !strings.Contains(string(raw), `"telemetryEnabled": false`) {
+		t.Fatalf("client.json does not keep the switch off:\n%s", raw)
+	}
+	if TelemetryOn(dir) {
+		t.Fatal("telemetry is on after it was turned off")
+	}
+	if err := os.WriteFile(filepath.Join(dir, ClientConfigFile), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if TelemetryOn(dir) {
+		t.Fatal("telemetry is on with a client.json that cannot be read")
+	}
+}

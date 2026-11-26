@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/planckdotgg/planck/internal/session"
+	usage "github.com/planckdotgg/planck/internal/telemetry"
 	"github.com/planckdotgg/planck/internal/ui"
 	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/encode"
@@ -67,6 +68,26 @@ func (b *backend) endSessionLocked() {
 		b.last = &last
 	}
 	b.stats = ui.SessionStats{}
+	b.endUsageLocked()
+}
+
+// endUsageLocked counts the end of the stream usageStream started. Hold
+// b.mu.
+func (b *backend) endUsageLocked() {
+	if b.usageStream != nil {
+		b.usageTel.SessionEnded(*b.usageStream)
+		b.usageStream = nil
+	}
+}
+
+// hostSessionEvent counts a stream this machine hosts for another device.
+func (b *backend) hostSessionEvent(e session.SessionEvent) {
+	s := usage.Session{Mode: usage.ModeHost, Codec: e.Codec.String(), Transport: e.Path.String()}
+	if e.Started {
+		b.usageTel.SessionStarted(s)
+	} else {
+		b.usageTel.SessionEnded(s)
+	}
 }
 
 func (b *backend) SessionStats() ui.SessionStats {

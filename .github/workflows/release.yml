@@ -10,6 +10,11 @@ name: Release
 # The release is created as a draft, gets every file, and only then becomes
 # public, so planck.gg/api/download (releases/latest) never sees a release
 # with a missing file. docs/releasing.md has the secrets and the steps.
+#
+# Telemetry: each build gets the PLANCK_TELEMETRY_APP_ID secret, if set, as
+# its TelemetryDeck App ID (internal/telemetry); without it the files send
+# no telemetry. Only a run that publishes sets PLANCK_OFFICIAL_BUILD=1, so a
+# dry run's files send test signals.
 on:
   push:
     tags: ['v*']
@@ -153,6 +158,8 @@ jobs:
       - name: Build the DMGs
         env:
           SIGN: ${{ steps.signing.outputs.sign }}
+          PLANCK_OFFICIAL_BUILD: ${{ env.PUBLISH == 'true' && '1' || '' }}
+          PLANCK_TELEMETRY_APP_ID: ${{ secrets.PLANCK_TELEMETRY_APP_ID }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
         run: |
@@ -214,6 +221,8 @@ jobs:
       - name: Build the zip and the installer
         env:
           PLANCK_SIGN_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          PLANCK_OFFICIAL_BUILD: ${{ env.PUBLISH == 'true' && '1' || '' }}
+          PLANCK_TELEMETRY_APP_ID: ${{ secrets.PLANCK_TELEMETRY_APP_ID }}
         run: scripts\bundle-windows.ps1 -Installer
 
       - name: Keep the Windows files
@@ -234,6 +243,8 @@ jobs:
     needs: version
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      PUBLISH: ${{ needs.version.outputs.publish }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -242,6 +253,9 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Build the tarballs
+        env:
+          PLANCK_OFFICIAL_BUILD: ${{ env.PUBLISH == 'true' && '1' || '' }}
+          PLANCK_TELEMETRY_APP_ID: ${{ secrets.PLANCK_TELEMETRY_APP_ID }}
         run: scripts/bundle-linux.sh x86_64 aarch64
       - name: Keep the tarballs
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

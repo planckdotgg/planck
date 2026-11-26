@@ -16,6 +16,7 @@ func (a *App) generalPage(c *mui.Context, f *settingsFrame) {
 		setPanel(c, "Stream window", nil, func() { a.entries(c, f, "general.fullscreen", "general.metrics") })
 	}, func() {
 		setPanel(c, "Shared clipboard", nil, func() { a.entries(c, f, "general.clipSend", "general.clipRecv") })
+		setPanel(c, "Privacy", nil, func() { a.entries(c, f, "general.telemetry") })
 	})
 }
 
@@ -114,6 +115,11 @@ func (a *App) discoveryRow(c *mui.Context, f *settingsFrame) {
 	}
 }
 
+const (
+	telemetryTitle = "Anonymous usage telemetry"
+	telemetryHelp  = "Counts installs, launches and streams, with the codec and route type. Never names, addresses, screen content, audio, input or PINs."
+)
+
 // settingEntries are every searchable setting, in each category's order.
 var settingEntries = []settingEntry{
 	{id: "general.name", cat: catGeneral, title: "Device name", help: "What hosts list this device as when it pairs.", aliases: "client name rename",
@@ -131,6 +137,10 @@ var settingEntries = []settingEntry{
 	{id: "general.clipRecv", cat: catGeneral, title: "Accept the other end’s clipboard", aliases: "clipboard copy paste receive",
 		build: func(a *App, c *mui.Context, f *settingsFrame) {
 			f.switchRow(c, "Accept the other end’s clipboard", "", &f.s.ClipboardReceive)
+		}},
+	{id: "general.telemetry", cat: catGeneral, title: telemetryTitle, help: telemetryHelp, aliases: "telemetry analytics privacy usage statistics tracking",
+		build: func(a *App, c *mui.Context, f *settingsFrame) {
+			f.switchRow(c, telemetryTitle, telemetryHelp, &f.s.UsageTelemetry)
 		}},
 
 	{id: "host.name", cat: catHost, title: "Host name", help: "What other devices see this machine as.", aliases: "hostname rename",

@@ -66,6 +66,18 @@ gh secret set WINDOWS_CERTIFICATE_PASSWORD --repo planckdotgg/planck
 
 With both set, `signtool` signs `planck-client.exe`, `planck-host.exe` and the installer, timestamped by DigiCert.
 
+### Telemetry: optional
+
+| Secret | Contents | Format |
+|---|---|---|
+| `PLANCK_TELEMETRY_APP_ID` | The TelemetryDeck App ID of the official app | the App ID from the TelemetryDeck dashboard, a UUID |
+
+```sh
+gh secret set PLANCK_TELEMETRY_APP_ID --repo planckdotgg/planck --body <app id>
+```
+
+It is a secret, not a repository variable. Each build job passes it to its bundle script as `PLANCK_TELEMETRY_APP_ID`, which sets `internal/telemetry.DefaultAppID` with `-ldflags -X`. Unset, the release files send no telemetry. A run that publishes also sets `PLANCK_OFFICIAL_BUILD=1` (`internal/version.OfficialBuild`), so its files send release signals. A dry run's files send test signals, which TelemetryDeck shows only in test mode. The README's Privacy section says what the signals hold.
+
 ## Dry run
 
 A dry run builds every file on clean runners, signs nothing, sends nothing to Apple, and publishes nothing. The files and `SHA256SUMS.txt` stay on the run as artifacts (`release-macos`, `release-windows`, `release-linux`, `sha256sums`).

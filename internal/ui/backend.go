@@ -471,6 +471,9 @@ type Settings struct {
 	// system's default. A change applies from the next stream.
 	OutputDevice string
 	MicDevice    string
+	// UsageTelemetry sends anonymous usage counts (internal/telemetry);
+	// a change applies at once.
+	UsageTelemetry bool
 }
 
 // DockEdge is the stream view's edge the overlay button is docked to.

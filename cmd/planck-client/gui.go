@@ -17,8 +17,10 @@ import (
 
 	"github.com/planckdotgg/planck/assets"
 	"github.com/planckdotgg/planck/internal/session"
+	usage "github.com/planckdotgg/planck/internal/telemetry"
 	"github.com/planckdotgg/planck/internal/ui"
 	"github.com/planckdotgg/planck/internal/ui/theme"
+	"github.com/planckdotgg/planck/internal/version"
 	"github.com/planckdotgg/planck/pkg/decode"
 	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/player"
@@ -59,6 +61,9 @@ func runGUI(o options) error {
 	if err != nil {
 		return err
 	}
+	b.usageTel = usage.New(usage.OptionsForThisBuild(b.dir, version.Version, version.IsOfficialBuild(), usage.ModeClient), b.Settings().UsageTelemetry)
+	defer b.usageTel.Close(2 * time.Second)
+	b.usageTel.Launched()
 	app = ui.NewApp(b)
 	video.keyframe = b.RequestKeyframe
 	app.OnOverlayChange(video.overlayChanged)

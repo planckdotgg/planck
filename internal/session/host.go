@@ -25,6 +25,7 @@ import (
 	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/encode"
 	"github.com/planckdotgg/planck/pkg/input"
+	"github.com/planckdotgg/planck/pkg/ratectl"
 	"github.com/planckdotgg/planck/pkg/tailscale"
 	"github.com/planckdotgg/planck/pkg/transport"
 	"github.com/planckdotgg/planck/pkg/wire"
@@ -134,6 +135,9 @@ type HostConfig struct {
 	Injector input.Injector
 	// OnInput sees every valid input event, injected or not.
 	OnInput func(input.Event)
+	// OnSession hears each client's stream start and end, from the
+	// stream's goroutine.
+	OnSession func(SessionEvent)
 	// ReadCursor replaces cursor.Read, the host's system cursor that
 	// clients reading wire.CursorState hear of.
 	ReadCursor func() (cursor.State, error)
@@ -694,8 +698,10 @@ func (h *Host) acceptLoop(ctx context.Context) {
 		}
 		h.claimInput(sess)
 		h.logf("planck: %s connected from %v (%s)", sess.Identity(), sess.RemoteControlAddr(), st.path)
+		h.sessionEvent(st, true)
 		h.wg.Go(func() {
 			st.run(ctx)
+			h.sessionEvent(st, false)
 			h.mu.Lock()
 			if h.cur == st {
 				h.cur = nil
@@ -708,6 +714,20 @@ func (h *Host) acceptLoop(ctx context.Context) {
 			}
 			h.streamEnded(st)
 		})
+	}
+}
+
+// SessionEvent is a client's stream starting or ending: its codec and the
+// kind of route, nothing of who the client is.
+type SessionEvent struct {
+	Started bool
+	Codec   encode.Codec
+	Path    ratectl.Path
+}
+
+func (h *Host) sessionEvent(st *stream, started bool) {
+	if h.cfg.OnSession != nil {
+		h.cfg.OnSession(SessionEvent{Started: started, Codec: st.params.Codec, Path: st.path})
 	}
 }
 

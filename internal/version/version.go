@@ -9,6 +9,13 @@ var Commit = "dev"
 
 var BuildDate = ""
 
+// OfficialBuild is "1" in release builds (-ldflags -X ...version.OfficialBuild=1):
+// their telemetry counts as a release, not as test signals.
+var OfficialBuild = ""
+
+// IsOfficialBuild reports whether this is a release build.
+func IsOfficialBuild() bool { return OfficialBuild == "1" }
+
 // String is the version alone, for the interface.
 func String() string { return Version }
 

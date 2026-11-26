@@ -19,7 +19,9 @@ import (
 	"time"
 
 	"github.com/planckdotgg/planck/internal/session"
+	"github.com/planckdotgg/planck/internal/telemetry"
 	"github.com/planckdotgg/planck/internal/version"
+	"github.com/planckdotgg/planck/pkg/config"
 	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/encode"
@@ -51,6 +53,8 @@ type options struct {
 	statsEvery time.Duration
 	// setName, when set, renames the host in host.json before it starts.
 	setName *string
+	// noTelemetry turns anonymous usage telemetry off for this run.
+	noTelemetry bool
 }
 
 func parseConfig(args []string, out io.Writer) (session.HostConfig, time.Duration, error) {
@@ -97,6 +101,7 @@ func parseOptions(args []string, out io.Writer) (options, error) {
 	fs.StringVar(&cfg.MicDevice, "mic-device", "", `virtual input device the client's microphone plays into, by part of its name (default: Planck Virtual Audio, then Steam Streaming Microphone, VB-Cable or BlackHole); "off" refuses the microphone`)
 	clip := fs.String("clipboard", "both", "share the clipboard: both, host-to-client, client-to-host or off")
 	fs.BoolVar(&cfg.Synth, "synth", false, "stream a generated test pattern at -width x -height and -fps instead of a display")
+	fs.BoolVar(&o.noTelemetry, "no-telemetry", false, "send no anonymous usage telemetry this run (Settings › General, or \"telemetryEnabled\": false in client.json, turns it off for good)")
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); err != nil {
 		return o, err
@@ -230,6 +235,9 @@ func run(o options) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	cfg.Logf = log.Printf
+	tel, telOn := hostTelemetry(cfg.ConfigDir, o.noTelemetry)
+	defer tel.Close(2 * time.Second)
+	cfg.OnSession = sessionTelemetry(tel, telOn)
 	h, err := session.NewHost(cfg)
 	if err != nil {
 		return err
@@ -246,6 +254,7 @@ func run(o options) error {
 	if err := h.Start(ctx); err != nil {
 		return err
 	}
+	tel.Launched()
 
 	source := "display"
 	if cfg.Synth {
@@ -337,4 +346,33 @@ func statsLine(s session.HostStats) string {
 	return fmt.Sprintf("%s %s | %dx%d %.0f fps | encode p50 %.2f p99 %.2f ms | %.0f/%d kbps | rtt %.2f ms | fec loss %.1f%% parity %.0f%% | client loss %.1f%% decode %.2f ms | gpu %s",
 		s.Client, s.Path, s.Video.Width, s.Video.Height, s.FPS, s.EncodeMs.P50, s.EncodeMs.P99, s.SentKbps, s.TargetKbps,
 		s.RTTMs, s.FECLossPct, s.FECParityPct, float64(s.Report.LossPermille)/10, float64(s.Report.DecodeMicros)/1000, s.Video.Power)
+}
+
+// hostTelemetry is this run's usage telemetry and the setting it follows:
+// on unless -no-telemetry or the app's Settings turned it off. Without a
+// config directory it sends nothing.
+func hostTelemetry(dir string, off bool) (*telemetry.Client, func() bool) {
+	if dir == "" {
+		d, err := config.Dir()
+		if err != nil {
+			return nil, func() bool { return false }
+		}
+		dir = d
+	}
+	on := func() bool { return !off && config.TelemetryOn(dir) }
+	return telemetry.New(telemetry.OptionsForThisBuild(dir, version.Version, version.IsOfficialBuild(), telemetry.ModeHost), on()), on
+}
+
+// sessionTelemetry counts each client's stream. on reads the setting again
+// first, so turning it off in the app reaches a host that runs already.
+func sessionTelemetry(tel *telemetry.Client, on func() bool) func(session.SessionEvent) {
+	return func(e session.SessionEvent) {
+		tel.SetEnabled(on())
+		s := telemetry.Session{Mode: telemetry.ModeHost, Codec: e.Codec.String(), Transport: e.Path.String()}
+		if e.Started {
+			tel.SessionStarted(s)
+		} else {
+			tel.SessionEnded(s)
+		}
+	}
 }

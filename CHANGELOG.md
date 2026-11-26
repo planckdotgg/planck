@@ -14,3 +14,4 @@ The first public release.
 - Find and pair hosts on the local network and on Tailscale; same-user Tailscale devices pair without a PIN.
 - Audio, microphone, gamepads, keyboard, mouse and clipboard.
 - Windows installer (no administrator rights needed) and portable zip, macOS DMGs for Apple silicon and Intel, and a Linux command-line preview.
+- Anonymous usage telemetry through TelemetryDeck: install, launch and stream counts with the codec and route type, under a hashed random ID, and never names, addresses, screen content, audio, input or PINs. It is on by default; turn it off in Settings › General, or with `planck-host -no-telemetry`. See [Privacy](README.md#privacy-anonymous-usage-telemetry).

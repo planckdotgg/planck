@@ -17,6 +17,16 @@ commit=$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
 build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 pkg=github.com/planckdotgg/planck/internal/version
 ldflags="-s -w -X $pkg.Commit=$commit -X $pkg.BuildDate=$build_date"
+# A release (PLANCK_OFFICIAL_BUILD=1, set by the Release workflow) sends its
+# telemetry as a release, not as test signals. PLANCK_TELEMETRY_APP_ID is the
+# TelemetryDeck App ID of the official app (internal/telemetry); without it
+# the build sends no telemetry.
+if [[ "${PLANCK_OFFICIAL_BUILD:-}" == 1 ]]; then
+  ldflags+=" -X $pkg.OfficialBuild=1"
+fi
+if [[ -n "${PLANCK_TELEMETRY_APP_ID:-}" ]]; then
+  ldflags+=" -X github.com/planckdotgg/planck/internal/telemetry.DefaultAppID=$PLANCK_TELEMETRY_APP_ID"
+fi
 sha256() { if command -v sha256sum >/dev/null; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
 
 mkdir -p dist

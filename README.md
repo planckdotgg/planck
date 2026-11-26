@@ -26,6 +26,26 @@ The Windows installer needs no administrator rights. It installs `planck-client.
 - **Audio, microphone, gamepads, keyboard, mouse and clipboard** go both ways where the platform allows.
 - **Pairing** with a 6-digit PIN, or no PIN between two devices of the same Tailscale user.
 
+## Privacy: anonymous usage telemetry
+
+Planck sends a few anonymous signals to [TelemetryDeck](https://telemetrydeck.com), so its developers can see how many people use it and which codecs and kinds of route their streams take. It is on by default. Turn it off in **Settings › General › Anonymous usage telemetry**. Off takes effect at once and drops any signals still waiting to be sent. The switch also covers `planck-host` on the same machine; on a machine without the app, run `planck-host -no-telemetry`, or set `"telemetryEnabled": false` in `client.json` in Planck's config folder.
+
+There are four signals: `app.installed` (once per install), `app.launched`, `session.started` and `session.ended`. Each holds only these fields:
+
+| Field | What it is |
+|---|---|
+| `clientUser` | The SHA-256 of a random ID that Planck makes on first use and keeps on the device (`telemetry.json` in the config folder). TelemetryDeck hashes it again with a salt. It is not linked to you, your accounts or your hardware. |
+| `sessionID` | A random ID for each launch |
+| `os`, `arch`, `platform` | For example `windows`, `amd64`, `desktop` |
+| `appVersion`, `buildChannel` | For example `0.1.0`, `release` |
+| `mode` | `client` or `host`: the side of the stream |
+| `codec` | Only in `session.*`: `h264`, `hevc`, `av1`, `pyrowave` or `unknown` |
+| `transportKind` | Only in `session.*`: `lan`, `tailscale_direct`, `tailscale_relay` or `unknown` |
+
+Planck never sends host or device names, IP addresses, Tailscale addresses or identities, usernames, window titles, screen content, audio, input, clipboard contents, or pairing PINs and keys. TelemetryDeck sees your IP address, as any server does, and its [privacy FAQ](https://telemetrydeck.com/docs/guides/privacy-faq/) says it never stores IP addresses.
+
+A build from source sends nothing: only the release builds carry a TelemetryDeck App ID. A source build given one with `PLANCK_TELEMETRY_APP_ID` marks its signals as test signals. `planck-client -headless` never sends telemetry.
+
 ## Experimental drivers (not installed)
 
 The release files contain no drivers. These are separate, optional, and experimental. Install them only to test them:

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/planckdotgg/planck/internal/session"
+	usage "github.com/planckdotgg/planck/internal/telemetry"
 	"github.com/planckdotgg/planck/internal/ui"
 	"github.com/planckdotgg/planck/pkg/audio"
 	"github.com/planckdotgg/planck/pkg/config"
@@ -123,6 +124,10 @@ type backend struct {
 	// hostDisplays are each host's displays as it advertised them while
 	// streaming this run, by pin key.
 	hostDisplays map[string][]ui.DisplayInfo
+	// usageTel is the app's usage telemetry, nil in tests; usageStream is
+	// what it counted of the stream now, nil without one.
+	usageTel    *usage.Client
+	usageStream *usage.Session
 }
 
 type backendConfig struct {
@@ -237,7 +242,7 @@ func settingsFrom(c config.ClientConfig) ui.Settings {
 	s := ui.Settings{AudioEnabled: c.AudioEnabled, ClipboardSend: c.ClipboardSend, ClipboardReceive: c.ClipboardReceive,
 		SystemKeysCapture: c.SystemKeysCapture, AudioVolume: 1, AudioMuted: c.AudioMuted, OpenFullscreen: c.StreamsOpenFullscreen(),
 		SwapCmdCtrl: c.SwapCmdCtrl, OutputDevice: c.AudioOutputDevice, MicDevice: c.MicDevice,
-		OpenEveryHostDisplay: c.OpenEveryHostDisplay, MaxStreamWindows: c.StreamWindows()}
+		OpenEveryHostDisplay: c.OpenEveryHostDisplay, MaxStreamWindows: c.StreamWindows(), UsageTelemetry: c.TelemetryOn()}
 	if c.AudioVolume != nil {
 		s.AudioVolume = min(max(*c.AudioVolume, 0), 1)
 	}
@@ -680,6 +685,8 @@ func (b *backend) dialNew(ctx context.Context, t session.Target, pin string, s u
 	b.tel = telemetry(st)
 	b.started = time.Now()
 	b.stats = sessionStats(st, b.started)
+	b.usageStream = &usage.Session{Mode: usage.ModeClient, Codec: st.Codec, Transport: st.Path}
+	b.usageTel.SessionStarted(*b.usageStream)
 	b.mu.Unlock()
 	b.changed()
 	if b.viewSize != nil {
@@ -968,7 +975,9 @@ func (b *backend) SetHosting(ctx context.Context, on bool) error {
 	b.caches.paired.invalidate()
 	var err error
 	if on {
-		h, err = session.NewHost(b.hostConfig(s))
+		hc := b.hostConfig(s)
+		hc.OnSession = b.hostSessionEvent
+		h, err = session.NewHost(hc)
 		if err == nil {
 			err = h.Start(context.Background())
 		}
@@ -1107,6 +1116,11 @@ func (b *backend) SaveSettings(s ui.Settings) error {
 		if s.MaxStreamWindows != config.DefaultStreamWindows {
 			stored.MaxStreamWindows = s.MaxStreamWindows
 		}
+		stored.TelemetryEnabled = nil
+		if !s.UsageTelemetry {
+			off := false
+			stored.TelemetryEnabled = &off
+		}
 		return nil
 	})
 	if err != nil {
@@ -1118,6 +1132,7 @@ func (b *backend) SaveSettings(s ui.Settings) error {
 	c := b.client
 	b.mu.Unlock()
 	b.swap.Store(s.SwapCmdCtrl)
+	b.usageTel.SetEnabled(s.UsageTelemetry)
 	if clipboardOf(before) != clipboardOf(s) && c != nil {
 		c.SetClipboard(clipboardOf(s))
 	}
@@ -1283,6 +1298,7 @@ func (b *backend) close() {
 	b.mu.Lock()
 	c, h := b.client, b.host
 	b.client, b.host = nil, nil
+	b.endUsageLocked()
 	b.mu.Unlock()
 	if c != nil {
 		c.Close()
