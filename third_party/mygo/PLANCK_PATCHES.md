@@ -56,6 +56,25 @@ SDR presentation is unchanged: the layer keeps no colour space, as before,
 so SDR frames show as they did. HDR10 metadata (mastering display, MaxCLL)
 is not set on the layer: the stream carries none yet.
 
+Linux (Wave 1 client) added:
+
+| File | What |
+|---|---|
+| `gpusurface/gpusurface.go` | `Options.Redraw`: in picture mode, called after each frame so the window draws it. |
+| `gpusurface/gpusurface_other.go`, `gpusurface/direct_stub.go` | Build tags leave out `linux && !android && (amd64 \|\| arm64)`, which has its own files. |
+| `gpusurface/gtk_linux.go` | GTK 3 / GDK through purego: `NativeOf(GtkWindow*)` finds the backend (Wayland `wl_display`/`wl_surface`/`wl_seat`, or X11 `Display*`/XID), the toplevel `GdkWindow`, the widget MyGo draws into (a `GtkGLArea` when MyGo runs on the GPU) with its place and scale, and `EventWindow`, the input-only `GdkWindow` MyGo sets its cursors on. |
+| `gpusurface/gpusurface_linux.go` | `Surface` on Linux. `Present` takes a `*DMABuf`, a fixed-layout frame descriptor (fourcc, modifier, planes, DMA-BUF fds, offsets, pitches, optional CPU plane pointers, memfd flag, serial) that Planck's `capture.DMABuf` mirrors. Wayland gets a subsurface; anything else (X11, or a compositor without `wl_subcompositor`) gets picture mode. `Accepts(fourcc, modifier)`, `Wayland()`, `Layout()`, `Size()`, `Scale()`, `OnPresented`, `PresentTagged`. Direct mode, the overlay calls and `ScreenSize` are no-ops or `ErrUnsupported` here: the MyGo window draws the HUD itself. |
+| `gpusurface/wayland_linux.go` | Desync `wl_subsurface`s placed below MyGo's surface: a black backdrop over the content area and the video fitted in it (`FitRect`), both scaled by `wp_viewporter`. Without `wl_subcompositor` or `wp_viewporter` the surface uses picture mode. Frames go as `zwp_linux_dmabuf_v1` buffers when the compositor lists their fourcc/modifier, else as `wl_shm` buffers copied (NV12/P010 to XRGB8888, BT.709) into a memfd pool. `wp_presentation` feedback gives `Timings.Presented`, converted from the compositor's clock to `Now`'s. Every object is on a private event queue (`wl.Queue`), so GTK keeps its own dispatch. |
+| `gpusurface/picture_linux.go` | Picture mode: three NV12 buffers swapped as the overlay's rects are; `Bitmap()` and `Refresh()` show the newest frame through MyGo's `Bitmap.UpdateYUV`, under the UI. P010 shows its 8 high bits. It needs the frame's planes in memory (`DMABuf.CPU`), so it runs on X11, Xvfb, WSLg and software rendering. |
+| `gpusurface/convert_linux.go` | BT.709 video-range YUV to XRGB8888 for the shm path. |
+| `gpusurface/memfd_linux_{amd64,arm64}.go` | `memfd_create` syscall numbers (319, 279). |
+| `gpusurface/wl/` | New package. libwayland-client through purego: proxies, `marshal_array_flags`, listeners as purego callbacks, private queues with their own registry, and the `wl_interface` tables for protocols the library does not export (viewporter, linux-dmabuf v1, presentation-time, subcompositor, pointer constraints v1, relative pointer v1, keyboard shortcuts inhibit v1), generated from the protocols' XML. |
+| `gpusurface/gpusurface_linux_test.go` | BT.709 conversion, padded-pitch conversion, picture mode's P010 high bits, and `TestPresentLive` (gated on a display): 30 frames into a real window, Wayland or X11. |
+
+The Linux DMA-BUF import path is written to the protocol but has not been tried on a
+compositor yet: WSLg lists no dmabuf formats. Linux allocations per frame
+have not been measured.
+
 ### API
 
 ```go

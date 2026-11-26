@@ -22,7 +22,7 @@ var gtk struct {
 	widgetScale, containerChildren, listFree, typeName, checkInstanceIsA          uintptr
 	waylandDisplayType, waylandWLDisplay, waylandWLSurface, waylandSeat           uintptr
 	displayGetDefaultSeat, x11Window, x11Display                                  uintptr
-	widgetIsRealized                                                              uintptr
+	widgetIsRealized, windowPeekChildren, windowGetUserData                       uintptr
 }
 
 func loadGTK() error {
@@ -61,6 +61,8 @@ func loadGTK() error {
 			{g, &gtk.widgetIsRealized, "gtk_widget_get_realized", false},
 			{g, &gtk.containerChildren, "gtk_container_get_children", false},
 			{d, &gtk.windowGetDisplay, "gdk_window_get_display", false},
+			{d, &gtk.windowPeekChildren, "gdk_window_peek_children", false},
+			{d, &gtk.windowGetUserData, "gdk_window_get_user_data", false},
 			{d, &gtk.displayGetDefaultSeat, "gdk_display_get_default_seat", false},
 			{d, &gtk.waylandDisplayType, "gdk_wayland_display_get_type", true},
 			{d, &gtk.waylandWLDisplay, "gdk_wayland_display_get_wl_display", true},
@@ -105,11 +107,11 @@ type Native struct {
 	// X11.
 	XDisplay, XID uintptr
 	// GdkWindow is the toplevel's; Area is the GtkWidget MyGo draws the
-	// content in.
-	GdkWindow, Area uintptr
-	AreaX, AreaY    int
-	AreaW, AreaH    int
-	Scale           int
+	// content in, and EventWindow the GdkWindow MyGo sets its cursors on.
+	GdkWindow, Area, EventWindow uintptr
+	AreaX, AreaY                 int
+	AreaW, AreaH                 int
+	Scale                        int
 }
 
 // NativeOf finds the handles under window, a GtkWindow* as
@@ -145,6 +147,7 @@ func NativeOf(window uintptr) (Native, error) {
 	if n.Area == 0 {
 		n.Area = window
 	}
+	n.EventWindow = eventWindow(n.Area)
 	n.layout(window)
 	return n, nil
 }
@@ -208,3 +211,22 @@ func typeName(w uintptr) string {
 }
 
 func ptr(a uintptr) unsafe.Pointer { return *(*unsafe.Pointer)(unsafe.Pointer(&a)) }
+
+// eventWindow is the GdkWindow area's events and cursor are on: a
+// GtkGLArea's own input-only child of its parent's window, else that
+// window (as MyGo's surface.eventWindow finds it).
+func eventWindow(area uintptr) uintptr {
+	win := call(gtk.widgetGetWindow, area)
+	if win == 0 {
+		return 0
+	}
+	for l := call(gtk.windowPeekChildren, win); l != 0; l = *(*uintptr)(ptr(l + 8)) {
+		child := *(*uintptr)(ptr(l))
+		var owner uintptr
+		call(gtk.windowGetUserData, child, uintptr(unsafe.Pointer(&owner)))
+		if owner == area {
+			return child
+		}
+	}
+	return win
+}
