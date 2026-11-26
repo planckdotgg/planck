@@ -379,11 +379,14 @@ func (f *finder) match(query string, keep func(discovery.PathKind) bool) (hostVi
 // identify makes a target of an address typed in. A host that answers
 // discovery on its IP and port says who it is, so the pin keys its ID and
 // the pairing screen shows its fingerprint; the name is the host's, or the
-// address.
+// address. With a port typed, only a host whose control port it is
+// answers for the address: another host on the same machine may hold the
+// discovery port.
 func identify(ctx context.Context, addr string, port uint16) (session.Target, string) {
-	addr = withDefaultPort(strings.TrimSpace(addr))
+	typed := strings.TrimSpace(addr)
+	addr = withDefaultPort(typed)
 	t := session.Target{Addr: addr}
-	host, _, err := net.SplitHostPort(addr)
+	host, typedPort, err := net.SplitHostPort(addr)
 	if err != nil {
 		return t, addr
 	}
@@ -395,6 +398,9 @@ func identify(ctx context.Context, addr string, port uint16) (session.Target, st
 	defer cancel()
 	b, _, err := discovery.Probe(ctx, netip.AddrPortFrom(ip, port))
 	if err != nil {
+		return t, addr
+	}
+	if addr == typed && typedPort != strconv.Itoa(int(b.ControlPort)) {
 		return t, addr
 	}
 	t.HostID, t.Fingerprint = b.HostID, b.CertFingerprint

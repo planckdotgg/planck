@@ -494,3 +494,30 @@ func TestBackendPinnedHostMovedPorts(t *testing.T) {
 		t.Fatalf("heard on the new port: %+v, want bigboi alone, online at 192.168.188.126:41005", hs)
 	}
 }
+
+// TestIdentifyKeepsTypedPort: an address typed with a port dials that
+// port. The host answering discovery on the IP names its own control port;
+// when another host on the same machine answers, as bigboi's installed host
+// on the default discovery port did for a test host on 127.0.0.1, the
+// typed port stays and the answer is not taken for its identity. With no
+// port typed, the answering host's control port is used.
+func TestIdentifyKeepsTypedPort(t *testing.T) {
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go discovery.Serve(ctx, conn, discovery.Beacon{HostID: "h-other", Name: "other", ControlPort: 41001, CertFingerprint: strings.Repeat("cd", 32)})
+	port := uint16(conn.LocalAddr().(*net.UDPAddr).Port)
+
+	if tgt, _ := identify(ctx, "127.0.0.1:5555", port); tgt.Addr != "127.0.0.1:5555" || tgt.HostID != "" || tgt.Fingerprint != "" {
+		t.Errorf("typed 127.0.0.1:5555: %+v, want that address and no identity of the other host", tgt)
+	}
+	if tgt, name := identify(ctx, "127.0.0.1:41001", port); tgt.Addr != "127.0.0.1:41001" || tgt.HostID != "h-other" || name != "other" {
+		t.Errorf("typed the answering host's port: %+v %q, want it identified", tgt, name)
+	}
+	if tgt, _ := identify(ctx, "127.0.0.1", port); tgt.Addr != "127.0.0.1:41001" || tgt.HostID != "h-other" {
+		t.Errorf("no port typed: %+v, want the answering host's control port", tgt)
+	}
+}
