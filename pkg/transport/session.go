@@ -208,8 +208,8 @@ type Session struct {
 	stats struct {
 		sent, recv, authFail, simDrop, complete, lost, recovered, pliSent, pliRecv, feedback, inputResent, inputDup, partial atomic.Uint64
 		clipSent, clipRecv, clipRefused                                                                                      atomic.Uint64
-		shardsExpected, shardsReceived                                                                                       atomic.Uint64
 	}
+	shards shardCount
 
 	clipMu  sync.Mutex
 	clipOut *quic.SendStream
@@ -434,7 +434,7 @@ func (s *Session) SetStream(cfg wire.SessionConfig, startKbps, maxKbps int, pari
 }
 
 func (s *Session) Stats() SessionStats {
-	return SessionStats{
+	out := SessionStats{
 		PacketsSent:      s.stats.sent.Load(),
 		PacketsReceived:  s.stats.recv.Load(),
 		AuthFailures:     s.stats.authFail.Load(),
@@ -452,9 +452,9 @@ func (s *Session) Stats() SessionStats {
 		ClipboardSent:     s.stats.clipSent.Load(),
 		ClipboardReceived: s.stats.clipRecv.Load(),
 		ClipboardRefused:  s.stats.clipRefused.Load(),
-		ShardsExpected:    s.stats.shardsExpected.Load(),
-		ShardsReceived:    s.stats.shardsReceived.Load(),
 	}
+	out.ShardsExpected, out.ShardsReceived = s.shards.load()
+	return out
 }
 
 // SendVideoFrame sends a whole encoded frame, split into info.SliceCount
@@ -887,8 +887,7 @@ func (s *Session) onFrameFinal(st fec.FrameStats) {
 	s.finID = st.FrameID
 	s.hasFin = true
 	s.stats.recovered.Add(uint64(st.SlicesRecovered))
-	s.stats.shardsExpected.Add(uint64(st.SentShards))
-	s.stats.shardsReceived.Add(uint64(min(st.RecvShards, st.SentShards)))
+	s.shards.add(uint64(st.SentShards), uint64(min(st.RecvShards, st.SentShards)))
 	if st.RecvShards < st.SentShards {
 		s.lossAt.Store(Mono())
 	}
