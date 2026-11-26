@@ -134,6 +134,15 @@ const (
 	compositedAbove = 0.6
 	directBelow     = 0.3
 	lateAbove       = 0.02
+	// Where pictures reach the screen as soon as they are drawn, off any
+	// refresh grid, a compositor shows as spread: the share of pictures
+	// that reached the screen more than half a refresh after the quickest
+	// tenth did. Measured at 5120x1440 on an M5 Pro: 0-5% direct, 12-30%
+	// with an overlay composited, 30-70% in a window. spreadReports in a
+	// row past a bound switch the mode.
+	spreadCompositedAbove = 0.12
+	spreadDirectBelow     = 0.06
+	spreadReports         = 3
 )
 
 // Estimator measures the phase of pictures against the display's
@@ -148,6 +157,12 @@ type Estimator struct {
 
 	extra  [modeWindow]int8 // refreshes after the one direct scan-out makes; -1 unknown
 	nm, im int
+	// toGlass is each picture's time from the GPU finishing it to the
+	// screen, -1 unknown; gridded whether the refresh grid was locked.
+	toGlass [modeWindow]int64
+	gridded [modeWindow]bool
+	nominal int64
+	streak  int
 
 	period int64
 	margin int64
@@ -155,14 +170,33 @@ type Estimator struct {
 	locked bool
 }
 
+// SetNominalPeriod gives the display's refresh period as the system
+// states it, which the mode reads by where no refresh grid locks.
+func (e *Estimator) SetNominalPeriod(ns int64) {
+	e.mu.Lock()
+	e.nominal = ns
+	e.mu.Unlock()
+}
+
 // Observe takes a picture that reached the screen and the display's
-// refreshes as known then.
+// refreshes as known then: a zero Grid where they are not.
 func (e *Estimator) Observe(s Sample, g Grid) {
-	if g.Period <= 0 || s.Ready == 0 || s.Glass == 0 {
+	if s.Ready == 0 || s.Glass == 0 {
 		return
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.toGlass[e.im] = -1
+	if s.GPUDone > 0 && s.Glass >= s.GPUDone {
+		e.toGlass[e.im] = s.Glass - s.GPUDone
+	}
+	e.gridded[e.im] = g.Period > 0
+	if g.Period <= 0 {
+		e.extra[e.im] = -1
+		e.im = (e.im + 1) % modeWindow
+		e.nm = min(e.nm+1, modeWindow)
+		return
+	}
 	if e.period != 0 && abs(g.Period-e.period)*100 > e.period {
 		// The display changed: what was measured is of another one.
 		e.n, e.i, e.nm, e.im = 0, 0, 0, 0
@@ -193,7 +227,13 @@ func (e *Estimator) Report() Report {
 	if e.margin == 0 {
 		e.margin = startMargin
 	}
-	e.updateMode(&r)
+	if !e.updateMode(&r) {
+		// No refresh grid holds: pictures reach the screen off it, and
+		// the phase measured before is stale.
+		r.PeriodNs, r.Samples = e.nominal, 0
+		r.Mode = e.mode
+		return r
+	}
 	if e.n < minSamples || e.period <= 0 {
 		r.Mode = e.mode
 		return r
@@ -251,8 +291,20 @@ func (e *Estimator) Report() Report {
 }
 
 // updateMode reads the presentation mode and the late share from the
-// pictures whose GPU times are known.
-func (e *Estimator) updateMode(r *Report) {
+// pictures whose GPU times are known: by the refresh grid where it is
+// locked, else by the spread of their time to the screen. It reports whether most of them came on a locked grid.
+func (e *Estimator) updateMode(r *Report) bool {
+	gridded := 0
+	for k := 0; k < e.nm; k++ {
+		if e.gridded[k] {
+			gridded++
+		}
+	}
+	if gridded*2 < e.nm {
+		e.updateModeBySpread(r)
+		return false
+	}
+	e.streak = 0
 	var known, comp int
 	for k := 0; k < e.nm; k++ {
 		if x := e.extra[k]; x >= 0 {
@@ -263,7 +315,7 @@ func (e *Estimator) updateMode(r *Report) {
 		}
 	}
 	if known < minModeSet {
-		return
+		return true
 	}
 	frac := float64(comp) / float64(known)
 	switch {
@@ -284,6 +336,53 @@ func (e *Estimator) updateMode(r *Report) {
 		}
 	}
 	r.LatePct = 100 * float64(late) / float64(known)
+	return true
+}
+
+func (e *Estimator) updateModeBySpread(r *Report) {
+	p := e.period
+	if p <= 0 {
+		p = e.nominal
+	}
+	var vals [modeWindow]int64
+	n := 0
+	for k := 0; k < e.nm; k++ {
+		if v := e.toGlass[k]; v >= 0 {
+			vals[n] = v
+			n++
+		}
+	}
+	if p <= 0 || n < minModeSet {
+		return
+	}
+	v := vals[:n]
+	slices.Sort(v)
+	floor := v[n/10]
+	late := 0
+	for _, x := range v {
+		if x-floor > p/2 {
+			late++
+		}
+	}
+	frac := float64(late) / float64(n)
+	r.CompositedPct = 100 * frac
+	want := e.mode
+	switch {
+	case frac > spreadCompositedAbove:
+		want = ModeComposited
+	case frac < spreadDirectBelow:
+		want = ModeDirect
+	}
+	switch {
+	case e.mode == ModeUnknown:
+		e.mode, e.streak = want, 0
+	case want != e.mode:
+		if e.streak++; e.streak >= spreadReports {
+			e.mode, e.streak = want, 0
+		}
+	default:
+		e.streak = 0
+	}
 }
 
 func abs(v int64) int64 {

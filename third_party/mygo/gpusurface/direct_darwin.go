@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"runtime"
+	"time"
 
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
@@ -42,6 +43,22 @@ func (s *Surface) ScreenSize() (w, h int) {
 	f := lib.msgRect(screen, objc.RegisterName("frame"))
 	scale := lib.msgFloat(screen, objc.RegisterName("backingScaleFactor"))
 	return int(math.Round(f.W * scale)), int(math.Round(f.H * scale))
+}
+
+// RefreshPeriod is the refresh period of the screen the window was on when
+// the surface was made or last went direct or back, as the system states
+// it; 0 when it states none.
+func (s *Surface) RefreshPeriod() time.Duration { return time.Duration(s.refresh.Load()) }
+
+// readRefresh keeps the window's screen's refresh period. Main thread.
+func (s *Surface) readRefresh() {
+	screen := send(s.window, "screen")
+	if screen == 0 {
+		return
+	}
+	if v := lib.msgFloat(screen, objc.RegisterName("minimumRefreshInterval")); v > 0 && v < 1 {
+		s.refresh.Store(int64(v * 1e9))
+	}
 }
 
 // SetDirect turns direct mode on or off. On, the drawables take the
@@ -94,5 +111,6 @@ func (s *Surface) SetDirect(on bool) error {
 		s.direct.Store(false)
 	}
 	send(class("CATransaction"), "flush")
+	s.readRefresh()
 	return nil
 }

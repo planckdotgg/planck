@@ -37,3 +37,5 @@ func watchPresents(surf *gpusurface.Surface, fn func(pts, submitted, gpuDone, pr
 }
 
 func screenNow() int64 { return gpusurface.Now() }
+
+func nominalPeriod(*gpusurface.Surface) int64 { return 0 }

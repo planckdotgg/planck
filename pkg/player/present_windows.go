@@ -33,3 +33,5 @@ func present(surf *gpusurface.Surface, f decode.Frame) error {
 func watchPresents(*gpusurface.Surface, func(pts, submitted, gpuDone, presented int64)) {}
 
 func screenNow() int64 { return monoNow() }
+
+func nominalPeriod(*gpusurface.Surface) int64 { return 0 }

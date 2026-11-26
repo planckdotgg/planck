@@ -252,6 +252,9 @@ type Surface struct {
 	timings                    timings
 	onPresented                atomic.Pointer[func(tag, submitted, presented int64)]
 	onPresentedGPU             atomic.Pointer[func(tag, submitted, gpuDone, presented int64)]
+	// refresh is the window's screen's refresh period in nanoseconds, as
+	// the system states it, read on the main thread.
+	refresh atomic.Int64
 	scale                      float64
 
 	// size is the drawables' size, width << 32 | height. sizeMu orders
@@ -384,6 +387,7 @@ func New(opts Options) (s *Surface, err error) {
 	s.scale = scale
 	s.viewW, s.viewH = int(bounds.W*scale), int(bounds.H*scale)
 	s.setDrawableSize(layer, s.viewW, s.viewH)
+	s.readRefresh()
 	if opts.Composite {
 		// A view of its own at the back of the content view, as MyGo puts
 		// web views under its surface view: AppKit keeps the layers of a

@@ -36,3 +36,7 @@ func watchPresents(surf *gpusurface.Surface, fn func(pts, submitted, gpuDone, pr
 }
 
 func screenNow() int64 { return gpusurface.Now() }
+
+// nominalPeriod is the refresh period the system states for the surface's
+// screen.
+func nominalPeriod(surf *gpusurface.Surface) int64 { return int64(surf.RefreshPeriod()) }

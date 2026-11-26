@@ -177,3 +177,58 @@ func TestEstimatorDisplayChangeResets(t *testing.T) {
 		t.Fatalf("report %+v: want the 120 Hz pictures gone", r)
 	}
 }
+
+// feedFree gives e n pictures that reach the screen off any refresh grid,
+// toGlass after the GPU finished them, give or take spread.
+func feedFree(e *Estimator, n int, toGlass, spread int64, rng *rand.Rand) {
+	for i := range n {
+		ready := 1e9 + int64(i)*10_000_000
+		done := ready + int64(time.Millisecond)
+		d := toGlass
+		if spread > 0 {
+			d += rng.Int64N(spread)
+		}
+		e.Observe(Sample{Frame: uint32(i), Ready: ready, GPUDone: done, Glass: done + d}, Grid{})
+	}
+}
+
+// Where pictures reach the screen as soon as they are drawn, the mode
+// comes from the spread of their time to it, and a burst of late ones
+// does not flip it.
+func TestEstimatorModeWithoutGrid(t *testing.T) {
+	rng := rand.New(rand.NewPCG(5, 6))
+	var e Estimator
+	e.SetNominalPeriod(p120)
+	feedFree(&e, modeWindow, 3*int64(time.Millisecond), 500*int64(time.Microsecond), rng)
+	r := e.Report()
+	if r.Mode != ModeDirect || r.Valid || r.PeriodNs != p120 {
+		t.Fatalf("report %+v: want direct at the stated refresh, no phase", r)
+	}
+	// One report's worth of a compositor: the mode holds.
+	feedFree(&e, modeWindow, 3*int64(time.Millisecond), p120, rng)
+	if r := e.Report(); r.Mode != ModeDirect {
+		t.Fatalf("mode %v after one composited report, want direct kept", r.Mode)
+	}
+	for range spreadReports {
+		feedFree(&e, 30, 3*int64(time.Millisecond), p120, rng)
+		r = e.Report()
+	}
+	if r.Mode != ModeComposited || r.CompositedPct < 20 {
+		t.Fatalf("report %+v: want composited", r)
+	}
+	for range spreadReports + 1 {
+		feedFree(&e, modeWindow, 3*int64(time.Millisecond), 500*int64(time.Microsecond), rng)
+		r = e.Report()
+	}
+	if r.Mode != ModeDirect {
+		t.Fatalf("mode %v, want direct again", r.Mode)
+	}
+}
+
+func TestEstimatorModeWithoutGridNeedsAPeriod(t *testing.T) {
+	var e Estimator
+	feedFree(&e, modeWindow, 3*int64(time.Millisecond), p120, rand.New(rand.NewPCG(7, 8)))
+	if r := e.Report(); r.Mode != ModeUnknown {
+		t.Fatalf("mode %v with no refresh period known, want unknown", r.Mode)
+	}
+}
