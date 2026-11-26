@@ -586,6 +586,9 @@ func (h *Host) Start(ctx context.Context) error {
 	}
 	if h.cfg.OpenVideo == nil || h.cfg.Capabilities != nil {
 		scfg.Capabilities, scfg.Resolve, scfg.Resize, scfg.SwitchDisplay = h.capabilitiesJSON, h.resolve, true, true
+		// A calibration session streams the synthetic pattern through the
+		// encoders the capabilities name.
+		scfg.Calibration = true
 	}
 	srv, err := h.listen(h.cfg.ListenAddr, scfg)
 	if err != nil {
@@ -712,12 +715,19 @@ func (h *Host) acceptLoop(ctx context.Context) {
 		if old != nil {
 			h.stopWithin(old)
 		}
-		h.claimInput(sess)
+		calibration := st.calibrate != ""
+		if !calibration {
+			h.claimInput(sess)
+		}
 		h.logf("planck: %s connected from %v (%s)", sess.Identity(), sess.RemoteControlAddr(), st.path)
-		h.sessionEvent(st, true)
+		if !calibration {
+			h.sessionEvent(st, true)
+		}
 		h.wg.Go(func() {
 			st.run(ctx)
-			h.sessionEvent(st, false)
+			if !calibration {
+				h.sessionEvent(st, false)
+			}
 			h.mu.Lock()
 			if h.cur == st {
 				h.cur = nil
@@ -728,7 +738,9 @@ func (h *Host) acceptLoop(ctx context.Context) {
 			if !replaced {
 				h.releasePads()
 			}
-			h.streamEnded(st)
+			if !calibration {
+				h.streamEnded(st)
+			}
 		})
 	}
 }

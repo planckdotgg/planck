@@ -24,9 +24,23 @@ type clientCaps struct {
 	Client    defaults.ClientCapabilities `json:"client"`
 	Route     defaults.RouteInfo          `json:"route"`
 	Overrides defaults.UserOverrides      `json:"overrides"`
+	// Calibrate asks a host with wire.FeatureCalibration for a
+	// calibration stream; an older host ignores it.
+	Calibrate CalibrationMode `json:"calibrate,omitempty"`
 }
 
 const clientCapsVersion = 1
+
+// CalibrationMode is the stream a calibration session asks for.
+type CalibrationMode string
+
+const (
+	// CalibrateNetwork streams nothing: the session carries probe trains.
+	CalibrateNetwork CalibrationMode = "network"
+	// CalibrateVideo streams the host's synthetic pattern, encoded as the
+	// resolved profile says, in place of its screen.
+	CalibrateVideo CalibrationMode = "video"
+)
 
 func routeKind(k discovery.PathKind) defaults.RouteKind {
 	switch k {
@@ -178,6 +192,26 @@ func lanPacing(linkMbps int, clientOS string) transport.Pacing {
 		p.Queue = transport.MacReceiveQueue
 	}
 	return p
+}
+
+// routePacing is the video pacing of a stream on route, whose slowest LAN
+// link is linkMbps, to a client with caps: on the LAN as lanPacing, with
+// the receive queue calibration measured on the route in place of the
+// guess by OS, which holds anywhere. ok false keeps the session's default.
+func routePacing(route defaults.RouteKind, linkMbps int, caps clientCaps) (p transport.Pacing, ok bool) {
+	q := caps.Route.ReceiveQueue
+	switch {
+	case route == defaults.RouteLAN:
+		p = lanPacing(linkMbps, caps.Client.OS)
+	case q != nil && q.Bytes > 0:
+		p = transport.DefaultPacing
+	default:
+		return p, false
+	}
+	if q != nil {
+		p.Queue = transport.ReceiveQueue{Bytes: q.Bytes, DrainMbps: q.DrainMbps}
+	}
+	return p, true
 }
 
 // resizeDisplay is d as a Resize carries it.

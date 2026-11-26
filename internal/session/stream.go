@@ -111,6 +111,9 @@ type stream struct {
 	// restoreDisplays turns the other displays back on in privacy mode;
 	// only the video loop touches it.
 	restoreDisplays func() error
+	// calibrate is the calibration stream the client asked for, "" for a
+	// stream of this machine's screen.
+	calibrate CalibrationMode
 }
 
 func newStream(h *Host, sess *transport.Session) *stream {
@@ -144,8 +147,14 @@ func newStream(h *Host, sess *transport.Session) *stream {
 		if json.Unmarshal(sess.PeerCapabilities(), &cc) == nil {
 			st.params.ScalePct = scalePercent(cc.Client.Display.Scale)
 		}
-		if prof.Route == defaults.RouteLAN {
-			sess.SetPacing(lanPacing(prof.LinkMbps, cc.Client.OS))
+		if pacing, ok := routePacing(prof.Route, prof.LinkMbps, cc); ok {
+			sess.SetPacing(pacing)
+		}
+		switch cc.Calibrate {
+		case CalibrateNetwork, CalibrateVideo:
+			st.calibrate = cc.Calibrate
+			st.params.Synth, st.params.VirtualDisplay = true, false
+			h.logf("planck: %s calibration session", cc.Calibrate)
 		}
 		h.logf("planck: profile %s %dx%d@%d %d-bit 4:4:4=%v on %s (%s), virtual display %v, %d/%d kbps, slices %d split %v",
 			prof.Codec, prof.Width, prof.Height, prof.FPS, prof.BitDepth, prof.Chroma444, prof.EncodeAdapter.Name, prof.EncoderAPI,
@@ -507,17 +516,23 @@ func (st *stream) run(parent context.Context) {
 	st.ctx, st.cancel = context.WithCancel(parent)
 	defer st.cancel()
 	defer st.endMute()
-	st.applyMute(st.h.SessionSettings().MuteSpeakers)
 	st.h.lastInput.Store(st.h.now())
 	st.sendPeerState()
 	var wg sync.WaitGroup
-	wg.Go(st.videoLoop)
-	wg.Go(st.idleLoop)
-	if st.sess.Config().AudioChannels > 0 && !st.h.cfg.NoAudio {
-		wg.Go(st.audioLoop)
-	}
-	if st.sess.PeerFeatures()&wire.FeatureCursorState != 0 && !st.h.cfg.Synth {
-		wg.Go(st.cursorLoop)
+	switch st.calibrate {
+	case CalibrateNetwork:
+	case CalibrateVideo:
+		wg.Go(st.videoLoop)
+	default:
+		st.applyMute(st.h.SessionSettings().MuteSpeakers)
+		wg.Go(st.videoLoop)
+		wg.Go(st.idleLoop)
+		if st.sess.Config().AudioChannels > 0 && !st.h.cfg.NoAudio {
+			wg.Go(st.audioLoop)
+		}
+		if st.sess.PeerFeatures()&wire.FeatureCursorState != 0 && !st.h.cfg.Synth {
+			wg.Go(st.cursorLoop)
+		}
 	}
 	select {
 	case <-st.sess.Done():

@@ -104,7 +104,13 @@ type ClientConfig struct {
 	SimulateLoss     float64
 	// Route says how a live stream moves between the host's routes.
 	Route RouteConfig
-	Logf  func(format string, args ...any)
+	// Calibrate dials a calibration session, which only a host with
+	// wire.FeatureCalibration accepts (transport.ErrCalibrationUnsupported
+	// otherwise); it takes no calibration kept for the host. Without it, a
+	// stream on a route the host was calibrated on asks for what that
+	// calibration picked wherever Overrides leave a knob auto.
+	Calibrate CalibrationMode
+	Logf      func(format string, args ...any)
 }
 
 // RouteConfig tunes the route monitor that runs beside each stream. A
@@ -633,6 +639,14 @@ func (c *Client) dialRoute(ctx context.Context, cc *conn, r resolved) (*route, e
 		pinKey = "addr:" + r.addr
 	}
 	pinned, isPinned := stored.PinnedHosts[pinKey]
+	offered := defaults.RouteInfo{Kind: routeKind(r.kind)}
+	if cal, ok := stored.Calibration(pinKey, r.kind.String()); ok && cfg.Calibrate == "" {
+		// The overrides already hold the decoder's format on a route move,
+		// which the calibration must not change either.
+		cfg.Overrides = cal.ResolveOverrides(cfg.Overrides)
+		offered = cal.Route(offered)
+		c.logf("planck: calibrated on %s %s: receive queue %d bytes at %d Mbps", r.kind, cal.At.Format(time.DateTime), cal.ReceiveQueue.Bytes, cal.ReceiveQueue.DrainMbps)
+	}
 	var seen [32]byte
 	verify := func(fp [32]byte) error {
 		seen = fp
@@ -673,18 +687,18 @@ func (c *Client) dialRoute(ctx context.Context, cc *conn, r resolved) (*route, e
 		req.AudioSampleRate, req.AudioChannels = audio.SampleRate, audio.Channels
 	}
 
-	capsJSON, offered, err := c.capabilities(cfg, r.addr, r.kind)
+	capsJSON, display, err := c.capabilities(cfg, r.addr, offered)
 	if err != nil {
 		return nil, err
 	}
-	cc.asked.Store(offerOf(offered, cfg.ViewSize != nil))
+	cc.asked.Store(offerOf(display, cfg.ViewSize != nil))
 
 	rt := &route{kind: r.kind, addr: r.addr}
 	var shapes shapeCache
 	sess, err := transport.Dial(ctx, r.addr, transport.ClientConfig{
 		Certificate: cert, Name: cfg.Name, VerifyHost: verify, Auth: method, PIN: cfg.PIN, Session: req,
 		HandshakeTimeout: cfg.HandshakeTimeout, SimulateLoss: cfg.SimulateLoss, LANPath: r.kind == discovery.PathLANDirect,
-		Capabilities: capsJSON, StreamSwitch: true, CursorShape: cfg.OnCursorShape != nil, RefInvalidation: true,
+		Capabilities: capsJSON, StreamSwitch: true, CursorShape: cfg.OnCursorShape != nil, RefInvalidation: true, Calibration: cfg.Calibrate != "",
 		Handlers: transport.Handlers{
 			VideoFrame: cc.onFrame,
 			Audio:      cc.onAudio,
@@ -898,7 +912,7 @@ func (c *Client) streamConfig(sess *transport.Session) (decode.Config, *defaults
 
 // capabilities is the JSON this client offers a host: its display,
 // decoders and link, the route it found, and the user's overrides.
-func (c *Client) capabilities(cfg ClientConfig, addr string, path discovery.PathKind) ([]byte, defaults.ClientDisplay, error) {
+func (c *Client) capabilities(cfg ClientConfig, addr string, route defaults.RouteInfo) ([]byte, defaults.ClientDisplay, error) {
 	probe := cfg.Capabilities
 	if probe == nil {
 		probe = ProbeClientCapabilities
@@ -916,7 +930,7 @@ func (c *Client) capabilities(cfg ClientConfig, addr string, path discovery.Path
 	if err := cfg.Overrides.Validate(); err != nil {
 		return nil, caps.Display, err
 	}
-	js, err := json.Marshal(clientCaps{V: clientCapsVersion, Client: caps, Route: defaults.RouteInfo{Kind: routeKind(path)}, Overrides: cfg.Overrides})
+	js, err := json.Marshal(clientCaps{V: clientCapsVersion, Client: caps, Route: route, Overrides: cfg.Overrides, Calibrate: cfg.Calibrate})
 	return js, caps.Display, err
 }
 
@@ -942,7 +956,9 @@ func (c *Client) pin(key string, r resolved, name string, fp [32]byte) error {
 	return config.UpdateClientConfig(c.dir, func(stored *config.ClientConfig) error {
 		p, ok := stored.PinnedHosts[key]
 		if !ok || !strings.EqualFold(p.CertFingerprint, hex.EncodeToString(fp[:])) {
-			p.HostID, p.CertFingerprint, p.PairedAt = key, hex.EncodeToString(fp[:]), time.Now()
+			// Another certificate is another install, whose calibration
+			// this one's does not stand for.
+			p.HostID, p.CertFingerprint, p.PairedAt, p.Calibrated = key, hex.EncodeToString(fp[:]), time.Now(), nil
 		}
 		p.LastAddr = r.addr
 		if name != "" {
@@ -1981,6 +1997,43 @@ func (cc *conn) switchStream(rt *route, m *wire.Stream, logf func(string, ...any
 	cc.mu.Unlock()
 	cc.dropped.Store(0)
 	logf("planck: the host streams %v at %dx%d@%d (stream %d)", p.Codec, p.Width, p.Height, p.FPS, m.Epoch)
+}
+
+// Probe runs a probe train on the live session of a calibration stream
+// (transport.Session.Probe).
+func (c *Client) Probe(ctx context.Context, spec transport.ProbeSpec) (transport.ProbeTrain, error) {
+	sess := c.liveSession()
+	if sess == nil {
+		return transport.ProbeTrain{}, ErrNotConnected
+	}
+	return sess.Probe(ctx, spec)
+}
+
+// Ping measures n round trips on the live session (transport.Session.Ping).
+func (c *Client) Ping(ctx context.Context, n int, every time.Duration) ([]time.Duration, error) {
+	sess := c.liveSession()
+	if sess == nil {
+		return nil, ErrNotConnected
+	}
+	return sess.Ping(ctx, n, every)
+}
+
+// ResetStats starts the stream's latency windows and frame counts afresh,
+// so Stats sums up only what comes after.
+func (c *Client) ResetStats() {
+	c.mu.Lock()
+	cc := c.conn
+	c.mu.Unlock()
+	if cc == nil {
+		return
+	}
+	cc.mu.Lock()
+	cc.since, cc.keyframes = cc.session().Stats(), 0
+	for _, w := range []*window{cc.e2e, cc.network, cc.encodeW, cc.decodeW, cc.presentW, cc.glassW, cc.e2eGlassW, cc.frameTimes} {
+		w.reset()
+	}
+	cc.mu.Unlock()
+	cc.dropped.Store(0)
 }
 
 // Disconnect says goodbye to the host and stops playback.

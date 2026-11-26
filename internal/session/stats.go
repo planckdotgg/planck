@@ -30,6 +30,8 @@ func (w *window) add(v float64) {
 	}
 }
 
+func (w *window) reset() { w.next, w.full = 0, false }
+
 func (w *window) len() int {
 	if w.full {
 		return len(w.buf)
