@@ -28,22 +28,28 @@ func buttonLog(evs []input.Event) []string {
 }
 
 // chordStep presses (+) or releases (-) MyGo button b, with a frame after
-// it unless the step is in the same frame as the next.
+// it unless the step is in the same frame as the next. The Tester runs a
+// frame after each event it is given, so a step in the same frame goes to
+// the view's observer as MyGo delivers it, with no frame.
 type chordStep struct {
 	button int
 	down   bool
 	same   bool
 }
 
-func runChord(tt *mui.Tester, x, y float32, steps []chordStep) {
+func runChord(f *inputForwarder, tt *mui.Tester, x, y float32, steps []chordStep) {
 	for _, s := range steps {
+		kind := mui.InputPointerUp
 		if s.down {
-			tt.PressButton(s.button, x, y)
-		} else {
-			tt.ReleaseButton(s.button, x, y)
+			kind = mui.InputPointerDown
 		}
-		if !s.same {
-			tt.Frame()
+		switch {
+		case s.same:
+			f.observe(mui.InputEvent{Kind: kind, Button: s.button, X: x, Y: y})
+		case s.down:
+			tt.PressButton(s.button, x, y)
+		default:
+			tt.ReleaseButton(s.button, x, y)
 		}
 	}
 	tt.Frame()
@@ -74,23 +80,24 @@ func TestChordedButtonsReachHostIndependently(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run("free/"+c.name, func(t *testing.T) {
-			_, tt, got := barsForwarder(1920, 1080)
+			f, tt, got := barsForwarder(1920, 1080)
 			tt.Move(400, 200)
 			tt.Frame()
-			runChord(tt, 400, 200, c.steps)
+			runChord(f, tt, 400, 200, c.steps)
 			if b := buttonLog(*got); !slices.Equal(b, c.want) {
 				t.Fatalf("sent %v, want %v", b, c.want)
 			}
 		})
 		t.Run("relative/"+c.name, func(t *testing.T) {
-			l, _, tt, take := lockedForwarder(t)
+			f, tt, got := barsForwarder(1920, 1080)
+			f.lock = newPointerLock(&fakePointer{t: t}, f.send)
 			tt.Frame()
-			l.setHost(wire.CursorState{Captured: true})
+			f.lock.setHost(wire.CursorState{Captured: true})
 			tt.Move(400, 200)
 			tt.Frame()
-			take()
-			runChord(tt, 400, 200, c.steps)
-			if b := buttonLog(take()); !slices.Equal(b, c.want) {
+			*got = nil
+			runChord(f, tt, 400, 200, c.steps)
+			if b := buttonLog(*got); !slices.Equal(b, c.want) {
 				t.Fatalf("sent %v, want %v", b, c.want)
 			}
 		})

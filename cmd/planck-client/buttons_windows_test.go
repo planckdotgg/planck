@@ -17,10 +17,10 @@ func TestRawSideButtons(t *testing.T) {
 		got = append(got, buttonLog([]input.Event{{Type: input.TypeMouseButton, Button: input.MouseButton{Button: b, Pressed: down}}})...)
 	}
 	for _, flags := range []uint16{
-		riMouseButton4Down,
+		0x0040,          // RI_MOUSE_BUTTON_4_DOWN
 		0x0001 | 0x0004, // left and right down
-		riMouseButton5Down | 0x0002,
-		riMouseButton4Up | riMouseButton5Up,
+		0x0100 | 0x0002, // RI_MOUSE_BUTTON_5_DOWN, left up
+		0x0080 | 0x0200, // RI_MOUSE_BUTTON_4_UP, RI_MOUSE_BUTTON_5_UP
 	} {
 		binary.LittleEndian.PutUint16(m[4:], flags)
 		rawSideButtons(m, to)
