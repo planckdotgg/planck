@@ -3,6 +3,7 @@ package defaults
 import (
 	"cmp"
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,7 +15,9 @@ const (
 	pyroBPP420          = 1.6  // bits per pixel, PyroWave 4:2:0 (Punktfunk default; author eval 125–300 Mbps @ 35 dB)
 	pyro444Factor       = 1.18 // author eval: 4:4:4 costs 15–20%
 	pyroSerialBudget    = 0.20 // max fraction of the frame interval spent putting one frame on the wire
-	hevcLANBPP          = 0.20 // HEVC/AV1 target bits per pixel on LAN
+	hevcLANBPP          = 0.20 // HEVC/AV1 target bits per pixel on LAN, up to hevcKneePixelRate
+	hevcKneePixelRate   = 2560 * 1440 * 60
+	hevcFalloff         = 0.75 // past the knee, the target grows as pixel rate^hevcFalloff
 	minWANBPP           = 0.05 // below this, step resolution down
 	lanCeilingKbps      = 300_000
 	lanLinkShare        = 0.5 // HEVC ceiling at most half the link
@@ -802,8 +805,19 @@ func (r *resolver) ceilingKbps() int {
 }
 
 // targetKbps is the 4:2:0 HEVC/AV1/H.264 target at the current size.
-func (r *resolver) targetKbps() int {
-	return int(float64(r.pixelRate()) * hevcLANBPP / 1000)
+func (r *resolver) targetKbps() int { return hevcTargetKbps(r.pixelRate()) }
+
+// hevcTargetKbps is hevcLANBPP up to 1440p60, and less per pixel past it:
+// at a higher frame rate each picture is closer to the last one, and at a
+// higher resolution each block covers less detail. A flat 0.20 bpp sent
+// 5120x1440 at 120 fps 177 Mbps (212 with 4:4:4 and the rate controller),
+// where the decoder's time and each frame's burst grow with the bits.
+func hevcTargetKbps(pixelRate int64) int {
+	px := float64(pixelRate)
+	if px > hevcKneePixelRate {
+		px = hevcKneePixelRate * math.Pow(px/hevcKneePixelRate, hevcFalloff)
+	}
+	return int(px * hevcLANBPP / 1000)
 }
 
 func mbps(kbps int) string { return fmt.Sprintf("%.1f Mbps", float64(kbps)/1000) }
@@ -858,7 +872,7 @@ func (r *resolver) bitrate() {
 	r.p.BitrateKbps = min(target, ceiling)
 	switch v := r.o.BitrateMbps * 1000; {
 	case v == 0:
-		why := fmt.Sprintf("%.2f bpp target, ceiling %s", hevcLANBPP, mbps(ceiling))
+		why := fmt.Sprintf("%.3f bpp target, ceiling %s", float64(target)*1000/float64(r.pixelRate()), mbps(ceiling))
 		if target > ceiling {
 			why = "route ceiling " + mbps(ceiling)
 		}
