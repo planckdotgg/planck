@@ -62,3 +62,15 @@ func (d *DMABuf) HasFDs() bool { return d.Planes > 0 && d.FDs[0] > 0 && !d.Memor
 
 // HasCPU reports whether d's planes are in memory.
 func (d *DMABuf) HasCPU() bool { return d.Planes > 0 && d.CPU[0] != nil }
+
+// MemoryDMABuf describes planes in Go memory, rows at pitches, as a
+// software source (a synthetic pattern, a test) hands them on. The caller
+// keeps the descriptor, and so the planes, alive while frames point to it.
+func MemoryDMABuf(fourcc uint32, width, height int, planes [][]byte, pitches []int) *DMABuf {
+	d := &DMABuf{Fourcc: fourcc, Modifier: ModifierLinear, Width: width, Height: height, Planes: len(planes)}
+	for i, p := range planes {
+		d.CPU[i] = unsafe.Pointer(&p[0])
+		d.Pitches[i] = uint32(pitches[i])
+	}
+	return d
+}
