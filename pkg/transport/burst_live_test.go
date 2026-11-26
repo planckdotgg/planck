@@ -27,7 +27,9 @@ import (
 // A case is size[@mbps[/burst[/nogso]]]: frames of size bytes (k and m
 // suffixes) at the pacing rate in Mbit/s (0 unpaced, "mac" a 2.5 Gbit/s
 // LAN to a macOS client's receive queue) and burst datagrams;
-// size may be "130k+500k/20" for a 500 KB frame every 20th.
+// size may be "130k+500k/20" for a 500 KB frame every 20th, and
+// "mbps|mbps" alternates two pacings frame by frame, so both meet the same
+// conditions on the receiver.
 // PLANCK_LIVE_BURST_SECONDS is each case's length (default 5) and
 // PLANCK_LIVE_FPS the frame rate (default 120). PLANCK_LIVE_BURST_TRICKLE_US
 // sends a 64-byte datagram that often between frames.
@@ -56,6 +58,8 @@ type burstCase struct {
 	size, big, every int
 	mbps, burst      int
 	gso, mac         bool
+	// alt is the pacing of odd frames, when set.
+	alt *burstCase
 }
 
 func parseBurstCases(t *testing.T, s string) []burstCase {
@@ -72,6 +76,13 @@ func parseBurstCases(t *testing.T, s string) []burstCase {
 		}
 		bc.size = parseBytes(t, size)
 		if len(parts) > 1 {
+			if a, b, ok := strings.Cut(parts[1], "|"); ok {
+				parts[1] = a
+				alt := burstCase{burst: 16}
+				alt.mbps, _ = strconv.Atoi(b)
+				alt.mac = b == "mac"
+				bc.alt = &alt
+			}
 			f := strings.Split(parts[1], "/")
 			bc.mbps, _ = strconv.Atoi(f[0])
 			bc.mac = f[0] == "mac"
@@ -148,13 +159,18 @@ func burstSend(t *testing.T, addr string) {
 				size, big = c.big, 1
 			}
 			count := (size + dgram - burstHeader - 1) / (dgram - burstHeader)
-			rate := float64(c.mbps) * 1e6 / 8
-			if c.mac {
-				pc := LANPacing(2500)
-				pc.Queue = MacReceiveQueue
-				rate = pc.rate(size, big == 1, fps, 0)
+			pc := c
+			if c.alt != nil && f%2 == 1 {
+				pc = *c.alt
+				big |= 2
 			}
-			p.SetRate(rate, c.burst*dgram)
+			rate := float64(pc.mbps) * 1e6 / 8
+			if pc.mac {
+				lan := LANPacing(2500)
+				lan.Queue = MacReceiveQueue
+				rate = lan.rate(size, big&1 == 1, fps, 0)
+			}
+			p.SetRate(rate, pc.burst*dgram)
 			var inCalls int64
 			first := Mono()
 			for i := 0; i < count; i++ {
@@ -190,7 +206,8 @@ func burstSend(t *testing.T, addr string) {
 
 type burstFrame struct {
 	count, got int
-	big        bool
+	// variant: bit 0 a big frame, bit 1 the alternate pacing.
+	variant    byte
 	seen       []bool
 	first, end int64
 	// maxGap is the longest silence before one of the frame's datagrams
@@ -238,7 +255,7 @@ func burstReceive(t *testing.T, addr string) {
 		f := frames[key]
 		if f == nil {
 			count := int(binary.BigEndian.Uint16(buf[7:]))
-			f = &burstFrame{count: count, big: buf[9] == 1, seen: make([]bool, count), first: now}
+			f = &burstFrame{count: count, variant: buf[9], seen: make([]bool, count), first: now}
 			if prevFirst != 0 {
 				f.sinceLast = now - prevFirst
 			}
@@ -261,17 +278,17 @@ func burstReceive(t *testing.T, addr string) {
 		runs                []int
 		spread              []int64
 	}
-	byCase := map[uint32]map[bool]*summary{}
+	byCase := map[uint32]map[byte]*summary{}
 	for key, f := range frames {
 		m := byCase[key[0]]
 		if m == nil {
-			m = map[bool]*summary{}
+			m = map[byte]*summary{}
 			byCase[key[0]] = m
 		}
-		s := m[f.big]
+		s := m[f.variant]
 		if s == nil {
 			s = &summary{}
-			m[f.big] = s
+			m[f.variant] = s
 		}
 		s.frames++
 		if f.got == f.count {
@@ -300,14 +317,14 @@ func burstReceive(t *testing.T, addr string) {
 			}
 		}
 	}) {
-		for _, big := range []bool{false, true} {
-			s := byCase[c][big]
+		for v := byte(0); v < 4; v++ {
+			s := byCase[c][v]
 			if s == nil {
 				continue
 			}
 			slices.Sort(s.runs)
-			t.Logf("case %d big %-5v frames %5d lossy %3d lost %5d runs %v arrival spread p50 %s p99 %s",
-				c, big, s.frames, s.lossy, s.lost, s.runs, pctl(s.spread, 50), pctl(s.spread, 99))
+			t.Logf("case %d big %-5v alt %-5v frames %5d lossy %3d lost %5d runs %v arrival spread p50 %s p99 %s",
+				c, v&1 == 1, v&2 == 2, s.frames, s.lossy, s.lost, s.runs, pctl(s.spread, 50), pctl(s.spread, 99))
 		}
 	}
 }
