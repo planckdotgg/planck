@@ -1,7 +1,9 @@
 // Package hevc parses the HEVC syntax a hardware decoder that takes
 // parsed parameters (VA-API) needs from an Annex B stream: NAL units, the
 // sequence and picture parameter sets, slice segment headers, reference
-// picture sets and picture order counts (ITU-T H.265, 7.3 and 8.3).
+// picture sets and picture order counts (ITU-T H.265, 7.3 and 8.3); and
+// writes the parameter sets and slice headers of a low-delay stream, for
+// a hardware encoder that takes them packed (VA-API).
 //
 // It covers the Main and Main 10 profiles: 4:2:0, no range or screen
 // content extensions.
