@@ -102,7 +102,7 @@ if ($Installer) {
     }
     if (-not $iscc) { throw 'Inno Setup 6 (ISCC.exe) was not found. Install it, or leave out -Installer.' }
     Invoke-Checked 'installer (Inno Setup)' {
-        & $iscc /Qp "/DAppVersion=$version" "/DSourceDir=$app" "/DOutputDir=$dist" packaging\windows\Planck.iss
+        & $iscc /Qp "/DAppVersion=$version" "/DAppVersionNumeric=$(($version -split '-', 2)[0])" "/DSourceDir=$app" "/DOutputDir=$dist" packaging\windows\Planck.iss
     }
     $setup = Join-Path $dist "$name-setup.exe"
     Sign-File $setup

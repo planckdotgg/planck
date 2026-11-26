@@ -65,4 +65,4 @@ jobs:
           "$RUNNER_TEMP/planck-host$ext" -version
       - name: Check the release scripts
         if: runner.os != 'Windows'
-        run: bash -n scripts/*.sh
+        run: for f in scripts/*.sh; do bash -n "$f"; done

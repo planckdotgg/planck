@@ -1,5 +1,7 @@
 ; The Windows installer. scripts\bundle-windows.ps1 -Installer builds it and
-; passes AppVersion, SourceDir (the app folder) and OutputDir.
+; passes AppVersion, AppVersionNumeric (AppVersion without a -rc.1 style
+; suffix, which VersionInfoVersion refuses), SourceDir (the app folder) and
+; OutputDir.
 ;
 ; It installs for the current user by default, into
 ; %LOCALAPPDATA%\Programs\Planck, so it needs no administrator; the first
@@ -8,6 +10,9 @@
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
+#endif
+#ifndef AppVersionNumeric
+  #define AppVersionNumeric AppVersion
 #endif
 #ifndef SourceDir
   #define SourceDir "..\..\dist\windows-x64\Planck"
@@ -40,7 +45,7 @@ OutputBaseFilename=planck-{#AppVersion}-windows-x64-setup
 SetupIconFile=..\..\assets\planck-windows.ico
 UninstallDisplayIcon={app}\planck-client.exe
 UninstallDisplayName=Planck
-VersionInfoVersion={#AppVersion}
+VersionInfoVersion={#AppVersionNumeric}
 VersionInfoProductName=Planck
 Compression=lzma2/max
 SolidCompression=yes
