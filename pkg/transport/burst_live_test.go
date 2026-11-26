@@ -28,7 +28,8 @@ import (
 // suffixes) at the pacing rate in Mbit/s (0 unpaced) and burst datagrams;
 // size may be "130k+500k/20" for a 500 KB frame every 20th.
 // PLANCK_LIVE_BURST_SECONDS is each case's length (default 5) and
-// PLANCK_LIVE_FPS the frame rate (default 120).
+// PLANCK_LIVE_FPS the frame rate (default 120). PLANCK_LIVE_BURST_TRICKLE_US
+// sends a 64-byte datagram that often between frames.
 func TestLiveBurst(t *testing.T) {
 	role, addr := os.Getenv("PLANCK_LIVE_BURST"), os.Getenv("PLANCK_LIVE_BURST_ADDR")
 	switch {
@@ -45,6 +46,9 @@ func TestLiveBurst(t *testing.T) {
 
 // burstHeader: case, frame, datagram index, datagram count, big flag.
 const burstHeader = 1 + 4 + 2 + 2 + 1
+
+// trickleCase marks the sender's between-frame datagrams.
+const trickleCase = 255
 
 type burstCase struct {
 	name             string
@@ -120,6 +124,9 @@ func burstSend(t *testing.T, addr string) {
 	const dgram = wire.MaxLANDatagram
 	pkt := make([]byte, dgram)
 	interval := int64(time.Second) / int64(fps)
+	trickle := int64(envInt("PLANCK_LIVE_BURST_TRICKLE_US", 0)) * 1000
+	tick := make([]byte, 64)
+	tick[0] = trickleCase
 	for ci, c := range cases {
 		w := newTrainWriter(conn)
 		w.gso = w.gso && c.gso
@@ -128,7 +135,12 @@ func burstSend(t *testing.T, addr string) {
 		frames := secs * fps
 		start := Mono() + 50*int64(time.Millisecond)
 		for f := 0; f < frames; f++ {
-			SleepUntilMono(start + int64(f)*interval)
+			due := start + int64(f)*interval
+			for trickle > 0 && Mono()+trickle < due {
+				SleepUntilMono(Mono() + trickle)
+				_, _ = conn.WriteToUDPAddrPort(tick, peer)
+			}
+			SleepUntilMono(due)
 			size, big := c.size, byte(0)
 			if c.every > 0 && f%c.every == c.every-1 {
 				size, big = c.big, 1
@@ -201,6 +213,9 @@ func burstReceive(t *testing.T, addr string) {
 	var gaps []int64
 	for time.Now().Before(deadline) {
 		n, _, err := read(buf)
+		if err == nil && buf[0] == trickleCase {
+			continue
+		}
 		if err != nil || n < burstHeader {
 			if !last.IsZero() && time.Since(last) > 3*time.Second {
 				break
