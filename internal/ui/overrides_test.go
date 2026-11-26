@@ -222,3 +222,21 @@ func TestClearOverridesOnlyWhenSet(t *testing.T) {
 		t.Fatalf("clear touched all hosts: %+v", got)
 	}
 }
+
+// TestResolutionBackToAutoClearsOverride: Custom… keeps the Clear
+// overrides button, and returning to Auto drops the custom size with it.
+func TestResolutionBackToAutoClearsOverride(t *testing.T) {
+	f := newFake()
+	_, tt := settingsTester(t, f)
+	choose(t, tt, "Resolution", "Custom…")
+	if !tt.HasText("Clear overrides") {
+		t.Fatalf("no Clear overrides on Custom: %q", tt.Texts())
+	}
+	choose(t, tt, "Resolution", "Auto")
+	if tt.HasText("Clear overrides") {
+		t.Fatalf("Clear overrides left after Auto: %q", tt.Texts())
+	}
+	if got := f.override(""); got.CustomWidth != 0 || got.CustomHeight != 0 || got.Resolution != defaults.Auto {
+		t.Fatalf("stale custom size: %+v", got)
+	}
+}

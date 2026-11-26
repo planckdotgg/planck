@@ -390,7 +390,7 @@ func (a *App) pinModeRow(c *mui.Context, f *settingsFrame) {
 			code = f.hosting.PIN
 		}
 		if code != "" {
-			mui.Box(c).Height(theme.SizeControl).PaddingX(theme.Space3).AlignItems(mui.Center).Radius(theme.RadiusSm).
+			mui.Box(c).Height(theme.SizeControl).PaddingX(theme.Space3).AlignItems(mui.Center).Justify(mui.Center).Radius(theme.RadiusSm).
 				Background(theme.RoleWell).Border(1, theme.RoleBorder).Label("Current code").Children(func() {
 				mono(c, spacedPIN(code)).FontSize(theme.TextBody).LetterSpacing(0.08 * theme.TextBody)
 			})

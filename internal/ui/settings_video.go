@@ -171,6 +171,7 @@ func (a *App) resolutionRow(c *mui.Context, f *settingsFrame) {
 		})
 	})
 	if e.o.Resolution != "custom" {
+		e.o.CustomWidth, e.o.CustomHeight = 0, 0
 		return
 	}
 	if before != "custom" && (e.o.CustomWidth == 0 || e.o.CustomHeight == 0) {
