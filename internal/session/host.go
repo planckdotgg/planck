@@ -590,6 +590,7 @@ func (h *Host) Start(ctx context.Context) error {
 		if err := h.startDiscovery(ctx); err != nil {
 			h.cancel()
 			srv.Close()
+			h.srv.Store(nil)
 			h.abortStart()
 			return err
 		}
@@ -615,7 +616,7 @@ func (h *Host) openInput() {
 	}
 	h.injMu.Lock()
 	defer h.injMu.Unlock()
-	h.inject = inj
+	h.inject, h.injClosed = inj, false
 	if pi, ok := inj.(PadInjector); ok {
 		pi.SetGamepadType(h.GamepadSettings().Type)
 	}

@@ -3,7 +3,9 @@ package session
 import (
 	"context"
 	"errors"
+	"net"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -125,6 +127,48 @@ func TestStartClosesInjectorWhenListenFails(t *testing.T) {
 	if !inj.closed.Load() {
 		t.Fatal("a failed Start left its injector open")
 	}
+}
+
+// TestStartRetryAfterBindFailureDeliversInput: a Start that failed to bind
+// its control port leaves nothing behind that drops input once a retried
+// Start on the same host binds it.
+func TestStartRetryAfterBindFailureDeliversInput(t *testing.T) {
+	h := newTestHost(t, HostConfig{InjectInput: true}, &logBuf{})
+	var mu sync.Mutex
+	var inj *closeInjector
+	h.openInjector = func() (input.Injector, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		inj = &closeInjector{}
+		return inj, nil
+	}
+	taken, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.cfg.ListenAddr = taken.LocalAddr().String()
+	if err := h.Start(context.Background()); err == nil {
+		taken.Close()
+		h.Stop()
+		t.Fatal("Start bound a control port that was taken")
+	}
+	taken.Close()
+	startTestHost(t, h)
+
+	r := newClient(t, t.TempDir(), h.PIN())
+	if err := connect(t, r, h.Addr().String()); err != nil {
+		t.Fatal(err)
+	}
+	press := input.Event{Type: input.TypeKey, Key: input.KeyEvent{Usage: input.KeyA, Pressed: true}}
+	if err := r.client.SendInput(press); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	last := inj
+	mu.Unlock()
+	waitFor(t, "the press at the host after a retried Start", func() bool {
+		return slices.Equal(last.events(), []input.Event{press})
+	})
 }
 
 // TestSetGamepadSettingsAfterStop: changing the virtual controller type
