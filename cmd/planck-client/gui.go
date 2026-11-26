@@ -24,6 +24,7 @@ import (
 	"github.com/planckdotgg/planck/internal/version"
 	"github.com/planckdotgg/planck/pkg/decode"
 	"github.com/planckdotgg/planck/pkg/defaults"
+	"github.com/planckdotgg/planck/pkg/phaselock"
 	"github.com/planckdotgg/planck/pkg/player"
 	"github.com/planckdotgg/planck/pkg/tailscale"
 )
@@ -436,6 +437,10 @@ func (s *surfaceSink) refit(wait bool) {
 }
 
 func (s *surfaceSink) SetObserver(o player.Observer) { s.p.SetObserver(o) }
+
+// Phase is the player's display phase, which the session reports to the
+// host.
+func (s *surfaceSink) Phase() phaselock.Report { return s.p.Phase() }
 
 func (s *surfaceSink) Submit(au []byte, pts int64) (player.Timing, error) {
 	s.refit(false)

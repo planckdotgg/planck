@@ -80,13 +80,15 @@ type Telemetry struct {
 	// Stage times are p50 over the last second, in milliseconds. TotalMs
 	// is glass to glass and may exceed the sum of the stages.
 	EncodeMs, NetMs, DecodeMs, PresentMs, TotalMs float64
-	BitrateMbps                                   float64
-	FECPct, LossPct                               float64
-	PathKind                                      discovery.PathKind
-	Codec                                         encode.Codec
-	Chroma                                        encode.Chroma
-	Width, Height                                 int
-	AudioBufMs                                    float64
+	// Display is how this client's screen shows the stream.
+	Display         DisplayPhase
+	BitrateMbps     float64
+	FECPct, LossPct float64
+	PathKind        discovery.PathKind
+	Codec           encode.Codec
+	Chroma          encode.Chroma
+	Width, Height   int
+	AudioBufMs      float64
 	// DatagramBytes is the largest media datagram on the route.
 	DatagramBytes int
 	// MicMuted is whether this client's microphone is muted on the host,
@@ -174,6 +176,25 @@ type SessionStats struct {
 	// HostPolicy is what the host's owner forces, which beats this
 	// client's overrides: a knob not auto here shows as Set by host.
 	HostPolicy defaults.UserOverrides
+	// Display is how this client's screen shows the stream.
+	Display DisplayPhase
+}
+
+// DisplayPhase is how the client's screen shows the stream: scanned out
+// directly, or composited first, which costs a refresh; and how the
+// pictures line up with its refreshes (pkg/phaselock).
+type DisplayPhase struct {
+	// ScanOut is "direct" or "composited", empty while unknown.
+	ScanOut string
+	// RefreshHz is the screen's measured refresh, 0 while unknown.
+	RefreshHz float64
+	// Locked: the pictures come within half a millisecond of the target
+	// before a refresh. ErrorMs is how early they come past it, below 0
+	// late. Reported says the host takes the measurements; it steers by
+	// them only where its source can move its frames.
+	Locked   bool
+	ErrorMs  float64
+	Reported bool
 }
 
 // ClipboardDirection is what a host shares of the clipboard.

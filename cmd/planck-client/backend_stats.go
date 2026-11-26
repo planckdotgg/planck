@@ -8,6 +8,7 @@ import (
 	"github.com/planckdotgg/planck/internal/ui"
 	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/encode"
+	"github.com/planckdotgg/planck/pkg/phaselock"
 )
 
 // sessionStats is the Statistics page's view of s, a stream that started
@@ -31,6 +32,7 @@ func sessionStats(s session.ClientStats, started time.Time) ui.SessionStats {
 	if s.E2EGlass.Samples > 0 {
 		out.Present, out.Total = stage(s.Glass), stage(s.E2EGlass)
 	}
+	out.Display = displayPhase(s)
 	for _, k := range []discovery.PathKind{discovery.PathLANDirect, discovery.PathTailscaleDirect, discovery.PathTailscaleDERP} {
 		if k.String() == s.Path {
 			out.PathKind = k
@@ -55,6 +57,20 @@ func sessionStats(s session.ClientStats, started time.Time) ui.SessionStats {
 		}
 	}
 	return out
+}
+
+// displayPhase is how the client's screen shows the stream, as the
+// sink measured it.
+func displayPhase(s session.ClientStats) ui.DisplayPhase {
+	r := s.Phase
+	var d ui.DisplayPhase
+	if r.Mode != phaselock.ModeUnknown {
+		d.ScanOut = r.Mode.String()
+	}
+	if r.Valid {
+		d.RefreshHz, d.Locked, d.ErrorMs, d.Reported = r.RefreshHz(), r.Locked, float64(r.ErrorNs)/1e6, s.PhaseSent
+	}
+	return d
 }
 
 func stage(l session.Latency) ui.StageStat { return ui.StageStat{P50: l.P50, P99: l.P99} }

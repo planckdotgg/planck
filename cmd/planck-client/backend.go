@@ -848,6 +848,7 @@ func telemetry(s session.ClientStats) ui.Telemetry {
 	if s.E2EGlass.Samples > 0 {
 		t.PresentMs, t.TotalMs = s.Glass.P50, s.E2EGlass.P50
 	}
+	t.Display = displayPhase(s)
 	for _, k := range []discovery.PathKind{discovery.PathLANDirect, discovery.PathTailscaleDirect, discovery.PathTailscaleDERP} {
 		if k.String() == s.Path {
 			t.PathKind = k

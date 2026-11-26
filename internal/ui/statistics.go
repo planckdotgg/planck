@@ -650,6 +650,19 @@ func diagnosticsLine(st SessionStats) string {
 		}
 		parts = append(parts, vs)
 	}
+	switch d := st.Display; d.ScanOut {
+	case "direct":
+		parts = append(parts, "scan-out direct")
+	case "composited":
+		parts = append(parts, "scan-out composited, +1 refresh")
+	}
+	if d := st.Display; d.RefreshHz > 0 {
+		ph := fmt.Sprintf("phase %+.1f ms", d.ErrorMs)
+		if d.Locked {
+			ph = "phase locked"
+		}
+		parts = append(parts, fmt.Sprintf("%s at %.2f Hz", ph, d.RefreshHz))
+	}
 	return strings.Join(parts, " · ")
 }
 
