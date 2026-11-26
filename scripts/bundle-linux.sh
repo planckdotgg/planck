@@ -40,12 +40,15 @@ for arch in "${arches[@]}"; do
   root="dist/linux-$arch/$name"
   echo "==> $name"
   rm -rf "dist/linux-$arch"
-  mkdir -p "$root/bin" "$root/share/applications"
+  mkdir -p "$root/bin" "$root/share/applications" "$root/share/planck" "$root/share/systemd/user"
   GOOS=linux GOARCH=$goarch go build -trimpath -tags mygo_noinspector -ldflags="$ldflags" -o "$root/bin/planck-client" ./cmd/planck-client
   GOOS=linux GOARCH=$goarch go build -trimpath -ldflags="$ldflags" -o "$root/bin/planck-host" ./cmd/planck-host
   cp LICENSE THIRD_PARTY_NOTICES.md "$root/"
   sed -e "s/__VERSION__/$version/" -e "s/__ARCH__/$arch/" packaging/linux/README.txt > "$root/README.txt"
   cp packaging/linux/planck.desktop "$root/share/applications/planck.desktop"
+  cp packaging/linux/60-planck-uinput.rules "$root/share/planck/60-planck-uinput.rules"
+  cp packaging/linux/planck-host.service "$root/share/systemd/user/planck-host.service"
+  cp scripts/install-linux.sh "$root/install.sh"
   for png in assets/png/linux-hicolor/planck-*.png; do
     size=${png##*-}
     size=${size%.png}

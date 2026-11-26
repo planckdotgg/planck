@@ -6,6 +6,8 @@ require (
 	github.com/ebitengine/oto/v3 v3.5.1
 	github.com/ebitengine/purego v0.11.3
 	github.com/egoist/mygo v0.10.0
+	github.com/godbus/dbus/v5 v5.2.4
+	github.com/jfreymuth/pulse v0.1.3
 	github.com/klauspost/reedsolomon v1.14.2
 	github.com/quic-go/quic-go v0.65.0
 	github.com/thesyncim/gopus v0.2.4
@@ -16,7 +18,6 @@ require (
 
 require (
 	github.com/go-text/typesetting v0.3.5 // indirect
-	github.com/jfreymuth/pulse v0.1.3 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/text v0.44.0 // indirect

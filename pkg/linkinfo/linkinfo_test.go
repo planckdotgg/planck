@@ -11,7 +11,7 @@ import (
 
 func TestRouteLoopbackIsNotWired(t *testing.T) {
 	name, link, err := Route(netip.MustParseAddr("127.0.0.1"))
-	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" && runtime.GOOS != "linux" {
 		if err == nil {
 			t.Fatalf("unsupported OS returned %s %+v", name, link)
 		}
