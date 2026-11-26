@@ -1,3 +1,5 @@
+//go:build linux && !android && (amd64 || arm64)
+
 package hostbuf
 
 import (
@@ -6,6 +8,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/planckdotgg/planck/pkg/capture"
 )
@@ -139,11 +143,4 @@ func (p *Pool) make(index int) (*Buffer, error) {
 	return b, nil
 }
 
-func memfd(name string) (int, error) {
-	b := append([]byte(name), 0)
-	fd, _, errno := syscall.Syscall(sysMemfdCreate, uintptr(unsafe.Pointer(&b[0])), 1 /* MFD_CLOEXEC */, 0)
-	if errno != 0 {
-		return -1, errno
-	}
-	return int(fd), nil
-}
+func memfd(name string) (int, error) { return unix.MemfdCreate(name, unix.MFD_CLOEXEC) }

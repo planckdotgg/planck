@@ -1,4 +1,4 @@
-//go:build !windows && !darwin && !linux
+//go:build !darwin && !windows && !(linux && !android && (amd64 || arm64))
 
 package player
 
