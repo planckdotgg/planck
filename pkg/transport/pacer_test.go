@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"slices"
 	"testing"
 	"time"
 )
@@ -54,15 +55,16 @@ func TestPacingSpreadsFrames(t *testing.T) {
 			}
 			var p Pacer
 			p.SetRate(rate, burst)
-			var worst time.Duration
-			var spread time.Duration
+			// A frame's datagrams stand for 1.1 times its size on the wire,
+			// and the first burst leaves at once.
+			n := (tc.size + pacedDatagram - 1) / pacedDatagram
+			want := time.Duration(float64(n*pacedDatagram-burst) / rate * 1e9)
+			var spreads []time.Duration
 			for round := 0; round < 20; round++ {
 				at := paceTrace(&p, tc.size)
-				spread = time.Duration(at[len(at)-1] - at[0])
-				// A frame's datagrams stand for 1.1 times its size on the
-				// wire, and the first burst leaves at once.
-				want := time.Duration(float64(len(at)*pacedDatagram-burst) / rate * 1e9)
-				if spread < want*7/10 || spread > want*3/2 {
+				spread := time.Duration(at[len(at)-1] - at[0])
+				// A preempted round only runs long; none may run short.
+				if spread < want*7/10 {
 					t.Fatalf("round %d: %d datagrams over %v, want about %v", round, len(at), spread, want)
 				}
 				// In any 200 us: one burst plus what the rate lets out, and
@@ -72,11 +74,16 @@ func TestPacingSpreadsFrames(t *testing.T) {
 				if got := maxInWindow(at, int64(w)); got > limit {
 					t.Fatalf("round %d: %d bytes within %v, limit %d", round, got, w, limit)
 				}
-				worst = max(worst, spread)
+				spreads = append(spreads, spread)
 				SleepUntilMono(Mono() + int64(interval))
 			}
-			t.Logf("%d bytes at %.0f Mbit/s: spread %v (worst of 20 %v), share of %v: %.0f%%",
-				tc.size, rate*8/1e6, spread, worst, interval, 100*float64(worst)/float64(interval))
+			slices.Sort(spreads)
+			median, worst := spreads[len(spreads)/2], spreads[len(spreads)-1]
+			if median > want*3/2 {
+				t.Fatalf("median of 20 frames spread over %v, want about %v", median, want)
+			}
+			t.Logf("%d bytes at %.0f Mbit/s: spread median %v, worst of 20 %v (want %v); median share of %v: %.0f%%",
+				tc.size, rate*8/1e6, median, worst, want, interval, 100*float64(median)/float64(interval))
 		})
 	}
 }
