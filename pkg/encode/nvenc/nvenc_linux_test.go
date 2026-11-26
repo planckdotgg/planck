@@ -109,7 +109,7 @@ func TestLinuxKeyframeCarriesParameterSets(t *testing.T) {
 }
 
 // TestLinuxRoundTripThroughNVDEC encodes NV12 frames with NVENC, decodes
-// them with NVDEC and compares the luma with the source.
+// them with NVDEC and compares the luma with the source's.
 func TestLinuxRoundTripThroughNVDEC(t *testing.T) {
 	const w, h = 1280, 720
 	cfg := encode.Config{Codec: encode.HEVC, Chroma: encode.NV12, Source: capture.FormatNV12, Width: w, Height: h, FPS: 60, BitrateKbps: 40000}
@@ -132,18 +132,22 @@ func TestLinuxRoundTripThroughNVDEC(t *testing.T) {
 		if err != nil {
 			t.Fatalf("decode %d: %v", i, err)
 		}
+		// The left eighth holds only gradients; the middle is 1-pixel
+		// noise no encoder keeps at this rate, which says nothing about
+		// how the frame reached the GPU.
 		out := capture.DMABufOf(pic.Surface)
 		var se float64
+		cols := w / 8
 		for y := range h {
 			row := unsafe.Slice((*byte)(unsafe.Add(out.CPU[0], y*int(out.Pitches[0]))), w)
-			for x := range w {
+			for x := range cols {
 				diff := float64(row[x]) - float64(lumas[i][y*w+x])
 				se += diff * diff
 			}
 		}
 		d.Release(pic)
-		psnr := 10 * math.Log10(255*255/(se/float64(w*h)))
-		if psnr < 30 {
+		psnr := 10 * math.Log10(255*255/max(se/float64(cols*h), 1e-3))
+		if psnr < 35 {
 			t.Fatalf("frame %d: luma PSNR %.1f dB", i, psnr)
 		}
 		if i == len(frames)-1 {
