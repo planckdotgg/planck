@@ -1,0 +1,61 @@
+name: CI
+
+# Vet, test and release-build the Go code (CGO_ENABLED=0) on macOS, Linux
+# and Windows. A change to documents only runs nothing.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
+  pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go, ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26, ubuntu-24.04, windows-2025]
+    env:
+      CGO_ENABLED: '0'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./cmd/... ./internal/... ./pkg/...
+      - name: Build planck-client and planck-host like a release
+        run: |
+          ext=""
+          [[ "$RUNNER_OS" == Windows ]] && ext=.exe
+          go build -trimpath -tags mygo_noinspector -ldflags="-s -w" -o "$RUNNER_TEMP/planck-client$ext" ./cmd/planck-client
+          go build -trimpath -ldflags="-s -w" -o "$RUNNER_TEMP/planck-host$ext" ./cmd/planck-host
+          "$RUNNER_TEMP/planck-client$ext" -version
+          "$RUNNER_TEMP/planck-host$ext" -version
+      - name: Check the release scripts
+        if: runner.os != 'Windows'
+        run: bash -n scripts/*.sh

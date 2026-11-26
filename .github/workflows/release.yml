@@ -1,0 +1,348 @@
+name: Release
+
+# Build the release files for macOS, Windows and Linux and, for a tag push
+# or a dispatch with dry_run off, publish them as one GitHub release.
+#
+#   git tag v0.1.0 && git push origin v0.1.0     build and publish
+#   gh workflow run release.yml                   dry run: build, no release
+#   gh workflow run release.yml -f dry_run=false  publish v<version.go> from the branch's head
+#
+# The release is created as a draft, gets every file, and only then becomes
+# public, so planck.gg/api/download (releases/latest) never sees a release
+# with a missing file. docs/releasing.md has the secrets and the steps.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build only: sign nothing and publish nothing'
+        type: boolean
+        default: true
+      version:
+        description: 'Optional: the version you expect (X.Y.Z); the run stops unless internal/version/version.go has it'
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+      publish: ${{ steps.v.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the version
+        id: v
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          version=$(scripts/version.sh)
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::internal/version/version.go has '$version', which is not X.Y.Z."
+            exit 1
+          fi
+          publish=false
+          if [[ "$EVENT" == push ]]; then
+            [[ "$REF_TYPE" == tag ]] || { echo "::error::A push run needs a tag."; exit 1; }
+            scripts/version.sh "$REF_NAME" >/dev/null || { echo "::error::The tag is $REF_NAME, but internal/version/version.go has $version. The tag must be v$version."; exit 1; }
+            publish=true
+          else
+            if [[ -n "$INPUT_VERSION" && "${INPUT_VERSION#v}" != "$version" ]]; then
+              echo "::error::The version input is $INPUT_VERSION, but internal/version/version.go has $version."
+              exit 1
+            fi
+            [[ "$INPUT_DRY_RUN" == false ]] && publish=true
+          fi
+          {
+            echo "version=$version"
+            echo "tag=v$version"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+          echo "Planck $version, publish: $publish" >> "$GITHUB_STEP_SUMMARY"
+
+  macos:
+    name: macOS (arm64, amd64)
+    needs: version
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      PUBLISH: ${{ needs.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+
+      - name: Decide on signing
+        id: signing
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          set_count=0
+          for name in MACOS_CERTIFICATE_P12 MACOS_CERTIFICATE_PASSWORD APPLE_API_KEY_P8 APPLE_API_KEY_ID APPLE_API_ISSUER_ID; do
+            [[ -n "${!name}" ]] && set_count=$((set_count + 1))
+          done
+          if [[ $set_count -ne 0 && $set_count -ne 5 ]]; then
+            echo "::error::Only $set_count of the 5 macOS signing secrets are set. Set all of them or none. See docs/releasing.md."
+            exit 1
+          fi
+          if [[ $set_count -eq 5 && "$PUBLISH" == true ]]; then
+            echo "sign=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "sign=false" >> "$GITHUB_OUTPUT"
+            if [[ "$PUBLISH" == true ]]; then
+              echo "::warning::The macOS signing secrets are not set, so the published DMGs are unsigned and Gatekeeper will block them. See docs/releasing.md."
+            else
+              echo "::notice::Dry run: the DMGs are signed ad hoc and not notarized."
+            fi
+          fi
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Import the Developer ID certificate
+        if: steps.signing.outputs.sign == 'true'
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          SIGN_IDENTITY: ${{ vars.MACOS_SIGN_IDENTITY }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password=$(openssl rand -hex 24)
+          printf '%s' "$MACOS_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" -P "$MACOS_CERTIFICATE_PASSWORD" -f pkcs12 -k "$keychain" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "$keychain_password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain"
+          rm "$RUNNER_TEMP/certificate.p12"
+          if [[ -z "$SIGN_IDENTITY" ]]; then
+            SIGN_IDENTITY=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1)
+          fi
+          [[ -n "$SIGN_IDENTITY" ]] || { echo "::error::The certificate has no Developer ID Application identity."; exit 1; }
+          echo "PLANCK_SIGN_IDENTITY=$SIGN_IDENTITY" >> "$GITHUB_ENV"
+          umask 077
+          printf '%s\n' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8"
+          echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
+
+      - name: Build the DMGs
+        env:
+          SIGN: ${{ steps.signing.outputs.sign }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          flags=()
+          [[ "$SIGN" == true ]] || flags=(--skip-sign --skip-notarize)
+          for arch in arm64 amd64; do
+            scripts/release-macos.sh --arch "$arch" "${flags[@]}"
+          done
+
+      - name: Keep the DMGs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-macos
+          path: dist/*.dmg
+          if-no-files-found: error
+
+      - name: Delete the keychain and the API key
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/AuthKey.p8" "$RUNNER_TEMP/certificate.p12"
+
+  windows:
+    name: Windows (x64)
+    needs: version
+    runs-on: windows-2025
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PUBLISH: ${{ needs.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Write the signing certificate
+        env:
+          WINDOWS_CERTIFICATE_PFX: ${{ secrets.WINDOWS_CERTIFICATE_PFX }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if ($env:WINDOWS_CERTIFICATE_PFX -and $env:WINDOWS_CERTIFICATE_PASSWORD -and $env:PUBLISH -eq 'true') {
+            $path = Join-Path $env:RUNNER_TEMP 'certificate.pfx'
+            [IO.File]::WriteAllBytes($path, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_PFX))
+            "PLANCK_SIGN_CERT=$path" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          } elseif ($env:PUBLISH -eq 'true') {
+            Write-Output "::warning::WINDOWS_CERTIFICATE_PFX and WINDOWS_CERTIFICATE_PASSWORD are not both set, so the Windows build is not signed and SmartScreen will warn. See docs/releasing.md."
+          } else {
+            Write-Output "::notice::Dry run: the Windows build is not signed."
+          }
+
+      - name: Build the zip and the installer
+        env:
+          PLANCK_SIGN_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: scripts\bundle-windows.ps1 -Installer
+
+      - name: Keep the Windows files
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-windows
+          path: |
+            dist/*-windows-x64-setup.exe
+            dist/*-windows-x64.zip
+          if-no-files-found: error
+
+      - name: Delete the certificate
+        if: always()
+        run: Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $env:RUNNER_TEMP 'certificate.pfx')
+
+  linux:
+    name: Linux (x86_64, aarch64)
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - name: Build the tarballs
+        run: scripts/bundle-linux.sh x86_64 aarch64
+      - name: Keep the tarballs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-linux
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: [version, macos, windows, linux]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      TAG: ${{ needs.version.outputs.tag }}
+      PUBLISH: ${{ needs.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Get the files of this run
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Check the files and write SHA256SUMS.txt
+        run: |
+          cd dist
+          expected=(
+            "planck-$VERSION-macos-arm64.dmg"
+            "planck-$VERSION-macos-amd64.dmg"
+            "planck-$VERSION-windows-x64-setup.exe"
+            "planck-$VERSION-windows-x64.zip"
+            "planck-$VERSION-linux-x86_64.tar.gz"
+            "planck-$VERSION-linux-aarch64.tar.gz"
+          )
+          bad=0
+          for f in "${expected[@]}"; do
+            [[ -f "$f" ]] || { echo "::error::$f is missing."; bad=1; }
+          done
+          # Exactly the expected files: planck.gg/api/download takes any .exe
+          # as the Windows download, so a second .exe would be served.
+          for f in ./*; do
+            name=${f#./}
+            printf '%s\n' "${expected[@]}" | grep -qxF -- "$name" || { echo "::error::Unexpected file $name."; bad=1; }
+          done
+          [[ $bad -eq 0 ]] || exit 1
+          sha256sum "${expected[@]}" > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          { echo '```'; cat SHA256SUMS.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep SHA256SUMS.txt
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sha256sums
+          path: dist/SHA256SUMS.txt
+
+      - name: Write the release notes
+        if: env.PUBLISH == 'true'
+        run: |
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { on = 1; next }
+            on && /^## / { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          if [[ -z "$(tr -d '[:space:]' < notes.md)" ]]; then
+            echo "::error::CHANGELOG.md has no section '## [$VERSION]'."
+            exit 1
+          fi
+          cat notes.md
+
+      - name: Create the release
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [[ "$draft" != true ]]; then
+              echo "::error::A release $TAG exists already. This workflow never changes a published release; make a new version."
+              exit 1
+            fi
+            echo "Deleting the draft $TAG that an earlier run left behind."
+            gh release delete "$TAG" --yes
+          fi
+          if tag_sha=$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha 2>/dev/null) && [[ "$tag_sha" != "$GITHUB_SHA" ]]; then
+            echo "::error::The tag $TAG points to $tag_sha, not to the commit of this run ($GITHUB_SHA)."
+            exit 1
+          fi
+          prerelease=()
+          [[ "$VERSION" == *-* ]] && prerelease=(--prerelease)
+          gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "Planck $VERSION" --notes-file notes.md "${prerelease[@]}" dist/*
+          if [[ "$VERSION" == *-* ]]; then
+            gh release edit "$TAG" --draft=false --latest=false
+          else
+            gh release edit "$TAG" --draft=false --latest
+          fi
+          echo "Published $TAG: $(gh release view "$TAG" --json url --jq .url)" >> "$GITHUB_STEP_SUMMARY"

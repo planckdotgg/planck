@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Planck
+GenericName=Game Streaming
+Comment=Low-latency game streaming client
+Exec=planck-client
+Icon=planck
+Terminal=false
+Categories=Game;Network;
+Keywords=stream;remote;desktop;game;
+StartupWMClass=planck-client

@@ -24,3 +24,6 @@
 /drivers/**/*.pdb
 /drivers/**/*.obj
 /drivers/**/*.inf
+
+# Release build output (scripts/bundle-*.sh, scripts/release-macos.sh)
+/dist/
