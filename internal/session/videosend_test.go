@@ -210,3 +210,57 @@ func TestSentRateCountsOnlyFramesSent(t *testing.T) {
 			counted, bytes, st.frames.Load(), sent, size, dropped.Load())
 	}
 }
+
+// failSliceOut fails every write of slice 0.
+type failSliceOut struct {
+	slowOut
+	failed atomic.Int32
+}
+
+func (o *failSliceOut) SendVideoSlice(info wire.VideoInfo, slice int, data []byte) error {
+	if slice == 0 {
+		o.failed.Add(1)
+		return transport.ErrClosed
+	}
+	return o.slowOut.SendVideoSlice(info, slice, data)
+}
+
+// TestFailedSliceNotCountedSent: a frame one of whose slices failed to go
+// out never counts toward the host's sent FPS and bitrate; the next whole
+// frame does.
+func TestFailedSliceNotCountedSent(t *testing.T) {
+	st := &stream{ctx: context.Background()}
+	out := &failSliceOut{}
+	ended := make(chan uint32, 2)
+	s := newVideoSender(out, 2, func(uint32) {}, func(j *sendJob, err error) {
+		st.frameSent(j, err)
+		if j.last() {
+			ended <- j.info.FrameID
+		}
+	})
+	defer s.close()
+	info := wire.VideoInfo{FrameID: 1, SliceCount: 2}
+	s.push(&sendJob{kind: sendSlice, info: info, slice: 0, data: []byte{1}})
+	s.push(&sendJob{kind: sendSlice, info: info, slice: 1, data: []byte{2}})
+	s.push(&sendJob{kind: sendEnd, info: info, bytes: 2, sent: true})
+	if id := <-ended; id != 1 {
+		t.Fatalf("ended frame %d, want 1", id)
+	}
+	if out.failed.Load() != 1 {
+		t.Fatal("slice 0 was never written")
+	}
+	st.sent.mu.Lock()
+	counted, bytes := len(st.sent.stamps), len(st.sent.bytes)
+	st.sent.mu.Unlock()
+	if counted != 0 || bytes != 0 || st.frames.Load() != 0 {
+		t.Fatalf("slice 0 of 2 failed; counted %d frames (%d byte samples), frames %d", counted, bytes, st.frames.Load())
+	}
+
+	s.push(&sendJob{kind: sendFrame, info: wire.VideoInfo{FrameID: 2}, data: []byte{1, 2, 3}, bytes: 3, sent: true})
+	if id := <-ended; id != 2 {
+		t.Fatalf("ended frame %d, want 2", id)
+	}
+	if st.frames.Load() != 1 {
+		t.Fatalf("whole frame after the failed one: frames %d, want 1", st.frames.Load())
+	}
+}

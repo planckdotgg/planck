@@ -199,6 +199,9 @@ func (s *videoSender) run() {
 		defer revert()
 	}
 	var j sendJob
+	// failed is a frame one of whose slices did not go out.
+	var failed uint32
+	var anyFailed bool
 	for {
 		s.mu.Lock()
 		for s.n == 0 && !s.closed {
@@ -229,6 +232,15 @@ func (s *videoSender) run() {
 			err = s.out.SendVideoSlice(j.info, j.slice, j.data)
 		case sendChunked:
 			err = s.out.SendChunkedFrame(j.info, j.data, j.ends[:j.nEnds], j.critical)
+		}
+		if err != nil {
+			failed, anyFailed = j.info.FrameID, true
+		}
+		if j.last() {
+			if err == nil && anyFailed && failed == j.info.FrameID {
+				j.sent = false
+			}
+			anyFailed = false
 		}
 		if j.last() || err != nil {
 			if j.traced {

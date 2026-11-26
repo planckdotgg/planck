@@ -1078,12 +1078,10 @@ func (cc *conn) onFrame(info wire.VideoInfo, frame []byte) {
 		// before its wire.Stream: neither decodes on this sink.
 		return
 	}
-	if cc.needKey.Load() && !cc.intra.Load() {
-		if !info.Keyframe {
-			cc.drop()
-			return
-		}
-		cc.needKey.Store(false)
+	waitKey := cc.needKey.Load() && !cc.intra.Load()
+	if waitKey && !info.Keyframe {
+		cc.drop()
+		return
 	}
 	if sess.RefInvalidation() && !cc.intra.Load() {
 		a := cc.ref.admit(info, now)
@@ -1098,6 +1096,9 @@ func (cc *conn) onFrame(info wire.VideoInfo, frame []byte) {
 			cc.dropped.Add(1)
 			return
 		}
+	}
+	if waitKey {
+		cc.needKey.Store(false)
 	}
 	limit := frameQueue
 	if !cc.decoding.Load() {

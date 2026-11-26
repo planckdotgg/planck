@@ -11,6 +11,7 @@ import (
 	"github.com/planckdotgg/planck/pkg/audio"
 	"github.com/planckdotgg/planck/pkg/encode"
 	"github.com/planckdotgg/planck/pkg/transport"
+	"github.com/planckdotgg/planck/pkg/wire"
 )
 
 // refPipe is an encoder that predicts each P frame from the newest frame
@@ -196,5 +197,53 @@ func TestApplyInvalidations(t *testing.T) {
 	}
 	if !st.keyNeeded.Load() {
 		t.Fatal("invalidations past the queue asked for no keyframe")
+	}
+}
+
+// TestLateKeyframeKeepsWaitingForKeyframe: a keyframe older than the last
+// frame admitted is rejected and leaves the client waiting for a keyframe,
+// so the P frames after it stay dropped.
+func TestLateKeyframeKeepsWaitingForKeyframe(t *testing.T) {
+	var keys, invs atomic.Int64
+	h, err := NewHost(HostConfig{
+		ConfigDir: t.TempDir(), Name: "test-host", ListenAddr: "127.0.0.1:0", DiscoveryAddr: "off",
+		FPS: 120, BitrateKbps: 40_000, NoTailscale: true,
+		OpenVideo: func(p VideoParams) (VideoPipe, error) {
+			return &refPipe{fps: p.FPS, invalid: map[uint32]bool{}, keys: &keys, invs: &invs}, nil
+		},
+		OpenAudio: func() (audio.Capturer, error) { return &fakeCapturer{}, nil },
+		Logf:      t.Logf,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(h.Stop)
+	r := newClient(t, t.TempDir(), h.PIN())
+	if err := connect(t, r, h.Addr().String()); err != nil {
+		t.Fatal(err)
+	}
+	r.client.mu.Lock()
+	live := r.client.conn.live.Load()
+	r.client.mu.Unlock()
+	if !live.sess.RefInvalidation() {
+		t.Fatal("reference invalidation was not negotiated")
+	}
+
+	cc := &conn{}
+	cc.live.Store(live)
+	cc.stream.Store(&streamState{})
+	cc.ref.admit(wire.VideoInfo{FrameID: 100, Keyframe: true}, 0)
+	cc.ref.admit(wire.VideoInfo{FrameID: 101}, 0)
+	cc.needKey.Store(true)
+
+	cc.onFrame(wire.VideoInfo{FrameID: 99, Keyframe: true}, nil)
+	if !cc.needKey.Load() {
+		t.Fatal("a rejected late keyframe cleared the wait for a keyframe")
+	}
+	if cc.dropped.Load() != 1 || len(cc.frames) != 0 {
+		t.Fatalf("late keyframe: dropped %d, queued %d; want it dropped", cc.dropped.Load(), len(cc.frames))
 	}
 }
