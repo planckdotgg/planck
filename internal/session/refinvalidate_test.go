@@ -99,6 +99,7 @@ func TestRefInvalidationRecoversWithoutKeyframe(t *testing.T) {
 	var mu sync.Mutex
 	decoded := map[uint32]bool{}
 	var bad, units, afterStall int
+	var keysAtStall int64
 	stalled := false
 	r.sink.OnUnit = func(au []byte, _ int64) {
 		n, ref := binary.BigEndian.Uint32(au), binary.BigEndian.Uint32(au[4:])
@@ -115,6 +116,7 @@ func TestRefInvalidationRecoversWithoutKeyframe(t *testing.T) {
 		stall := units == 60
 		mu.Unlock()
 		if stall {
+			keysAtStall = keys.Load()
 			time.Sleep(60 * time.Millisecond)
 			mu.Lock()
 			stalled = true
@@ -132,15 +134,17 @@ func TestRefInvalidationRecoversWithoutKeyframe(t *testing.T) {
 	cs := r.client.Stats()
 	mu.Lock()
 	defer mu.Unlock()
-	t.Logf("%d frames decoded, %d dropped by the client, %d reference invalidations, %d keyframes", units, cs.FramesDropped, invs.Load(), keys.Load())
+	t.Logf("%d frames decoded, %d dropped by the client, %d reference invalidations, %d keyframes (%d before the stall)", units, cs.FramesDropped, invs.Load(), keys.Load(), keysAtStall)
 	if cs.FramesDropped == 0 {
 		t.Fatal("the stall dropped no frames: nothing was recovered")
 	}
 	if invs.Load() == 0 {
 		t.Fatal("the host invalidated no reference")
 	}
-	if k := keys.Load(); k != 1 {
-		t.Fatalf("%d keyframes, want only the first", k)
+	// A keyframe before the stall is the connect's: frame 0 can land
+	// before the client's route is live, and the client asks again.
+	if k := keys.Load(); k != keysAtStall {
+		t.Fatalf("%d keyframes after the stall, want none", k-keysAtStall)
 	}
 	if bad != 0 {
 		t.Fatalf("%d frames decoded without their reference", bad)
