@@ -360,6 +360,7 @@ func TestOldDefaultPortsMove(t *testing.T) {
 		{"old defaults", `"controlPort":47701,"mediaPort":47702,"discoveryPort":47700`, 41001, 41002, 41000},
 		{"old defaults, before discoveryPort", `"controlPort":47701,"mediaPort":47702`, 41001, 41002, 41000},
 		{"discovery off", `"controlPort":47701,"mediaPort":47702,"discoveryPort":0`, 47701, 47702, 0},
+		{"old control and media, new discovery", `"controlPort":47701,"mediaPort":47702,"discoveryPort":41000`, 47701, 47702, 41000},
 		{"chosen", `"controlPort":45001,"mediaPort":45002,"discoveryPort":45000`, 45001, 45002, 45000},
 	} {
 		dir := t.TempDir()
@@ -374,5 +375,23 @@ func TestOldDefaultPortsMove(t *testing.T) {
 		if c.ControlPort != tc.control || c.MediaPort != tc.media || c.DiscoveryPort != tc.discover {
 			t.Errorf("%s: ports %d %d %d, want %d %d %d", tc.name, c.ControlPort, c.MediaPort, c.DiscoveryPort, tc.control, tc.media, tc.discover)
 		}
+	}
+}
+
+// TestChosenPortsRoundTrip: ports a user saved, even the old control and
+// media ports beside the new discovery port, load back unchanged.
+func TestChosenPortsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultHostConfig(dir)
+	cfg.ControlPort, cfg.MediaPort, cfg.DiscoveryPort = 47701, 47702, 41000
+	if err := SaveHostConfig(dir, cfg); err != nil {
+		t.Fatal(err)
+	}
+	c, err := LoadHostConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ControlPort != 47701 || c.MediaPort != 47702 || c.DiscoveryPort != 41000 {
+		t.Fatalf("ports %d %d %d, want 47701 47702 41000", c.ControlPort, c.MediaPort, c.DiscoveryPort)
 	}
 }

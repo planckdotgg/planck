@@ -313,21 +313,24 @@ func newHostID() string {
 // stays stable.
 func LoadHostConfig(dir string) (HostConfig, error) {
 	cfg := DefaultHostConfig(dir)
-	if err := loadJSON(filepath.Join(dir, HostConfigFile), &cfg); err != nil {
+	var saved struct {
+		DiscoveryPort *uint16 `json:"discoveryPort"`
+	}
+	if err := loadJSON(filepath.Join(dir, HostConfigFile), &cfg, &saved); err != nil {
 		return HostConfig{}, err
 	}
-	cfg.moveOldDefaultPorts()
+	cfg.moveOldDefaultPorts(saved.DiscoveryPort)
 	return cfg, cfg.Validate()
 }
 
 // moveOldDefaultPorts gives a host.json that still holds the old default
-// ports, as every host wrote them on its first run, the new ones. Ports a
-// user chose stay.
-func (c *HostConfig) moveOldDefaultPorts() {
+// ports, as every host wrote them on its first run, the new ones. A file
+// from before discoveryPort existed has none. Ports a user chose stay.
+func (c *HostConfig) moveOldDefaultPorts(savedDiscovery *uint16) {
 	if c.ControlPort != oldControlPort || c.MediaPort != oldMediaPort {
 		return
 	}
-	if c.DiscoveryPort != oldDiscoveryPort && c.DiscoveryPort != DefaultDiscoveryPort {
+	if savedDiscovery != nil && *savedDiscovery != oldDiscoveryPort {
 		return
 	}
 	c.ControlPort, c.MediaPort, c.DiscoveryPort = DefaultControlPort, DefaultMediaPort, DefaultDiscoveryPort

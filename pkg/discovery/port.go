@@ -50,7 +50,7 @@ var ports = struct {
 	m map[string]*Port
 }{m: map[string]*Port{}}
 
-// OpenPort binds addr, such as ":47700", or joins the socket this process
+// OpenPort binds addr, such as ":41000", or joins the socket this process
 // already has on it. Each OpenPort needs its own Close. An address on port
 // 0 binds a socket of its own each time.
 func OpenPort(addr string) (*Port, error) {
