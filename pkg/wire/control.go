@@ -64,6 +64,10 @@ const (
 	// MsgSwitchDisplay goes client to host, only to a host whose Hello
 	// carries FeatureSwitchDisplay, from a client with FeatureStreamSwitch.
 	MsgSwitchDisplay MsgType = 20
+	// MsgDisplayPhase goes client to host, only to a host whose Hello
+	// carries FeatureDisplayPhase, a few times a second while pictures
+	// reach the screen.
+	MsgDisplayPhase MsgType = 21
 )
 
 // Message is a control-stream message. The set is closed: only types in this
@@ -139,6 +143,8 @@ const (
 	// RefInvalidate.Through. A client sends Through only to such a host:
 	// an older one refuses the longer message.
 	FeatureRefInvalidateThrough uint32 = 1 << 15
+	// FeatureDisplayPhase, from a host, says it reads DisplayPhase.
+	FeatureDisplayPhase uint32 = 1 << 16
 )
 
 type AuthMethod uint8
@@ -718,6 +724,8 @@ func newMessage(t MsgType) Message {
 		return &CursorShape{}
 	case MsgSwitchDisplay:
 		return &SwitchDisplay{}
+	case MsgDisplayPhase:
+		return &DisplayPhase{}
 	}
 	return nil
 }
