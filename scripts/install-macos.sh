@@ -64,8 +64,12 @@ env_local_identity() {
     line=${line%$'\r'}
     if [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?PLANCK_SIGN_IDENTITY[[:space:]]*=[[:space:]]*(.*)$ ]]; then
       value=${BASH_REMATCH[2]}
-      value=${value%"${value##*[![:space:]]}"}
-      if [[ "$value" =~ ^\"(.*)\"$ || "$value" =~ ^\'(.*)\'$ ]]; then value=${BASH_REMATCH[1]}; fi
+      if [[ "$value" =~ ^\"([^\"]*)\"[[:space:]]*(#.*)?$ || "$value" =~ ^\'([^\']*)\'[[:space:]]*(#.*)?$ ]]; then
+        value=${BASH_REMATCH[1]}
+      else
+        [[ "$value" =~ ^([^#]*)# ]] && value=${BASH_REMATCH[1]}
+        value=${value%"${value##*[![:space:]]}"}
+      fi
     fi
   done < .env.local
   printf '%s' "$value"
@@ -145,9 +149,16 @@ if ! mv "$new" "$dest"; then
   [[ "$had_old" == 1 ]] && mv "$old" "$dest"
   die "could not move the new app to $dest; the previous app was restored"
 fi
-rm -rf "$old"
 
-codesign --verify --deep --strict "$dest"
+if ! codesign --verify --deep --strict "$dest"; then
+  rm -rf "$dest"
+  if [[ "$had_old" == 1 ]]; then
+    mv "$old" "$dest"
+    die "verification of the installed app failed; the previous app was restored"
+  fi
+  die "verification of the installed app failed; it was removed"
+fi
+rm -rf "$old"
 echo "==> installed and verified: $dest ($(scripts/version.sh), darwin/$arch)"
 if [[ "$launch" == 1 ]]; then
   echo "==> launching"
