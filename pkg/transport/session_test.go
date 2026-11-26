@@ -154,7 +154,7 @@ func TestSessionEndToEnd(t *testing.T) {
 		server: func(c *ServerConfig) {
 			c.SimulateLoss = 0.02
 			c.PingInterval = 50 * time.Millisecond
-			c.Handlers.Input = func(in wire.Input) {
+			c.Handlers.Input = func(_ *Session, in wire.Input) {
 				mu.Lock()
 				inputSeqs[in.Seq] = true
 				mu.Unlock()

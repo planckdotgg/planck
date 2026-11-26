@@ -255,7 +255,20 @@ type Host struct {
 	inject input.Injector
 	// held is what inject holds down, let go of as each client leaves.
 	held input.Held
-	logf func(string, ...any)
+	// inputOwner is the session whose input is injected and held, nil
+	// until the next session sends or is admitted. retired are sessions
+	// taken over or ended whose callbacks may still be running; their
+	// input is dropped.
+	inputOwner *transport.Session
+	retired    map[*transport.Session]struct{}
+	// injMu orders every use of inject against Stop closing it; injClosed
+	// is set once Stop let go of held and closed inject.
+	injMu     sync.Mutex
+	injClosed bool
+	// openInjector and closeVDD replace newInjector and vdd.close.
+	openInjector func() (input.Injector, error)
+	closeVDD     func() error
+	logf         func(string, ...any)
 
 	pinMu sync.Mutex
 	pin   string
@@ -263,13 +276,26 @@ type Host struct {
 	// PIN, never by its Tailscale identity.
 	requireLANPIN bool
 
-	srv      *transport.Server
+	srv  atomic.Pointer[transport.Server]
+	scfg transport.ServerConfig
+	// listen opens the control listener: transport.Listen unless a test
+	// sets another.
+	listen   func(addr string, cfg transport.ServerConfig) (*transport.Server, error)
 	disc     *discovery.Port
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 	stopOnce sync.Once
+	// done closes once the host stopped; haltErr says why, when it stopped
+	// on its own.
+	done    chan struct{}
+	haltErr atomic.Pointer[error]
+	// stopWait bounds each wait for a stream's teardown.
+	stopWait time.Duration
 
-	mu       sync.Mutex
+	mu sync.Mutex
+	// stopping is set once Stop runs, so a listener opened again after
+	// that is closed rather than published.
+	stopping bool
 	cur      *stream
 	report   wire.StatsReport
 	lastErr  string
@@ -340,10 +366,12 @@ func NewHost(cfg HostConfig) (*Host, error) {
 		cfg.FPS = 60
 	}
 	h := &Host{inputTrace: newTracer[inputTraceRow](traceInputEnv), cfg: cfg, dir: dir, hostID: stored.HostID, cert: cert, fp: transport.CertFingerprint(cert), pairs: pairs,
-		whois: cfg.WhoIs, open: cfg.OpenVideo, logf: cfg.Logf, pin: cfg.PIN, requireLANPIN: stored.RequirePINForLAN}
+		whois: cfg.WhoIs, open: cfg.OpenVideo, logf: cfg.Logf, pin: cfg.PIN, requireLANPIN: stored.RequirePINForLAN,
+		listen: transport.Listen, done: make(chan struct{}), stopWait: defaultStopWait}
 	if h.logf == nil {
 		h.logf = log.Printf
 	}
+	h.openInjector, h.closeVDD = newInjector, h.vdd.close
 	h.sys.set, h.sys.hooks = cfg.Session, cfg.System.withDefaults()
 	h.pads.set = GamepadHostSettingsOf(pads)
 	name := cfg.Name
@@ -389,8 +417,8 @@ func (h *Host) SetName(name string) error {
 		return err
 	}
 	live := h.setLiveName(name)
-	if h.srv != nil {
-		h.srv.SetName(live)
+	if srv := h.srv.Load(); srv != nil {
+		srv.SetName(live)
 	}
 	return nil
 }
@@ -450,7 +478,7 @@ func (h *Host) revoke(fps []string) error {
 	}
 	h.mu.Unlock()
 	if st != nil {
-		st.stop()
+		h.stopStream(st)
 	}
 	return nil
 }
@@ -499,10 +527,11 @@ func (h *Host) MediaPort() int { return h.cfg.MediaPort }
 
 // Addr is the control listener's address once started.
 func (h *Host) Addr() net.Addr {
-	if h.srv == nil {
+	srv := h.srv.Load()
+	if srv == nil {
 		return nil
 	}
-	return h.srv.Addr()
+	return srv.Addr()
 }
 
 // DiscoveryAddr is the discovery socket's address, or nil when off.
@@ -539,6 +568,7 @@ func (h *Host) Start(ctx context.Context) error {
 	if !h.cfg.NoMic {
 		scfg.Handlers.Mic = h.onMic
 	}
+	h.openInput()
 	if h.cfg.Clipboard.any() {
 		h.clip = openClipSync(h.cfg.OpenClipboard, h.cfg.Clipboard, h.liveSession, h.peerReceivesClipboard, h.logf)
 		if h.clip != nil {
@@ -548,38 +578,55 @@ func (h *Host) Start(ctx context.Context) error {
 	if h.cfg.OpenVideo == nil || h.cfg.Capabilities != nil {
 		scfg.Capabilities, scfg.Resolve, scfg.Resize, scfg.SwitchDisplay = h.capabilitiesJSON, h.resolve, true, true
 	}
-	srv, err := transport.Listen(h.cfg.ListenAddr, scfg)
+	srv, err := h.listen(h.cfg.ListenAddr, scfg)
 	if err != nil {
-		if h.clip != nil {
-			h.clip.close()
-		}
+		h.abortStart()
 		return err
 	}
-	h.srv = srv
-	if h.cfg.InjectInput && h.cfg.Injector == nil {
-		inj, err := newInjector()
-		if err != nil {
-			h.logf("planck: input injection unavailable: %v", err)
-		} else {
-			h.inject = inj
-		}
-	} else if h.cfg.InjectInput {
-		h.inject = h.cfg.Injector
-	}
-	if pi, ok := h.inject.(PadInjector); ok {
-		pi.SetGamepadType(h.GamepadSettings().Type)
-	}
+	h.scfg = scfg
+	h.srv.Store(srv)
 	ctx, h.cancel = context.WithCancel(ctx)
 	if h.cfg.DiscoveryAddr != "off" {
 		if err := h.startDiscovery(ctx); err != nil {
 			h.cancel()
 			srv.Close()
+			h.srv.Store(nil)
+			h.abortStart()
 			return err
 		}
 	}
 	h.wg.Go(func() { h.acceptLoop(ctx) })
 	h.setStarted(true)
 	return nil
+}
+
+// openInput puts the injector in place before the listener opens, since
+// the listener hands clients' input to onInput as soon as it serves.
+func (h *Host) openInput() {
+	if !h.cfg.InjectInput {
+		return
+	}
+	inj := h.cfg.Injector
+	if inj == nil {
+		var err error
+		if inj, err = h.openInjector(); err != nil {
+			h.logf("planck: input injection unavailable: %v", err)
+			return
+		}
+	}
+	h.injMu.Lock()
+	defer h.injMu.Unlock()
+	h.inject, h.injClosed = inj, false
+	if pi, ok := inj.(PadInjector); ok {
+		pi.SetGamepadType(h.GamepadSettings().Type)
+	}
+}
+
+// abortStart closes what a Start that failed opened.
+func (h *Host) abortStart() {
+	h.closeInput()
+	h.closeClipboard()
+	h.clip = nil
 }
 
 func (h *Host) startDiscovery(ctx context.Context) error {
@@ -590,7 +637,7 @@ func (h *Host) startDiscovery(ctx context.Context) error {
 	h.disc = conn
 	base := discovery.Beacon{
 		HostID:          h.hostID,
-		ControlPort:     uint16(h.srv.Addr().(*net.UDPAddr).Port),
+		ControlPort:     uint16(h.Addr().(*net.UDPAddr).Port),
 		CertFingerprint: h.Fingerprint(),
 		OS:              runtime.GOOS,
 	}
@@ -609,13 +656,26 @@ func (h *Host) startDiscovery(ctx context.Context) error {
 
 func (h *Host) acceptLoop(ctx context.Context) {
 	for {
-		sess, err := h.srv.Accept(ctx)
+		sess, err := h.srv.Load().Accept(ctx)
 		var he *transport.HandshakeError
 		switch {
 		case errors.As(err, &he):
 			h.fail("client %v: %v", he.Remote, he.Err)
 			continue
+		case err != nil && ctx.Err() != nil:
+			return
 		case err != nil:
+			if err := h.relisten(ctx, err); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				h.halt(err)
+				return
+			}
+			continue
+		}
+		if ctx.Err() != nil {
+			sess.Close()
 			return
 		}
 		if _, ok := h.pairs.lookup(sess.PeerFingerprint()); !ok {
@@ -630,8 +690,9 @@ func (h *Host) acceptLoop(ctx context.Context) {
 		h.cur = st
 		h.mu.Unlock()
 		if old != nil {
-			old.stop()
+			h.stopWithin(old)
 		}
+		h.claimInput(sess)
 		h.logf("planck: %s connected from %v (%s)", sess.Identity(), sess.RemoteControlAddr(), st.path)
 		h.wg.Go(func() {
 			st.run(ctx)
@@ -641,12 +702,118 @@ func (h *Host) acceptLoop(ctx context.Context) {
 			}
 			replaced := h.cur != nil
 			h.mu.Unlock()
-			h.releaseInput()
+			h.endInput(st)
 			if !replaced {
 				h.releasePads()
 			}
 			h.streamEnded(st)
 		})
+	}
+}
+
+const (
+	// relistenTries is how often a host opens its control port again after
+	// the listener died, backing off from relistenBackoff, before it stops.
+	relistenTries   = 5
+	relistenBackoff = 100 * time.Millisecond
+	// defaultStopWait is how long a new client, or Stop, waits for a
+	// stream to tear down before it goes on without it.
+	defaultStopWait = 5 * time.Second
+)
+
+// relisten opens the control port again after its listener died. The
+// port stays the same, as discovery advertises it.
+func (h *Host) relisten(ctx context.Context, cause error) error {
+	old := h.srv.Load()
+	addr := old.Addr().String()
+	if host, _, err := net.SplitHostPort(h.cfg.ListenAddr); err == nil {
+		addr = net.JoinHostPort(host, fmt.Sprint(old.Addr().(*net.UDPAddr).Port))
+	}
+	h.fail("control listener on %s stopped: %v; listening again", addr, cause)
+	_ = old.Close()
+	wait := relistenBackoff
+	var err error
+	for range relistenTries {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
+		}
+		var srv *transport.Server
+		if srv, err = h.listen(addr, h.scfg); err == nil {
+			srv.SetName(h.Name())
+			h.mu.Lock()
+			stopping := h.stopping
+			if !stopping {
+				h.srv.Store(srv)
+			}
+			h.mu.Unlock()
+			if stopping {
+				_ = srv.Close()
+				return transport.ErrServerClosed
+			}
+			h.logf("planck: listening again on %v", srv.Addr())
+			return nil
+		}
+		wait *= 2
+	}
+	return fmt.Errorf("session: control listener on %s: %w", addr, err)
+}
+
+// halt stops a host that can no longer take clients, discovery included,
+// so it never advertises a port nothing answers on.
+func (h *Host) halt(err error) {
+	h.haltErr.Store(&err)
+	h.fail("%v; stopping the host", err)
+	go h.Stop()
+}
+
+// Done closes once the host stopped, by Stop or on its own; Err then says
+// why it stopped on its own.
+func (h *Host) Done() <-chan struct{} { return h.done }
+
+// Err is why the host stopped on its own, or nil.
+func (h *Host) Err() error {
+	if e := h.haltErr.Load(); e != nil {
+		return *e
+	}
+	return nil
+}
+
+// stopStream ends st, which the caller took out of h.cur: it drops the
+// rest of its client's input and lets go of what that client held before
+// the teardown, which an input callback still running can hold up.
+func (h *Host) stopStream(st *stream) {
+	h.retireStream(st)
+	st.end()
+	<-st.done
+}
+
+// stopWithin is stopStream waiting up to stopWait, so a teardown that
+// hangs cannot hold up the client taking over.
+func (h *Host) stopWithin(st *stream) {
+	if !h.within(func() { h.stopStream(st) }) {
+		h.fail("the stream of %s took over %v to stop; going on without it", st.sess.Identity(), h.stopWait)
+	}
+}
+
+// within runs fs at once and waits up to stopWait for them all,
+// reporting whether they returned; they keep running after that.
+func (h *Host) within(fs ...func()) bool {
+	var wg sync.WaitGroup
+	for _, f := range fs {
+		wg.Go(f)
+	}
+	finished := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(finished)
+	}()
+	select {
+	case <-finished:
+		return true
+	case <-time.After(h.stopWait):
+		return false
 	}
 }
 
@@ -676,9 +843,13 @@ func (h *Host) preempt() {
 	st := h.cur
 	h.cur = nil
 	h.mu.Unlock()
-	if st != nil {
-		st.stop()
+	if st == nil {
+		// What is held is from a client that already left, whose stream
+		// may not have let go yet; the one authorizing has sent nothing.
+		h.retireInput(nil)
+		return
 	}
+	h.stopWithin(st)
 }
 
 func (h *Host) trust(ctx context.Context, info transport.AuthInfo) (string, error) {
@@ -780,7 +951,7 @@ func (h *Host) chroma(acc wire.SessionConfig) encode.Chroma {
 	return encode.NV12
 }
 
-func (h *Host) onInput(in wire.Input) {
+func (h *Host) onInput(from *transport.Session, in wire.Input) {
 	recv := transport.Mono()
 	if h.inputTrace != nil {
 		defer h.traceInput(in, recv)
@@ -796,33 +967,126 @@ func (h *Host) onInput(in wire.Input) {
 		h.cfg.OnInput(ev)
 	}
 	if h.inject != nil {
-		h.secureAttention(ev)
-		var err error
-		if ev.Type == input.TypeGamepad {
-			var dropped bool
-			if dropped, err = h.injectGamepad(ev); dropped {
-				return
-			}
-		} else {
-			err = h.inject.Inject(ev)
-		}
+		injected, err := h.injectHeld(from, ev)
 		if err != nil {
 			h.inputErr.Add(1)
 			return
 		}
-		h.held.Note(ev)
-		if ev.Type == input.TypeMouseMoveAbs {
+		if injected && ev.Type == input.TypeMouseMoveAbs {
 			h.absTarget.Store(uint32(ev.MouseAbs.X)<<16 | uint32(ev.MouseAbs.Y))
 			h.absMoves.Add(1)
 		}
 	}
 }
 
-// releaseInput lets go of every key and button the last client left down.
-func (h *Host) releaseInput() {
-	if h.inject == nil {
+// injectHeld injects ev from the session from, asking for Ctrl+Alt+Del
+// when it is that, and notes what it holds down, unless Stop closed the
+// injector, another session owns the input, from was retired, or the
+// gamepad settings drop it. Checking and noting under injMu keeps a press,
+// or a Ctrl+Alt+Del, from landing after its client's keys were let go of.
+func (h *Host) injectHeld(from *transport.Session, ev input.Event) (bool, error) {
+	h.injMu.Lock()
+	defer h.injMu.Unlock()
+	if h.injClosed {
+		return false, nil
+	}
+	if _, gone := h.retired[from]; gone || h.inputOwner != nil && h.inputOwner != from {
+		return false, nil
+	}
+	h.inputOwner = from
+	h.secureAttention(ev)
+	if ev.Type == input.TypeGamepad {
+		if dropped, err := h.injectGamepad(ev); dropped || err != nil {
+			return false, err
+		}
+	} else if err := h.inject.Inject(ev); err != nil {
+		return false, err
+	}
+	h.held.Note(ev)
+	return true, nil
+}
+
+// claimInput makes sess, just admitted, the session whose input is
+// injected, letting go of what another session held.
+func (h *Host) claimInput(sess *transport.Session) {
+	h.injMu.Lock()
+	defer h.injMu.Unlock()
+	if h.inputOwner != nil && h.inputOwner != sess {
+		h.retireLocked(h.inputOwner)
+	}
+	delete(h.retired, sess)
+	h.inputOwner = sess
+}
+
+// retireInput drops the rest of sess's input and lets go of what it held
+// when it owns the input; a nil sess retires whichever session does. A
+// session that ends after another took over leaves that one's keys down.
+func (h *Host) retireInput(sess *transport.Session) {
+	h.injMu.Lock()
+	defer h.injMu.Unlock()
+	if sess == nil {
+		sess = h.inputOwner
+		if sess == nil {
+			if h.inject != nil && !h.injClosed {
+				h.releaseLocked()
+			}
+			return
+		}
+	}
+	h.retireLocked(sess)
+}
+
+func (h *Host) retireLocked(sess *transport.Session) {
+	if h.retired == nil {
+		h.retired = make(map[*transport.Session]struct{})
+	}
+	h.retired[sess] = struct{}{}
+	if h.inputOwner != sess {
 		return
 	}
+	h.inputOwner = nil
+	if h.inject != nil && !h.injClosed {
+		h.releaseLocked()
+	}
+}
+
+// retireStream retires st's session unless st already ended, so a late
+// stop cannot leave an ended session in retired for good.
+func (h *Host) retireStream(st *stream) {
+	h.injMu.Lock()
+	defer h.injMu.Unlock()
+	if !st.inputDone {
+		h.retireLocked(st.sess)
+	}
+}
+
+// endInput lets go of what st's session held, when it owns the input,
+// and drops it from retired once its session closed, when no callback of
+// it can run any more.
+func (h *Host) endInput(st *stream) {
+	h.injMu.Lock()
+	defer h.injMu.Unlock()
+	st.inputDone = true
+	h.retireLocked(st.sess)
+	delete(h.retired, st.sess)
+}
+
+// closeInput lets go of what is held and closes an injector the host
+// opened. A stream whose teardown outlives Stop then injects nothing.
+func (h *Host) closeInput() {
+	h.injMu.Lock()
+	defer h.injMu.Unlock()
+	if h.inject == nil || h.injClosed {
+		return
+	}
+	h.releaseLocked()
+	h.injClosed = true
+	if h.cfg.Injector == nil {
+		h.inject.Close()
+	}
+}
+
+func (h *Host) releaseLocked() {
 	for _, ev := range h.held.Release() {
 		if err := h.inject.Inject(ev); err != nil {
 			h.logf("planck: let go of %+v: %v", ev, err)
@@ -834,7 +1098,9 @@ func (h *Host) releaseInput() {
 // opened pipe captures: a virtual display, one that changed size or
 // place, or the physical one.
 func (h *Host) targetInput(info VideoInfo) {
-	if t, ok := h.inject.(input.Targeter); ok {
+	h.injMu.Lock()
+	defer h.injMu.Unlock()
+	if t, ok := h.inject.(input.Targeter); ok && !h.injClosed {
 		t.SetTarget(info.Display, info.Desktop)
 		if info.Display.W > 0 {
 			h.logf("planck: input on %+v of desktop %+v", info.Display, info.Desktop)
@@ -957,34 +1223,46 @@ func (h *Host) Stats() HostStats {
 	return out
 }
 
+func (h *Host) closeClipboard() {
+	if h.clip != nil {
+		h.clip.close()
+	}
+}
+
+func (h *Host) closeDisplays() {
+	if err := h.closeVDD(); err != nil {
+		h.logf("planck: virtual display driver: %v", err)
+	}
+}
+
 // Stop disconnects the client and closes the listeners.
 func (h *Host) Stop() {
 	h.stopOnce.Do(func() {
 		if h.cancel != nil {
 			h.cancel()
 		}
-		if h.srv != nil {
-			h.srv.Close()
+		h.mu.Lock()
+		h.stopping = true
+		srv, st := h.srv.Load(), h.cur
+		h.mu.Unlock()
+		if srv != nil {
+			srv.Close()
 		}
 		if h.disc != nil {
 			h.disc.Close()
 		}
-		h.mu.Lock()
-		st := h.cur
-		h.mu.Unlock()
-		if st != nil {
-			st.stop()
+		if !h.within(func() {
+			if st != nil {
+				h.stopStream(st)
+			}
+			h.wg.Wait()
+		}) {
+			h.fail("the host's streams took over %v to stop; stopping without them", h.stopWait)
 		}
-		h.wg.Wait()
-		if h.clip != nil {
-			h.clip.close()
-		}
-		if err := h.vdd.close(); err != nil {
-			h.logf("planck: virtual display driver: %v", err)
-		}
-		if h.inject != nil && h.cfg.Injector == nil {
-			h.inject.Close()
+		if !h.within(h.closeInput, h.closeClipboard, h.closeDisplays) {
+			h.fail("the host's input, clipboard, or virtual displays took over %v to close; stopping without them", h.stopWait)
 		}
 		h.setStarted(false)
+		close(h.done)
 	})
 }

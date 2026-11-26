@@ -58,8 +58,10 @@ type Handlers struct {
 	Audio      func(h wire.AudioHeader, opus []byte)
 	// Mic receives the client's microphone (host only). Setting it offers
 	// wire.FeatureMic.
-	Mic     func(h wire.AudioHeader, payload []byte)
-	Input   func(in wire.Input)
+	Mic func(h wire.AudioHeader, payload []byte)
+	// Input receives the client's input (host only), with the session it
+	// came on.
+	Input   func(s *Session, in wire.Input)
 	Rumble  func(r wire.Rumble)
 	Control func(m wire.Message)
 	// Clipboard receives the peer's clipboard items on their own goroutine;
@@ -764,7 +766,7 @@ func (s *Session) handleMedia(plain []byte, now int64) {
 			s.stats.inputDup.Add(1)
 			return
 		}
-		s.h.Input(in)
+		s.h.Input(s, in)
 	case wire.KindRumble:
 		var r wire.Rumble
 		if !s.isHost && s.h.Rumble != nil && r.Parse(plain) == nil {

@@ -67,7 +67,7 @@ func TestRedundantInput(t *testing.T) {
 		var mu sync.Mutex
 		var seqs []uint32
 		p := newPair(t, pairOpts{server: func(c *ServerConfig) {
-			c.Handlers.Input = func(in wire.Input) {
+			c.Handlers.Input = func(_ *Session, in wire.Input) {
 				mu.Lock()
 				seqs = append(seqs, in.Seq)
 				mu.Unlock()

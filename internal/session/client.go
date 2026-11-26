@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -456,6 +457,15 @@ func (c *Client) connect(ctx context.Context, t Target) (*conn, error) {
 		cc.jb = audio.NewJitterBuffer(audio.JitterConfig{})
 	}
 	rt, err := c.dialRoute(ctx, cc, r)
+	for tried := []resolved{r}; errors.Is(err, transport.ErrUnanswered) && ctx.Err() == nil; tried = append(tried, r) {
+		next, ok := c.nextRoute(ctx, t, tried)
+		if !ok {
+			break
+		}
+		c.logf("planck: %v; trying %s at %s", err, next.kind, next.addr)
+		r = next
+		rt, err = c.dialRoute(ctx, cc, r)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -676,6 +686,28 @@ func (c *Client) dialRoute(ctx context.Context, cc *conn, r resolved) (*route, e
 type resolved struct {
 	addr, hostID, name, fingerprint string
 	kind                            discovery.PathKind
+	// probed is the candidate a race picked this from, zero for t.Addr.
+	probed netip.AddrPort
+}
+
+// nextRoute resolves t again without the routes tried already: the
+// candidates not raced to yet, then t.Addr.
+func (c *Client) nextRoute(ctx context.Context, t Target, tried []resolved) (resolved, bool) {
+	rest := t
+	rest.Candidates = slices.DeleteFunc(slices.Clone(t.Candidates), func(cand discovery.Candidate) bool {
+		return slices.ContainsFunc(tried, func(r resolved) bool { return r.probed == cand.Addr })
+	})
+	if slices.ContainsFunc(tried, func(r resolved) bool { return r.addr == t.Addr }) {
+		rest.Addr = ""
+	}
+	if len(rest.Candidates) == 0 && rest.Addr == "" {
+		return resolved{}, false
+	}
+	r, err := c.resolve(ctx, rest)
+	if err != nil || slices.ContainsFunc(tried, func(p resolved) bool { return p.addr == r.addr && p.probed == r.probed }) {
+		return resolved{}, false
+	}
+	return r, true
 }
 
 // resolve picks the control address and path: the race winner among the
@@ -832,7 +864,7 @@ func (r resolved) from(res discovery.Result) resolved {
 	if r.fingerprint == "" {
 		r.fingerprint = res.Beacon.CertFingerprint
 	}
-	r.addr, r.hostID, r.name, r.kind = res.ControlAddr.String(), res.Beacon.HostID, res.Beacon.Name, res.Kind
+	r.addr, r.hostID, r.name, r.kind, r.probed = res.ControlAddr.String(), res.Beacon.HostID, res.Beacon.Name, res.Kind, res.Candidate.Addr
 	return r
 }
 

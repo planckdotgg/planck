@@ -43,6 +43,8 @@ type stream struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 	once   sync.Once
+	// inputDone is set under h.injMu once the stream's input is torn down.
+	inputDone bool
 
 	invalid chan uint32
 	// epoch counts the streams a resize switched to; every frame carries
@@ -540,12 +542,12 @@ func (st *stream) sendPeerState() {
 	_ = st.sess.SendControl(ps)
 }
 
-// stop ends the session and waits for its goroutines.
-func (st *stream) stop() {
+// end closes the session; once it returns, no more of its client's input
+// arrives.
+func (st *stream) end() {
 	st.once.Do(func() {
 		st.endedByHost.Store(true)
 		st.sess.Close()
-		<-st.done
 	})
 }
 

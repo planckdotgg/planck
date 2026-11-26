@@ -152,7 +152,7 @@ func (h *Host) KickClient() error {
 		return ErrNoClient
 	}
 	h.logf("planck: %s disconnected by this machine's user", st.sess.Identity())
-	st.stop()
+	h.stopStream(st)
 	return nil
 }
 
@@ -268,10 +268,13 @@ func (h *Host) now() int64 {
 	return transport.Mono()
 }
 
-// secureAttention asks the system for Ctrl+Alt+Del when a client sends
-// it, on Windows, where injected keys cannot give it.
+// hasSAS is whether the system has a secure attention sequence that
+// injected keys cannot give: Windows only.
+var hasSAS = runtime.GOOS == "windows"
+
+// secureAttention asks the system for Ctrl+Alt+Del when a client sends it.
 func (h *Host) secureAttention(ev input.Event) {
-	if runtime.GOOS != "windows" || !input.IsSecureAttention(ev) {
+	if !hasSAS || !input.IsSecureAttention(ev) {
 		return
 	}
 	if err := h.sys.hooks.SendSAS(); err != nil {

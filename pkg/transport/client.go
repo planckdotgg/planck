@@ -15,6 +15,10 @@ import (
 
 var ErrHostPINMismatch = errors.New("transport: host could not prove the pairing PIN")
 
+// ErrUnanswered is a Dial whose QUIC handshake timed out: nothing answered
+// on that address, and another route to the host may.
+var ErrUnanswered = errors.New("transport: the host did not answer")
+
 type ClientConfig struct {
 	Certificate tls.Certificate
 	Name        string
@@ -63,10 +67,17 @@ func Dial(ctx context.Context, addr string, cfg ClientConfig) (*Session, error) 
 	if timeout <= 0 {
 		timeout = defaultHandshakeTimeout
 	}
+	outer := ctx
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	conn, err := quic.DialAddr(ctx, addr, tlsConf, controlQUICConfig())
+	conn, err := dialQUIC(ctx, addr, tlsConf)
 	if err != nil {
+		var idle *quic.IdleTimeoutError
+		var hs *quic.HandshakeTimeoutError
+		attemptTimedOut := errors.Is(err, context.DeadlineExceeded) && outer.Err() == nil
+		if errors.As(err, &idle) || errors.As(err, &hs) || attemptTimedOut {
+			return nil, fmt.Errorf("%w at %s: %w", ErrUnanswered, addr, err)
+		}
 		return nil, err
 	}
 	s, err := clientHandshake(ctx, conn, cfg)
@@ -75,6 +86,29 @@ func Dial(ctx context.Context, addr string, cfg ClientConfig) (*Session, error) 
 		return nil, err
 	}
 	return s, nil
+}
+
+// dialQUIC is quic.DialAddr on a socket of the host's address family; see
+// listenUDP.
+func dialQUIC(ctx context.Context, addr string, tlsConf *tls.Config) (*quic.Conn, error) {
+	raddr, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		return nil, err
+	}
+	udp, err := listenUDP(nil, raddr.AddrPort().Addr())
+	if err != nil {
+		return nil, err
+	}
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		tlsConf.ServerName = host
+	}
+	conn, err := quic.Dial(ctx, udp, raddr, tlsConf, controlQUICConfig())
+	if err != nil {
+		udp.Close()
+		return nil, err
+	}
+	context.AfterFunc(conn.Context(), func() { udp.Close() })
+	return conn, nil
 }
 
 func clientHandshake(ctx context.Context, conn *quic.Conn, cfg ClientConfig) (*Session, error) {
@@ -169,7 +203,7 @@ func clientHandshake(ctx context.Context, conn *quic.Conn, cfg ClientConfig) (*S
 
 	hostAddr := conn.RemoteAddr().(*net.UDPAddr).AddrPort()
 	peer := netip.AddrPortFrom(hostAddr.Addr().Unmap(), ready.MediaPort)
-	udp, err := net.ListenUDP("udp", nil)
+	udp, err := listenUDP(nil, peer.Addr())
 	if err != nil {
 		return nil, err
 	}
