@@ -44,6 +44,13 @@ jobs:
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
+      # MyGo lays out text with Pango on Linux; without it the UI tests
+      # cannot register Planck's fonts.
+      - name: Install Pango
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libpangocairo-1.0-0 libpangoft2-1.0-0 libfontconfig1
       - name: Vet
         run: go vet ./...
       - name: Test
