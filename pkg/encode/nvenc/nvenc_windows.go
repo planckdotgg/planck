@@ -151,6 +151,9 @@ type Encoder struct {
 	// polls counts the bitstream locks of the last sub-frame encode.
 	polls int
 	caps  encode.Caps
+	// presetPasses is the preset's NV_ENC_MULTI_PASS, for rates below
+	// singlePassBPP.
+	presetPasses uint32
 }
 
 // call keeps what pointer arguments point to on the heap and alive until
@@ -368,9 +371,8 @@ func (e *Encoder) initialize() error {
 	put32(rc, rcMaxBitrate, bitrate)
 	put32(rc, rcVBVSize, bitrate/uint32(cfg.FPS))
 	put32(rc, rcVBVInit, bitrate/uint32(cfg.FPS))
-	if singlePass(cfg) {
-		put32(rc, rcMultiPass, multiPassDisabled)
-	}
+	e.presetPasses = get32(rc, rcMultiPass)
+	e.setPasses(cfg)
 
 	inDepth, outDepth := uint32(bitDepth8), uint32(bitDepth8)
 	if cfg.Source == capture.FormatP010 || cfg.Source == capture.FormatRGB10A2 {
@@ -729,6 +731,9 @@ func (e *Encoder) SetBitrate(kbps int) error {
 	put32(rc, rcMaxBitrate, bitrate)
 	put32(rc, rcVBVSize, bitrate/uint32(e.cfg.FPS))
 	put32(rc, rcVBVInit, bitrate/uint32(e.cfg.FPS))
+	next := e.cfg
+	next.BitrateKbps = kbps
+	e.setPasses(next)
 	p := make([]byte, sizeReconfigure)
 	put32(p, 0, verReconfigure)
 	copy(p[reconfInit:], e.initp)
@@ -737,6 +742,16 @@ func (e *Encoder) SetBitrate(kbps int) error {
 	}
 	e.cfg.BitrateKbps = kbps
 	return nil
+}
+
+// setPasses runs one pass at cfg's rate from singlePassBPP, and the
+// preset's passes below it.
+func (e *Encoder) setPasses(cfg encode.Config) {
+	passes := e.presetPasses
+	if singlePass(cfg) {
+		passes = multiPassDisabled
+	}
+	put32(e.config[cfgRC:], rcMultiPass, passes)
 }
 
 func (e *Encoder) Close() error {
