@@ -281,6 +281,9 @@ func TestHeadlessE2EBinaries(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds both commands and uses the GPU")
 	}
+	if os.Getenv("PLANCK_LIVE_VIDEO_TEST") != "1" {
+		t.Skip("set PLANCK_LIVE_VIDEO_TEST=1 to stream through the hardware encoder and decoder")
+	}
 	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
 		t.Skip("needs a hardware encoder and decoder")
 	}
@@ -366,14 +369,26 @@ func TestHeadlessE2EBinaries(t *testing.T) {
 	}
 }
 
+// freeUDPPort returns a port that a udp4 wildcard bind accepts again after
+// release. Windows can hand out a port for 127.0.0.1:0 that ":port" then
+// refuses with WSAEACCES (a Hyper-V or WinNAT excluded range).
 func freeUDPPort(t *testing.T) int {
 	t.Helper()
-	c, err := net.ListenPacket("udp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	var err error
+	for range 20 {
+		var c net.PacketConn
+		if c, err = net.ListenPacket("udp4", ":0"); err != nil {
+			continue
+		}
+		port := c.LocalAddr().(*net.UDPAddr).Port
+		c.Close()
+		if c, err = net.ListenPacket("udp4", fmt.Sprintf(":%d", port)); err == nil {
+			c.Close()
+			return port
+		}
 	}
-	defer c.Close()
-	return c.LocalAddr().(*net.UDPAddr).Port
+	t.Fatalf("no rebindable udp4 port: %v", err)
+	return 0
 }
 
 func TestParseOptionsOverrides(t *testing.T) {

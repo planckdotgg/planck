@@ -233,7 +233,16 @@ func TestSessionEndToEnd(t *testing.T) {
 			keyframesTx++
 		}
 		info.EncodeTS = Mono()
-		if err := host.SendVideoFrame(info, frame); err != nil {
+		if id == frames/3 {
+			// FEC can absorb every random drop, so one frame goes out without
+			// its last slice to drive the PLI loop.
+			part := len(frame) / int(info.SliceCount)
+			for slice := range int(info.SliceCount) - 1 {
+				if err := host.SendVideoSlice(info, slice, frame[slice*part:(slice+1)*part]); err != nil {
+					t.Fatalf("frame %d slice %d: %v", id, slice, err)
+				}
+			}
+		} else if err := host.SendVideoFrame(info, frame); err != nil {
 			t.Fatalf("frame %d: %v", id, err)
 		}
 		if id%2 == 0 {
