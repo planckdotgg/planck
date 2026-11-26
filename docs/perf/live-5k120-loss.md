@@ -178,3 +178,91 @@ is, would remove that. No GUI-side wait to fix was found, and
 
 Separately: a client started hidden (`open -g`) stayed on "Connecting"
 with the host streaming until its window was brought forward.
+
+## Present on macOS with Destiny 2 at 5K, and display phase lock
+
+Measured 2026-11-26, bigboi (Destiny 2 on the 5120x1440@120 virtual
+display, NVENC HEVC 10-bit) to the M5 Pro's DGVIEW495K (5120x1440,
+macOS states 120 Hz fixed: `minimumRefreshInterval` = `maximumRefreshInterval`
+= 8.333 ms), wired LAN, the GUI client traced with `PLANCK_TRACE_CLIENT`.
+Before: client and host at 73d2705, Destiny 2's title screen (about 100
+fps). After: client from `feat/vsync-phase-lock` against the same 73d2705
+host (which also checks that a new client sends an older host nothing it
+does not know), Destiny 2's character screen (about 119 fps). The trace's
+new `gpudoneat` column is `MTLCommandBuffer.GPUEndTime`.
+
+| Run | Phase | fps | Present to glass p50 / p95 / p99 ms | Present call p50 / p99 ms | Glass to glass p50 / p99 ms | GPU done to glass p50 / p90 ms | Composited share |
+|---|---|---|---|---|---|---|---|
+| Before | full screen, CuaDriver running | 101 | 4.56 / 7.47 / 35.76 | 0.14 / 8.82 | 12.29 / 44.34 | | |
+| Before | Metrics overlay open | 99 | 4.71 / 13.23 / 41.97 | 0.12 / 13.97 | 12.57 / 51.18 | | |
+| Before | full screen, CuaDriver stopped | 99 | 5.18 / 7.20 / 33.68 | 0.14 / 7.83 | 12.92 / 44.77 | | |
+| After | windowed (1280x800) | 120 | 10.15 / 19.25 / 27.88 | 0.04 / 7.47 | 15.47 / 32.92 | 7.62 / 16.49 | 47% |
+| After | full screen, CuaDriver running | 119 | 4.37 / 9.11 / 23.54 | 0.07 / 7.23 | 12.76 / 39.69 | 3.07 / 4.72 | 5% |
+| After | Metrics overlay open | 118 | 4.51 / 11.37 / 22.47 | 0.05 / 8.23 | 12.98 / 40.42 | 3.31 / 7.62 | 14% |
+| After | full screen, CuaDriver stopped | 119 | 4.32 / 6.58 / 12.46 | 0.10 / 6.13 | 12.41 / 24.35 | 3.03 / 4.11 | 2% |
+
+"Composited share" is the share of pictures that reached the screen more
+than half a refresh after the quickest tenth did (below).
+
+### Direct mode does not wait for a refresh
+
+With `displaySyncEnabled` off, a direct surface's `presentedTime`s are not
+on the display's refresh grid: 25-39% of the intervals between them are
+within 0.25 ms of a multiple of 8.333 ms, and 21-30% are shorter than one
+refresh, at 100 and at 120 fps. A picture reaches the screen about 3 ms
+after the GPU finished it (p10 2.4, p50 3.0, p90 3.4-4.4 ms over 120
+pictures), whatever its arrival phase. Present to glass is that plus the
+draw, about 1.1 ms from the present call to the GPU's end: about 4.3 ms,
+with no refresh to wait for. The earlier "flips land on a refresh" reading
+was wrong. There is no scan-out phase to lock to on this display, and
+present to glass does not depend on when frames arrive.
+
+### What makes 8-12 ms: compositing
+
+A composited picture waits for WindowServer's next composition: GPU done to
+glass spreads over a refresh (p50 7.6, p90 16.5 ms in a window). The
+stream in a window shows exactly the reported 8-12 ms (present to glass
+p50 10.15 ms). The Metrics overlay, drawn by the window's UI, makes the
+surface composited by design (`internal/ui` `rest()` returns nil while it
+shows): present to glass p95 rises from 7 to 11-13 ms, GPU done to glass
+p90 from 4 to 7.6 ms. Its effect faded after about 16 s each time, as if
+WindowServer moved the unchanging overlay to a hardware plane. Reading
+Present in the Metrics overlay therefore reads a composited stream, about
+one refresh above what a direct stream gets.
+
+CuaDriver keeps a full-screen window on each display, in front of the
+stream's in the window list. It moved no p50 (4.37 against 4.32 ms After,
+4.56 against 5.18 ms Before, the latter within the drift between runs); its
+p99 effect is not consistent (After 23.5 against 12.5 ms, Before 35.8
+against 33.7 ms). A Sayso overlay window stays on the main display but is
+not shown over a full-screen Space.
+
+### Telling direct from composited
+
+macOS has no public flag for it. The player reads the GPU's end time of
+every picture (`gpusurface.OnPresentedGPU`) and `pkg/phaselock` calls the
+stream composited when more than 12% of the last 120 pictures reached the
+screen more than half a refresh after the quickest tenth did, direct under
+6%, three reports in a row to switch. Over the run above it read 0-5%
+full screen, 12-30% with the Metrics overlay and 30-70% in a window; one
+120-picture window reached 29% as CuaDriver restarted. On a display whose
+pictures land on refreshes it compares each picture with the first refresh
+after its GPU end instead. The client logs `scan-out direct` or
+`scan-out composited`, and `ClientStats.Phase` and the Statistics page
+carry it.
+
+### Phase lock
+
+The client measures its pictures against the display's refreshes where
+they land on them and sends `wire.DisplayPhase` to a host that offers
+`FeatureDisplayPhase`; the host moves a source's capture phase where the
+source paces itself (the synthetic pattern). It changes nothing on this
+display: the refresh grid never locks in direct mode, so the client sends
+no phase. A DXGI capture of the virtual display stays off on the host as
+well: DWM composes the virtual display on its own fixed grid (120.0000 Hz,
+148 us p50 residual over 17,621 frames of the 14:29 GUI trace, 13 ppm from
+the Mac's display), so capturing later finds no newer picture and only
+moves the wait.
+
+Not measured: two against three drawables. Present call p99 is 6-9 ms in
+every full-screen phase, a `nextDrawable` wait.
