@@ -393,6 +393,30 @@ func TestSwitchDisplayNeedsAnID(t *testing.T) {
 	}
 }
 
+// TestLegacyRefInvalidateHighID: with Through unset, a FrameID past 1<<31
+// still writes the 4-byte body legacy hosts read and reads back as one
+// frame, while a set Through that wraps past 0 keeps its range.
+func TestLegacyRefInvalidateHighID(t *testing.T) {
+	const id = uint32(0x80000001)
+	b, _ := AppendMessage(nil, &RefInvalidate{FrameID: id})
+	if got := hex.EncodeToString(b); got != "000000050780000001" {
+		t.Errorf("unset Through: %s, want the 4-byte body", got)
+	}
+	got, err := DecodeMessage(b[4:])
+	if err != nil || got.(*RefInvalidate).Last() != id {
+		t.Fatalf("4-byte body: %+v, %v; want last frame %#x", got, err, id)
+	}
+	if _, err := DecodeMessage([]byte{byte(MsgRefInvalidate), 0x80, 0, 0, 1, 0, 0, 0, 0}); !errors.Is(err, ErrMalformed) {
+		t.Errorf("explicit Through 0: %v, want ErrMalformed", err)
+	}
+	want := RefInvalidate{FrameID: 0xfffffffe, Through: 1}
+	b, _ = AppendMessage(nil, &want)
+	got, err = DecodeMessage(b[4:])
+	if err != nil || *got.(*RefInvalidate) != want || got.(*RefInvalidate).Last() != 1 {
+		t.Fatalf("wrapped gap: %+v, %v", got, err)
+	}
+}
+
 // TestRefInvalidateThrough: a gap of one frame keeps the 4-byte body older
 // hosts read, a longer one adds its last frame, and a Through that is not
 // after FrameID is refused.

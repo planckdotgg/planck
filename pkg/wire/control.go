@@ -219,14 +219,16 @@ type PLI struct{}
 // RefInvalidate tells the host that FrameID and every later frame are
 // unusable as references, so it can recover with a non-IDR frame.
 // Through, when after FrameID, is the last frame the client lost in this
-// gap; otherwise the gap is FrameID alone.
+// gap; otherwise the gap is FrameID alone. Through 0 is unset, so a gap
+// cannot end at frame 0: legacy peers send no Through at all, and a 4-byte
+// body must not read as a wrapped range for a FrameID past 1<<31.
 type RefInvalidate struct {
 	FrameID, Through uint32
 }
 
 // Last is the last frame of the gap.
 func (m *RefInvalidate) Last() uint32 {
-	if int32(m.Through-m.FrameID) > 0 {
+	if m.Through != 0 && int32(m.Through-m.FrameID) > 0 {
 		return m.Through
 	}
 	return m.FrameID
