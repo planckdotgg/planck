@@ -48,11 +48,11 @@ type inputForwarder struct {
 	// buttons are the buttons down on the host, as 1<<Button: only a press
 	// begun on the picture goes to the host.
 	buttons uint8
-	// reached is whether the last frame found the pointer where the view
-	// hears the releases.
-	reached bool
 	// live is whether the stream view takes side buttons' presses.
 	live atomic.Bool
+	// sideIn is whether the last frame found a side press would go to the
+	// host, as for one come since.
+	sideIn atomic.Bool
 	// bw and bh are the view's size; wx and wy the scrolling not sent
 	// yet, under a wheel unit.
 	bw, bh, wx, wy float32
@@ -74,8 +74,9 @@ type buttonSys interface {
 
 // buttonEdge is a press, begun on the picture or not (in), or a release.
 // at tells x, y, in the view's DIPs, is where it came. A side press from
-// raw input knows neither: the frame that sends it finds where the pointer
-// is. cancel lets go of every button.
+// raw input knows no place: in is what the frame before it found, and the
+// frame that sends it finds where the pointer is. cancel lets go of every
+// button.
 type buttonEdge struct {
 	b                          input.Button
 	down, in, side, at, cancel bool
@@ -136,7 +137,7 @@ func (f *inputForwarder) view(c *mui.Context) {
 	reaches := over && hovered && x >= 0 && y >= 0 && x <= b.W && y <= b.H
 	f.live.Store(true)
 	held := f.buttons
-	f.buttonsFrame(active, reaches, active && (relative || in && reaches), !relative, at)
+	f.buttonsFrame(active, active && (relative || in && reaches), !relative, at)
 	if at.ok && (in || held|f.buttons != 0) {
 		f.moveAbs(at.x, at.y)
 	}
@@ -188,12 +189,14 @@ func (f *inputForwarder) observe(ev mui.InputEvent) {
 
 // sideButton takes a side button's press or release, which MyGo does not
 // report, from any goroutine. Whether a press goes to the host is the
-// next frame's to say, once it knows where the pointer is.
+// next frame's to say, once it knows where the pointer is: it goes where
+// that frame and the one before it both found the pointer on the picture,
+// as the pointer may have crossed the overlay between them.
 func (f *inputForwarder) sideButton(b input.Button, down bool) {
 	if down && !f.live.Load() {
 		return
 	}
-	f.queue(buttonEdge{b: b, down: down, side: down})
+	f.queue(buttonEdge{b: b, down: down, side: down, in: down && f.sideIn.Load()})
 	if f.notify != nil {
 		f.notify()
 	}
@@ -224,26 +227,29 @@ func (f *inputForwarder) hostButton(b int) (input.Button, bool) {
 // buttonsFrame sends the presses and releases queued since the last frame,
 // each button on its own and, unless the pointer is held relative (abs
 // false), at its place: its own, or the frame's (at). A side press goes
-// where sideIn. With the window inactive every button goes up; with the
-// pointer where the view hears no release, as off the window or over the
-// overlay, or just back from there, a button the system no longer holds
-// goes up.
-func (f *inputForwarder) buttonsFrame(active, reaches, sideIn, abs bool, at framePointer) {
+// where sideIn. With the window inactive every button goes up. Otherwise a
+// button the system no longer holds goes up, as its release may have come
+// where the view does not hear it, off the window or over the overlay,
+// even with the pointer back since; one pressed this frame waits for the
+// next.
+func (f *inputForwarder) buttonsFrame(active, sideIn, abs bool, at framePointer) {
 	f.edgeMu.Lock()
 	edges := f.edges
 	f.edges, f.edgesSpare = f.edgesSpare[:0], edges
 	f.edgeMu.Unlock()
+	var pressed uint8
 	for _, e := range edges {
 		bit := uint8(1) << e.b
 		switch {
 		case e.cancel:
 			f.releaseButtons(func(input.Button) bool { return true })
-		case e.down && active && f.buttons&bit == 0 && (e.side && sideIn || !e.side && e.in):
+		case e.down && active && f.buttons&bit == 0 && e.in && (!e.side || sideIn):
 			if f.lock != nil && f.lock.clickPicture() {
 				continue
 			}
 			f.edgeAt(e, abs, at)
 			f.buttons |= bit
+			pressed |= bit
 			f.sendButton(e.b, true)
 		case !e.down && f.buttons&bit != 0:
 			f.edgeAt(e, abs, at)
@@ -251,9 +257,10 @@ func (f *inputForwarder) buttonsFrame(active, reaches, sideIn, abs bool, at fram
 			f.sendButton(e.b, false)
 		}
 	}
-	check := f.btnSys != nil && (!reaches || !f.reached)
-	f.reached = reaches
-	f.releaseButtons(func(b input.Button) bool { return !active || check && !f.btnSys.down(b) })
+	f.sideIn.Store(sideIn)
+	f.releaseButtons(func(b input.Button) bool {
+		return !active || f.btnSys != nil && pressed&(1<<b) == 0 && !f.btnSys.down(b)
+	})
 }
 
 // releaseButtons lets go of the buttons held on the host that up says to.

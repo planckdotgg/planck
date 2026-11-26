@@ -128,3 +128,24 @@ func TestSideButtonOnEnteringHUDStaysLocal(t *testing.T) {
 		t.Fatalf("sent %v, want the click on the picture, let go over the overlay", b)
 	}
 }
+
+// TestSideClickOnHUDBeforeLeaving: a side button clicked over the overlay,
+// the pointer back on the picture before the next frame, stays local.
+func TestSideClickOnHUDBeforeLeaving(t *testing.T) {
+	f, tt, got := hudForwarder()
+	tt.Move(350, 120)
+	tt.Frame()
+	f.sideButton(input.ButtonX2, true)
+	f.sideButton(input.ButtonX2, false)
+	tt.Move(350, 200)
+	tt.Frame()
+	if b := buttonLog(*got); len(b) != 0 {
+		t.Fatalf("a side click on the overlay sent %v", b)
+	}
+	f.sideButton(input.ButtonX2, true)
+	f.sideButton(input.ButtonX2, false)
+	tt.Frame()
+	if b := buttonLog(*got); !slices.Equal(b, []string{"X2+", "X2-"}) {
+		t.Fatalf("sent %v, want the click on the picture", b)
+	}
+}

@@ -233,7 +233,7 @@ func TestSideButtonsOnMac(t *testing.T) {
 	tt.Move(400, 200)
 	tt.Frame()
 	press := func(b input.Button, down bool) {
-		sys.next = b
+		sys.next, sys.held[b] = b, down
 		if down {
 			tt.PressButton(2, 400, 200)
 		} else {
@@ -241,18 +241,22 @@ func TestSideButtonsOnMac(t *testing.T) {
 		}
 		tt.Frame()
 	}
+	sys.held[input.ButtonRight] = true
 	tt.PressButton(1, 400, 200)
 	tt.Frame()
 	press(input.ButtonX1, true)
 	press(input.ButtonMiddle, true)
 	press(input.ButtonX2, true)
+	sys.held[input.ButtonLeft] = true
 	tt.PressButton(0, 400, 200)
 	tt.Frame()
 	press(input.ButtonX1, false)
+	sys.held[input.ButtonLeft] = false
 	tt.ReleaseButton(0, 400, 200)
 	tt.Frame()
 	press(input.ButtonX2, false)
 	press(input.ButtonMiddle, false)
+	sys.held[input.ButtonRight] = false
 	tt.ReleaseButton(1, 400, 200)
 	tt.Frame()
 	want := []string{"R+", "X1+", "M+", "X2+", "L+", "X1-", "L-", "X2-", "M-", "R-"}
@@ -310,5 +314,25 @@ func TestSideButtonsFromRawInput(t *testing.T) {
 	tt.Frame()
 	if b := buttonLog(*got); len(b) != len(want) {
 		t.Fatalf("after focus loss and the stream's end: %v", b[len(want):])
+	}
+}
+
+// TestReleaseMissedBetweenFrames: the right let go off the window and the
+// pointer back over the view before a frame finds it away still lets go
+// of the right on the host.
+func TestReleaseMissedBetweenFrames(t *testing.T) {
+	f, tt, got := barsForwarder(1920, 1080)
+	sys := &fakeButtons{held: map[input.Button]bool{input.ButtonRight: true, input.ButtonLeft: true}}
+	f.btnSys = sys
+	tt.Move(400, 200)
+	tt.PressButton(1, 400, 200)
+	tt.PressButton(0, 400, 200)
+	sys.held[input.ButtonLeft] = false
+	tt.ReleaseButton(0, 400, 200)
+	sys.held[input.ButtonRight] = false
+	tt.Move(410, 200)
+	tt.Frame()
+	if b := buttonLog(*got); !slices.Equal(b, []string{"R+", "L+", "L-", "R-"}) {
+		t.Fatalf("sent %v, want the right let go", b)
 	}
 }

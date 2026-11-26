@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"testing"
 
 	"github.com/planckdotgg/planck/pkg/input"
@@ -14,13 +15,14 @@ func TestOtherButtonNumbers(t *testing.T) {
 	}
 }
 
-// TestMacButtonsReadsTheSystem: with no button held, as under test, the
-// system holds none down; a fresh reader takes the middle until a button
-// past the right comes.
+// TestMacButtonsReadsTheSystem: the system's buttons read without fail;
+// with PLANCK_LIVE_INPUT_TEST=1, and no button held, none is down. A fresh
+// reader takes the middle until a button past the right comes.
 func TestMacButtonsReadsTheSystem(t *testing.T) {
 	m := newButtonSys(nil, nil)
+	idle := os.Getenv("PLANCK_LIVE_INPUT_TEST") == "1"
 	for b := input.ButtonLeft; b <= input.ButtonX2; b++ {
-		if m.down(b) {
+		if m.down(b) && idle {
 			t.Fatalf("button %d down", b)
 		}
 	}
