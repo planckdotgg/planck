@@ -23,6 +23,9 @@ type PinnedHost struct {
 	// on each kind of route it was last reached or found on.
 	LastLANAddr       string `json:"lastLANAddr,omitempty"`
 	LastTailscaleAddr string `json:"lastTailscaleAddr,omitempty"`
+	// Calibrated is what calibration kept for the host, by route: a
+	// discovery.PathKind's String.
+	Calibrated map[string]CalibratedRoute `json:"calibrated,omitempty"`
 }
 
 // Pin records a paired host, replacing any earlier pin for the same HostID.

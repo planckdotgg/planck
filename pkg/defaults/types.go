@@ -150,4 +150,15 @@ type RouteInfo struct {
 	LANDatagram bool `json:"lanDatagram"`
 	RTTMicros   int  `json:"rttMicros"`
 	ProbedMbps  int  `json:"probedMbps"` // 0 = not probed
+	// ReceiveQueue is the client's path below its socket as calibration
+	// measured it on this route; nil when not calibrated.
+	ReceiveQueue *ReceiveQueue `json:"receiveQueue,omitempty"`
+}
+
+// ReceiveQueue is a receiver that keeps Bytes of a burst and drains the
+// rest at no more than DrainMbps (transport.ReceiveQueue). Bytes 0 is a
+// receiver calibration saw drop nothing of any burst it sent.
+type ReceiveQueue struct {
+	Bytes     int `json:"bytes"`
+	DrainMbps int `json:"drainMbps"`
 }

@@ -463,6 +463,9 @@ func (c ClientConfig) Validate() error {
 	if err := c.validateHotkeys(); err != nil {
 		return err
 	}
+	if err := c.validateCalibrations(); err != nil {
+		return err
+	}
 	return validateFormat("client", c.PreferredCodec, c.PreferredChroma)
 }
 
