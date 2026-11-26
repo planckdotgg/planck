@@ -61,11 +61,11 @@ func TestLiveVirtualPadLoopback(t *testing.T) {
 		}
 		var raw RawState
 		p.layout.fill(&raw, func(c uint16) bool { return p.keys[c/8]&(1<<(c%8)) != 0 }, func(c uint16) int32 { return p.abs[c] })
-		if s = m.Apply(&raw); s == want {
+		if s = m.Apply(&raw); near(s, want) {
 			break
 		}
 	}
-	if s != want {
+	if !near(s, want) {
 		t.Fatalf("read back %+v, want %+v", s, want)
 	}
 
@@ -93,4 +93,11 @@ func TestLiveVirtualPadLoopback(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("the stop never reached the handler")
 	}
+}
+
+// near compares states to within the one step a stick's rounding through
+// the SDL-style normalisation can move.
+func near(a, b State) bool {
+	d := func(x, y int16) bool { return int(x)-int(y) >= -2 && int(x)-int(y) <= 2 }
+	return a.Buttons == b.Buttons && a.LT == b.LT && a.RT == b.RT && d(a.LX, b.LX) && d(a.LY, b.LY) && d(a.RX, b.RX) && d(a.RY, b.RY)
 }
