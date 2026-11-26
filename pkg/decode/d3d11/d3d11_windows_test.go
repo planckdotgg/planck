@@ -66,6 +66,7 @@ func lumaPSNR(t *testing.T, d *dxgi.Device, f decode.Frame, i int) (float64, flo
 		t.Fatal(err)
 	}
 	defer d.Context.Unmap(staging.Object)
+	w, h := f.Width, f.Height
 	psnr := func(frame int) float64 {
 		ref := make([]byte, w*h*3/2)
 		synth.NV12(ref, w, h, frame)

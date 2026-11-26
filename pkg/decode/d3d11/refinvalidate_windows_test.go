@@ -14,7 +14,8 @@ import (
 
 // TestReferenceInvalidationDecodes is the host and client of a lost frame
 // end to end, on the RTX 4080's NVENC and the Media Foundation HEVC
-// decoder: frames 40 and 41 are lost, 42 predicts from them and is
+// decoder, whole-picture and with the two-engine split the live 5120x1440
+// 120 fps stream uses: frames 40 and 41 are lost, 42 predicts from them and is
 // skipped, the host invalidates 40 to 42, and the decoder goes on from 43
 // with no keyframe. Each picture from 43 on must match its source. The
 // control run skips the invalidation: 43 then predicts from a picture the
@@ -25,15 +26,20 @@ func TestReferenceInvalidationDecodes(t *testing.T) {
 	for _, c := range []struct {
 		chroma encode.Chroma
 		src    capture.Format
+		w, h   int
+		split  uint32 // nvenc.Options.SplitMode
 	}{
-		{encode.NV12, capture.FormatNV12},
-		{encode.P010, capture.FormatP010},
+		{encode.NV12, capture.FormatNV12, w, h, 0},
+		{encode.P010, capture.FormatP010, w, h, 0},
+		{encode.P010, capture.FormatP010, w, h, 2},
+		{encode.P010, capture.FormatP010, 5120, 1440, 2},
 	} {
 		for _, invalidate := range []bool{true, false} {
-			t.Run(fmt.Sprintf("%s_invalidate_%v", c.chroma, invalidate), func(t *testing.T) {
+			t.Run(fmt.Sprintf("%s_%dx%d_split%d_invalidate_%v", c.chroma, c.w, c.h, c.split, invalidate), func(t *testing.T) {
+				w, h := c.w, c.h
 				nv := encodetest.Device(t, "NVIDIA")
-				cfg := encode.Config{Codec: encode.HEVC, Chroma: c.chroma, Source: c.src, Width: w, Height: h, FPS: 120, BitrateKbps: 150000}
-				enc, err := nvenc.Open(nv.D3D, nv.Info, cfg, nvenc.Options{})
+				cfg := encode.Config{Codec: encode.HEVC, Chroma: c.chroma, Source: c.src, Width: w, Height: h, FPS: 120, BitrateKbps: 150000 * w * h / (1920 * 1080)}
+				enc, err := nvenc.Open(nv.D3D, nv.Info, cfg, nvenc.Options{SplitMode: c.split})
 				if err != nil {
 					t.Fatal(err)
 				}
