@@ -9,6 +9,8 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/ebitengine/purego"
+
 	"github.com/planckdotgg/planck/pkg/capture"
 )
 
@@ -56,6 +58,7 @@ func TestCaptureFrames(t *testing.T) {
 	}
 	defer src.Close()
 	d := src.Display()
+	drawMark(t, d)
 	var took []time.Duration
 	start := time.Now()
 	const n = 30
@@ -68,12 +71,8 @@ func TestCaptureFrames(t *testing.T) {
 			t.Fatalf("frame %d: %dx%d %v", i, f.Width, f.Height, f.Format)
 		}
 		took = append(took, f.Acquired-f.Presented)
-		if i == 0 {
-			b := capture.DMABufOf(f.Surface)
-			row := unsafe.Slice((*byte)(b.CPU[0]), int(b.Pitches[0])*f.Height)
-			if !slices.ContainsFunc(row, func(v byte) bool { return v != 0 }) {
-				t.Fatal("first frame is all zero")
-			}
+		if i == 2 {
+			checkMark(t, f, d)
 		}
 		src.Release()
 	}
@@ -105,5 +104,62 @@ func TestCursor(t *testing.T) {
 	t.Logf("pointer %d,%d; cursor %dx%d hot %d,%d serial %d at %d,%d", x, y, c.W, c.H, c.HotX, c.HotY, c.Serial, c.X, c.Y)
 	if len(c.ARGB) != c.W*c.H {
 		t.Fatalf("%d pixels for %dx%d", len(c.ARGB), c.W, c.H)
+	}
+}
+
+// mark is a rectangle the test draws on the root window, in a colour no
+// desktop background has.
+var mark = struct{ x, y, w, h int }{37, 21, 64, 48}
+
+const markRGB = 0xff20c0
+
+// drawMark fills mark on the root window with markRGB on its own
+// connection, as another client would draw.
+func drawMark(t *testing.T, d capture.Display) {
+	t.Helper()
+	x, err := purego.Dlopen("libX11.so.6", purego.RTLD_NOW)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sym := func(name string) uintptr {
+		p, err := purego.Dlsym(x, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	c, err := connect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.close)
+	gc := call(sym("XCreateGC"), c.dpy, c.root, 0, 0)
+	call(sym("XSetForeground"), c.dpy, gc, markRGB)
+	call(sym("XFillRectangle"), c.dpy, c.root, gc, uintptr(d.X+mark.x), uintptr(d.Y+mark.y), uintptr(mark.w), uintptr(mark.h))
+	call(sym("XFreeGC"), c.dpy, gc)
+	call(lib.xsync, c.dpy, 0)
+}
+
+// checkMark finds mark in the frame at its place, in BGRX, with the
+// pixels around it not of its colour.
+func checkMark(t *testing.T, f capture.Frame, d capture.Display) {
+	t.Helper()
+	b := capture.DMABufOf(f.Surface)
+	px := func(x, y int) uint32 {
+		return *(*uint32)(unsafe.Add(b.CPU[0], y*int(b.Pitches[0])+x*4)) & 0xffffff
+	}
+	all := unsafe.Slice((*byte)(b.CPU[0]), int(b.Pitches[0])*f.Height)
+	if !slices.ContainsFunc(all, func(v byte) bool { return v != 0 }) {
+		t.Fatalf("the frame of %s is all zero: a rootless X server (XWayland) keeps no root image", d.ID)
+	}
+	for _, p := range [][2]int{{mark.x, mark.y}, {mark.x + mark.w - 1, mark.y + mark.h - 1}, {mark.x + mark.w/2, mark.y + mark.h/2}} {
+		if got := px(p[0], p[1]); got != markRGB {
+			t.Fatalf("pixel %v: %06x, want %06x", p, got, markRGB)
+		}
+	}
+	for _, p := range [][2]int{{mark.x - 1, mark.y}, {mark.x + mark.w, mark.y + mark.h}} {
+		if px(p[0], p[1]) == markRGB {
+			t.Fatalf("pixel %v outside the mark has its colour", p)
+		}
 	}
 }
