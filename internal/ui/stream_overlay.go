@@ -95,6 +95,10 @@ type overlay struct {
 	menuWasOpen bool
 	metrics     metricsWindow
 	saved       OverlayLayout
+	// restAt is what of the button rests this frame, if anything, and
+	// restOpacity the floating button's opacity.
+	restAt      restKind
+	restOpacity float32
 }
 
 // toast is a short note across the top of the stream: a title, and the
@@ -300,10 +304,10 @@ func (a *App) overlayView(c *mui.Context, well mui.Element, tel Telemetry) {
 	if o.hidden {
 		a.toastView(c, now)
 		a.noteMenu(false)
-		a.noteOverlay(now.Before(o.toast.at.Add(toastIn + toastHold + toastOut)))
+		a.noteOverlay(now.Before(o.toast.at.Add(toastIn+toastHold+toastOut)), nil)
 		return
 	}
-	a.noteOverlay(true)
+	o.restAt = restNone
 	x, y, over := well.PointerPosition()
 	if over && (x != o.px || y != o.py || !o.pointerOver) {
 		if near(o.bubbleRect(), x, y, idleReach) {
@@ -320,6 +324,7 @@ func (a *App) overlayView(c *mui.Context, well mui.Element, tel Telemetry) {
 	})
 	a.noteMenu(o.menuOpen)
 	a.toastView(c, now)
+	a.noteOverlay(true, a.rest(now))
 	if l := o.layout(); l != o.saved && !o.moving(now) {
 		o.saved = l
 		if err := a.backend.SaveOverlayLayout(l); err != nil {
@@ -405,6 +410,9 @@ func (a *App) overlayButton(c *mui.Context, now time.Time) mui.Element {
 		btn = a.bubble(c, now)
 	default:
 		a.dockTab(c, tab)
+		if o.dwellAt.IsZero() {
+			o.restAt = restTab
+		}
 	}
 	return btn
 }
@@ -474,6 +482,7 @@ func (a *App) bubble(c *mui.Context, now time.Time) mui.Element {
 		b.Background(theme.HUDGlassIdle).Border(1, theme.HUDEdge).Shadow(0, 10, 28, 0, mui.RGBA(0, 0, 0, 0.45))
 	}
 	if dim {
+		opacity := float32(1)
 		if idleFor < 0 {
 			c.After(-idleFor)
 		} else {
@@ -481,7 +490,11 @@ func (a *App) bubble(c *mui.Context, now time.Time) mui.Element {
 			if k < 1 {
 				c.AnimationFrame()
 			}
-			b.Opacity(1 - 0.65*k)
+			opacity = 1 - 0.65*k
+			b.Opacity(opacity)
+		}
+		if !pressed && o.off == (mui.Point{}) && !o.released && !b.Transitioning() {
+			o.restAt, o.restOpacity = restButton, opacity
 		}
 	}
 	b.Children(func() {
@@ -882,15 +895,15 @@ func (a *App) toggleFullscreen() {
 	}
 }
 
-// noteOverlay tells OnOverlayChange's callback when the overlay starts or
-// stops drawing over the stream.
-func (a *App) noteOverlay(shown bool) {
+// noteOverlay tells OnOverlayChange's callback when what the overlay
+// draws over the stream changes: whether it draws, and its resting shapes.
+func (a *App) noteOverlay(shown bool, rest *OverlayRest) {
 	a.mu.Lock()
-	changed := shown != a.overlayShown
-	a.overlayShown = shown
+	changed := shown != a.overlayShown || !rest.equal(a.overlayRest)
+	a.overlayShown, a.overlayRest = shown, rest
 	cb := a.onOverlay
 	a.mu.Unlock()
 	if changed && cb != nil {
-		cb(shown)
+		cb(OverlayState{Shown: shown, Rest: rest})
 	}
 }

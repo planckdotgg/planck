@@ -111,10 +111,12 @@ type App struct {
 	toPairing bool
 	toHosts   bool
 	// overlayShown is whether the overlay draws over the stream: the
-	// button, its tab, the menu, the metrics window or the toast. onOverlay
-	// hears it change.
+	// button, its tab, the menu, the metrics window or the toast; and
+	// overlayRest its shapes while only the button rests. onOverlay hears
+	// them change.
 	overlayShown bool
-	onOverlay    func(shown bool)
+	overlayRest  *OverlayRest
+	onOverlay    func(OverlayState)
 	// micErr is why the last unmute failed.
 	micErr string
 	// measureBusy is set while Settings → Host measures the encoders;
@@ -195,11 +197,11 @@ func (a *App) SetCursor(h CursorHook) { a.cursor = h }
 // capture the system's keys. Call it before Run.
 func (a *App) SetSystemKeys(h SystemKeysHook) { a.sysKeys = h }
 
-// OnOverlayChange registers fn to hear each time the overlay starts or
-// stops drawing over the stream, so that a video path the window's UI
-// cannot draw over makes way for it. fn runs on the main thread inside a
-// frame and must not block.
-func (a *App) OnOverlayChange(fn func(shown bool)) {
+// OnOverlayChange registers fn to hear each time what the overlay draws
+// over the stream changes, so that a video path the window's UI cannot
+// draw over makes way for it, or draws the resting button itself. fn runs
+// on the main thread inside a frame and must not block.
+func (a *App) OnOverlayChange(fn func(OverlayState)) {
 	a.mu.Lock()
 	a.onOverlay = fn
 	a.mu.Unlock()
@@ -250,7 +252,7 @@ func (a *App) StreamView(c *mui.Context) {
 	tel, connecting := a.frame(c, true)
 	if connecting != "" && tel.Connected {
 		tel = Telemetry{}
-		a.noteOverlay(true)
+		a.noteOverlay(true, nil)
 		c.SetTheme(a.theme)
 	}
 	a.streamScreen(c, tel, connecting)
@@ -285,7 +287,7 @@ func (a *App) frame(c *mui.Context, stream bool) (Telemetry, string) {
 	// A stream, even one started from another page, ends on Hosts.
 	if a.streaming && !tel.Connected {
 		toHosts = true
-		a.noteOverlay(false)
+		a.noteOverlay(false, nil)
 		if split {
 			// The stream's window leaves full screen as it closes.
 			a.streamFull, a.streamFullSeen = false, false

@@ -9,6 +9,7 @@ import (
 
 	"github.com/egoist/mygo"
 
+	"github.com/planckdotgg/planck/internal/ui"
 	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/player"
 )
@@ -20,10 +21,13 @@ const directSettle = 250 * time.Millisecond
 // directMode decides when the stream's surface scans out directly. In
 // direct mode MyGo's layers stop compositing, so nothing of the overlay
 // would show: the surface goes direct only while the overlay draws
-// nothing, and comes back to the compositor as soon as it draws again.
+// nothing or only its button at rest, which the surface then draws into
+// the frames, and comes back to the compositor as soon as the overlay
+// draws more. overlay is whether it does; rest is its resting shapes.
 type directMode struct {
 	allowed atomic.Bool
 	overlay atomic.Bool
+	rest    atomic.Pointer[ui.OverlayRest]
 
 	mu   sync.Mutex
 	gen  uint64
@@ -44,9 +48,25 @@ func directDelay(toDirect bool, now, last time.Time) time.Duration {
 	return max(wait, 0)
 }
 
-// overlayChanged hears the stream overlay start or stop drawing. It runs
-// inside the UI's frame, so the surface changes after it, on the main
-// thread.
+// overlayState hears what the stream overlay draws change, on the main
+// thread. Resting shapes that change while the surface is direct show at
+// once; the overlay going live keeps the last ones until the swap.
+func (v *videoView) overlayState(st ui.OverlayState) {
+	live := st.Live()
+	if !live {
+		v.mode.rest.Store(st.Rest)
+		if s := v.cur.Load(); s != nil {
+			s.syncRest()
+		}
+	}
+	if live != v.mode.overlay.Load() {
+		v.overlayChanged(live)
+	}
+}
+
+// overlayChanged hears the stream overlay start or stop drawing what only
+// the window's UI shows. It runs inside the UI's frame, so the surface
+// changes after it, on the main thread.
 func (v *videoView) overlayChanged(shown bool) {
 	v.mode.overlay.Store(shown)
 	m := &v.mode
@@ -74,6 +94,7 @@ func (v *videoView) applyDirect() {
 	}
 	h := s.host
 	want := directWanted(v.mode.allowed.Load(), w.IsFullScreen(), v.mode.overlay.Load())
+	defer s.syncRest()
 	if h.surf.Direct() == want {
 		return
 	}
@@ -91,6 +112,28 @@ func (v *videoView) applyDirect() {
 		v.keyframe()
 	}
 	v.logf("planck: direct display %v", want)
+}
+
+// syncRest has a direct surface draw the overlay's resting shapes into
+// its frames, and a composited one draw none, MyGo's layers showing them.
+// Main thread.
+func (s *surfaceSink) syncRest() {
+	surf := s.host.surf
+	rest := s.v.mode.rest.Load()
+	if !surf.Direct() || rest == nil {
+		surf.SetOverlay(nil)
+		return
+	}
+	dw, dh := surf.Size()
+	if mw, mh := markSize(rest, dw, dh); mw > 0 && mh > 0 && (s.mark == nil || s.mark.w != mw || s.mark.h != mh) {
+		m := newMarkAtlas(mw, mh)
+		if err := surf.SetOverlayAtlas(m.pix, m.aw, m.ah); err != nil {
+			s.v.logf("planck: overlay atlas: %v", err)
+			m = nil
+		}
+		s.mark = m
+	}
+	surf.SetOverlay(restRects(rest, dw, dh, s.mark))
 }
 
 // SetProfile takes the session's resolved profile: whether direct display
