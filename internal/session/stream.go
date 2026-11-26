@@ -118,6 +118,8 @@ func newStream(h *Host, sess *transport.Session) *stream {
 		st.path = ratectl.ClassifyAddr(ua.AddrPort().Addr())
 	}
 	st.startMic()
+	b := sess.SocketBuffers()
+	h.logf("planck: media socket buffers %d KiB receive, %d KiB send", b.Recv>>10, b.Send>>10)
 	prof, err := ParseProfile(sess.Profile())
 	if err != nil {
 		h.logf("planck: %v; using the legacy config", err)

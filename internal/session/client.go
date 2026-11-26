@@ -815,6 +815,8 @@ func (c *Client) streamConfig(sess *transport.Session) (decode.Config, *defaults
 	if err != nil {
 		c.logf("planck: %v", err)
 	}
+	b := sess.SocketBuffers()
+	c.logf("planck: media socket buffers %d KiB receive, %d KiB send", b.Recv>>10, b.Send>>10)
 	dcfg := decode.Config{Codec: codec, Width: int(acc.Width), Height: int(acc.Height), FPS: int(acc.FPS)}
 	if prof != nil {
 		dcfg.Chroma, dcfg.HDR10 = streamChroma(prof), prof.HDR10

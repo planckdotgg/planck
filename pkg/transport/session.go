@@ -32,7 +32,6 @@ const (
 	probeInterval       = 20 * time.Millisecond
 	minPLIInterval      = 100 * time.Millisecond
 	sentRingSize        = 256
-	udpBufferBytes      = 8 << 20
 	// redundantInputFor is how long after the client last saw a media
 	// datagram go missing it sends each input event twice.
 	redundantInputFor = 2 * time.Second
@@ -137,6 +136,7 @@ type Session struct {
 	intra atomic.Bool
 
 	udp      *net.UDPConn
+	sockBufs SocketBuffers
 	sealMu   sync.Mutex
 	sealer   *Sealer
 	peer     netip.AddrPort
@@ -283,8 +283,9 @@ func newSession(p sessionParams) (*Session, error) {
 		mediaUp:      make(chan struct{}),
 		done:         make(chan struct{}),
 	}
-	_ = s.udp.SetReadBuffer(udpBufferBytes)
-	_ = s.udp.SetWriteBuffer(udpBufferBytes)
+	// A refusal of every size leaves the kernel's default buffers, which
+	// SocketBuffers reports.
+	s.sockBufs, _ = sizeSocketBuffers(s.udp)
 	if p.simLoss > 0 {
 		s.impair = NewImpairer(Impairment{Loss: p.simLoss, Seed: p.ready.SessionID | 1}, p.maxDgram, s.writeLocked)
 	}
@@ -352,6 +353,9 @@ func (s *Session) Clock() *ClockEstimator      { return &s.clock }
 func (s *Session) RTT() time.Duration          { return s.clock.RTT() }
 func (s *Session) Done() <-chan struct{}       { return s.done }
 func (s *Session) RemoteControlAddr() net.Addr { return s.conn.RemoteAddr() }
+
+// SocketBuffers are the media socket's buffer sizes the kernel granted.
+func (s *Session) SocketBuffers() SocketBuffers { return s.sockBufs }
 
 // PeerState is the last wire.PeerState the peer sent, or the zero value.
 func (s *Session) PeerState() wire.PeerState {
