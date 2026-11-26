@@ -7,6 +7,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/gpusurface"
+	mui "github.com/egoist/mygo/ui"
 
 	"github.com/planckdotgg/planck/internal/ui"
 	"github.com/planckdotgg/planck/pkg/capture/dxgi"
@@ -55,6 +56,9 @@ func (h *surfaceHost) fit() {}
 func (h *surfaceHost) resizeSurface(p *player.Player, _ *videoView) error { return p.Resize(0, 0) }
 
 func (h *surfaceHost) close() { h.surf.Close() }
+
+// picture draws nothing: the surface shows the frames itself.
+func (h *surfaceHost) picture(*mui.Context) {}
 
 // windowPixels is the window's content size in pixels: its DIPs at the
 // window's DPI.

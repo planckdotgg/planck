@@ -17,6 +17,9 @@ import (
 // build, on the main thread.
 type inputForwarder struct {
 	send func(input.Event)
+	// picture draws the frames in the view, where the surface has the UI
+	// draw them (Linux picture mode); nil draws nothing.
+	picture func(c *mui.Context)
 	// video is the size of the picture shown and of the drawable it shows
 	// in, in pixels; nil, or zeros, map the pointer over the whole view.
 	video func() (fw, fh, dw, dh int)
@@ -142,6 +145,9 @@ func (f *inputForwarder) view(c *mui.Context) {
 		f.moveAbs(at.x, at.y)
 	}
 	f.over = in || (over && held|f.buttons != 0)
+	if f.picture != nil {
+		el.Children(func() { f.picture(c) })
+	}
 }
 
 // moveAbs puts the host's pointer at x, y, unless it is there.

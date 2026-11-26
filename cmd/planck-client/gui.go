@@ -1,4 +1,4 @@
-//go:build darwin || windows
+//go:build darwin || windows || (linux && !android && (amd64 || arm64))
 
 package main
 
@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
+	mui "github.com/egoist/mygo/ui"
 
 	"github.com/planckdotgg/planck/assets"
 	"github.com/planckdotgg/planck/internal/session"
@@ -74,7 +75,7 @@ func runGUI(o options) error {
 	local := &localKeys{}
 	local.update(b.Hotkeys(), b.NeverSend())
 	sys.local, b.onKeys = local, local.update
-	fwd := &inputForwarder{send: b.SendInput, video: video.videoSize, lock: ptr, sys: sys, local: local, notify: app.Notify}
+	fwd := &inputForwarder{send: b.SendInput, video: video.videoSize, picture: video.picture, lock: ptr, sys: sys, local: local, notify: app.Notify}
 	fwd.btnSys = newButtonSys(ptr.sys, fwd.sideButton)
 	// The UI asks for Ctrl+Alt+Del on the main thread, which fwd runs on.
 	b.heldMods = func() uint8 { return fwd.mods | sys.held.Modifiers() }
@@ -266,6 +267,14 @@ func (v *videoView) attach(w *mygo.Window) {
 
 // detach lets the stream's window go as it closes. Main thread.
 func (v *videoView) detach() { v.win.Store(nil) }
+
+// picture draws the stream's frames in the view where its surface has the
+// UI draw them (Linux picture mode), nothing elsewhere.
+func (v *videoView) picture(c *mui.Context) {
+	if s := v.cur.Load(); s != nil {
+		s.host.picture(c)
+	}
+}
 
 // surfaceLive reports whether a surface is still on the stream's window.
 func (v *videoView) surfaceLive() bool { return v.surfaces.Load() > 0 }

@@ -6,6 +6,7 @@ import (
 	"github.com/ebitengine/purego/objc"
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/gpusurface"
+	mui "github.com/egoist/mygo/ui"
 
 	"github.com/planckdotgg/planck/internal/session"
 	"github.com/planckdotgg/planck/internal/ui"
@@ -52,6 +53,9 @@ func (h *surfaceHost) resizeSurface(p *player.Player, v *videoView) error {
 }
 
 func (h *surfaceHost) close() { h.surf.Close() }
+
+// picture draws nothing: the surface shows the frames itself.
+func (h *surfaceHost) picture(*mui.Context) {}
 
 // windowPixels is the window's content size in backing pixels. It runs on
 // the main thread.
