@@ -54,6 +54,9 @@ function Stop-ProcessesUnder([string]$name, [string[]]$dirs) {
 }
 
 $InstallDir = [System.IO.Path]::GetFullPath($InstallDir)
+if ($InstallDir -match '[%"&|<>^!]') {
+    throw "-InstallDir '$InstallDir' contains one of % `" & | < > ^ !. cmd.exe expands or interprets them in run-host.cmd, and they break the shortcut target. Choose a path without those characters."
+}
 
 $version = (Select-String -Path internal\version\version.go -Pattern '^var Version = "(.+)"$' | Select-Object -First 1).Matches[0].Groups[1].Value
 if (-not $version) { throw 'no version in internal\version\version.go' }
