@@ -19,13 +19,14 @@ func TestFull(t *testing.T) {
 }
 
 // scripts/version.sh and bundle-windows.ps1 read the version with a
-// line pattern, so the declaration must keep this exact form.
+// line pattern, so the declaration must keep this exact form. A Windows
+// checkout may have CRLF line endings.
 func TestDeclarationReadableByScripts(t *testing.T) {
 	src, err := os.ReadFile("version.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := regexp.MustCompile(`(?m)^var Version = "([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)"$`).FindSubmatch(src)
+	m := regexp.MustCompile(`(?m)^var Version = "([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)"\r?$`).FindSubmatch(src)
 	if m == nil || string(m[1]) != Version {
 		t.Fatalf("version.go has no line var Version = \"X.Y.Z\" matching Version %q", Version)
 	}
