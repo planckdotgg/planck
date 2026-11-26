@@ -67,7 +67,7 @@ func runGUI(o options) error {
 	b.usageTel.Launched()
 	app = ui.NewApp(b)
 	video.keyframe = b.RequestKeyframe
-	app.OnOverlayChange(video.overlayChanged)
+	app.OnOverlayChange(video.overlayState)
 	ptr.send, ptr.changed = b.SendInput, app.Notify
 	sys.send, sys.changed = b.SendInput, app.Notify
 	sys.setEnabled(b.Settings().SystemKeysCapture)
@@ -409,6 +409,9 @@ type surfaceSink struct {
 	// it again; resizing keeps one at a time.
 	resize   func() error
 	resizing sync.Mutex
+	// mark is the overlay atlas the surface has, for the resting
+	// button's mark; main thread.
+	mark *markAtlas
 }
 
 // refit resizes the surface if the window changed since it last did.

@@ -287,7 +287,7 @@ func TestOverlayHideShortcut(t *testing.T) {
 		t.Fatal("metrics window not shown")
 	}
 	var shown []bool
-	a.OnOverlayChange(func(on bool) { shown = append(shown, on) })
+	a.OnOverlayChange(func(s OverlayState) { shown = append(shown, s.Shown) })
 
 	tt.Key(mui.Ctrl|mui.Alt, mui.KeyP)
 	tt.Frame()
