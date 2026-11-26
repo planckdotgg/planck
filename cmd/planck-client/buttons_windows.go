@@ -1,6 +1,10 @@
 package main
 
-import "github.com/planckdotgg/planck/pkg/input"
+import (
+	"syscall"
+
+	"github.com/planckdotgg/planck/pkg/input"
+)
 
 var procGetSystemMetrics = user32.NewProc("GetSystemMetrics")
 
@@ -33,10 +37,10 @@ func (w *winButtons) down(b input.Button) bool {
 	}
 	vk := buttonVKs[b]
 	if b == input.ButtonLeft || b == input.ButtonRight {
-		if swapped, _, _ := procGetSystemMetrics.Call(smSwapButton); swapped != 0 {
+		if swapped, _, _ := syscall.SyscallN(procGetSystemMetrics.Addr(), smSwapButton); swapped != 0 {
 			vk ^= 0x03
 		}
 	}
-	r, _, _ := procGetAsyncKeyState.Call(vk)
+	r, _, _ := syscall.SyscallN(procGetAsyncKeyState.Addr(), vk)
 	return r&0x8000 != 0
 }
