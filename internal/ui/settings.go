@@ -280,7 +280,7 @@ func (a *App) categoryRow(c *mui.Context, f *settingsFrame, cat settingsCategory
 	b.Children(func() {
 		label(c, name).FontWeight(weight).TextColor(col).Grow(1)
 		if f.searching && n > 0 {
-			mui.Box(c).Height(18).PaddingX(6).AlignItems(mui.Center).Radius(theme.RadiusXs).Background(theme.RoleWell).
+			mui.Box(c).Height(18).PaddingX(6).AlignItems(mui.Center).Justify(mui.Center).Radius(theme.RadiusXs).Background(theme.RoleWell).
 				Children(func() { mono(c, strconv.Itoa(n)).FontSize(theme.TextMini).TextColor(theme.RoleText2) })
 		}
 	})

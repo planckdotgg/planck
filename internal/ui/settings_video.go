@@ -40,7 +40,7 @@ func overriddenTag(c *mui.Context, e *overrideEdit, bitrate bool, ks ...knob) fu
 		return nil
 	}
 	return func() {
-		mui.Box(c).Height(18).PaddingX(6).AlignItems(mui.Center).Radius(theme.RadiusXs).Background(theme.RoleWell).Children(func() {
+		mui.Box(c).Height(18).PaddingX(6).AlignItems(mui.Center).Justify(mui.Center).Radius(theme.RadiusXs).Background(theme.RoleWell).Children(func() {
 			mono(c, "overridden for "+e.scope.name).FontSize(theme.TextMini).TextColor(theme.RoleText2)
 		})
 	}
@@ -82,7 +82,7 @@ func (a *App) scopeBar(c *mui.Context, e *overrideEdit) {
 			})
 		}
 		mui.Spacer(c)
-		if button(c, buttonSecondary, "Clear overrides", false).Height(28).Clicked() {
+		if !e.isAuto() && button(c, buttonSecondary, "Clear overrides", false).Height(28).Clicked() {
 			e.resetToAuto()
 			a.drafts.err = ""
 		}
@@ -131,7 +131,7 @@ func (a *App) codecRow(c *mui.Context, f *settingsFrame) {
 		})
 		mui.Row(c).Gap(theme.Space2).AlignItems(mui.Center).Children(func() {
 			pick("pyrowave", "PyroWave")
-			mui.Box(c).Height(18).PaddingX(6).AlignItems(mui.Center).Radius(theme.RadiusXs).Background(theme.RoleWell).Children(func() {
+			mui.Box(c).Height(18).PaddingX(6).AlignItems(mui.Center).Justify(mui.Center).Radius(theme.RadiusXs).Background(theme.RoleWell).Children(func() {
 				mono(c, "LAN only").FontSize(theme.TextMini).TextColor(theme.RoleText2)
 			})
 		})

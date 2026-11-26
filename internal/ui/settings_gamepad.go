@@ -110,7 +110,7 @@ func (a *App) controllerRow(c *mui.Context, p GamepadInfo, selected bool) {
 			})
 		}
 		if p.Transport != "" {
-			mui.Box(c).Height(20).PaddingX(6).AlignItems(mui.Center).Radius(theme.RadiusXs).Border(1, theme.RoleBorderStrong).Children(func() {
+			mui.Box(c).Height(20).PaddingX(6).AlignItems(mui.Center).Justify(mui.Center).Radius(theme.RadiusXs).Border(1, theme.RoleBorderStrong).Children(func() {
 				mono(c, p.Transport).FontSize(theme.TextMini).TextColor(theme.RoleText2)
 			})
 		}

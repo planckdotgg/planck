@@ -186,3 +186,39 @@ func sampleProfile() *defaults.ResolvedProfile {
 		VirtualDisplay: true, DirectDisplay: true, EncodeAdapter: gpu.Adapter{Name: "NVIDIA GeForce RTX 4080"},
 		Warnings: []string{"fps 240: clamped to 120 Hz"}}
 }
+
+// TestClearOverridesOnlyWhenSet: the button shows only while the scope
+// has an override, and clicking it hides it again.
+func TestClearOverridesOnlyWhenSet(t *testing.T) {
+	f := newFake()
+	f.hosts = sampleHosts()
+	_, tt := settingsTester(t, f)
+	if tt.HasText("Clear overrides") {
+		t.Fatalf("all hosts with no overrides: %q", tt.Texts())
+	}
+	click(t, tt, "Codec: AV1")
+	if !tt.HasText("Clear overrides") {
+		t.Fatalf("all hosts with an override: %q", tt.Texts())
+	}
+	click(t, tt, "Clear overrides")
+	if tt.HasText("Clear overrides") || f.override("").Codec != defaults.Auto {
+		t.Fatalf("all hosts after clear: %+v", f.override(""))
+	}
+
+	f.overrides[""] = defaults.UserOverrides{FPS: "120"}
+	click(t, tt, "Stream format for: bigboi")
+	if tt.HasText("Clear overrides") {
+		t.Fatalf("host scope inheriting only all hosts' values: %q", tt.Texts())
+	}
+	click(t, tt, "Frame rate: 240")
+	if !tt.HasText("Clear overrides") {
+		t.Fatalf("host scope with an override: %q", tt.Texts())
+	}
+	click(t, tt, "Clear overrides")
+	if tt.HasText("Clear overrides") || f.override("h-bigboi") != (defaults.UserOverrides{}).Normalize() {
+		t.Fatalf("host scope after clear: %+v", f.override("h-bigboi"))
+	}
+	if got := f.override(""); got.FPS != "120" {
+		t.Fatalf("clear touched all hosts: %+v", got)
+	}
+}
