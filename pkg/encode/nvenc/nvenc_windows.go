@@ -368,6 +368,9 @@ func (e *Encoder) initialize() error {
 	put32(rc, rcMaxBitrate, bitrate)
 	put32(rc, rcVBVSize, bitrate/uint32(cfg.FPS))
 	put32(rc, rcVBVInit, bitrate/uint32(cfg.FPS))
+	if singlePass(cfg) {
+		put32(rc, rcMultiPass, multiPassDisabled)
+	}
 
 	inDepth, outDepth := uint32(bitDepth8), uint32(bitDepth8)
 	if cfg.Source == capture.FormatP010 || cfg.Source == capture.FormatRGB10A2 {

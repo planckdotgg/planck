@@ -86,6 +86,9 @@ const (
 	rcVBVSize    = 28
 	rcVBVInit    = 32
 	rcMultiPass  = 100
+	// NV_ENC_MULTI_PASS: the preset's is 1, a quarter-resolution first
+	// pass.
+	multiPassDisabled = 0
 
 	hevcBits               = 16
 	hevcIdrPeriod          = 20
