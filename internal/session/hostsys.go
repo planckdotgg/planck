@@ -152,7 +152,7 @@ func (h *Host) KickClient() error {
 		return ErrNoClient
 	}
 	h.logf("planck: %s disconnected by this machine's user", st.sess.Identity())
-	st.stop()
+	h.stopStream(st)
 	return nil
 }
 

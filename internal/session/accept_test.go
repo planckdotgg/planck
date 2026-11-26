@@ -498,3 +498,107 @@ func TestStopWithWedgedTeardownReleasesHeldInput(t *testing.T) {
 		t.Fatalf("after the stream ended: injected %+v; want %+v", got, want)
 	}
 }
+
+// wedgedTakeover connects a first client whose stream's teardown hangs
+// until the returned release, then a second client that takes over once
+// the host gave up waiting. It returns the injector, both clients and the
+// first stream.
+func wedgedTakeover(t *testing.T, firstHolds *input.Event) (inj *recordInjector, first, second *clientRig, old *stream, release func()) {
+	t.Helper()
+	ch := make(chan struct{})
+	var once sync.Once
+	release = func() { once.Do(func() { close(ch) }) }
+	var forced, kbps atomic.Int64
+	var opens atomic.Int32
+	inj = &recordInjector{}
+	h := newTestHost(t, HostConfig{InjectInput: true, Injector: inj, OpenVideo: func(p VideoParams) (VideoPipe, error) {
+		fp := fakePipe{fps: p.FPS, forced: &forced, kbps: &kbps}
+		if opens.Add(1) == 1 {
+			return &wedgedPipe{fakePipe: fp, release: ch}, nil
+		}
+		return &fp, nil
+	}}, &logBuf{})
+	h.stopWait = 300 * time.Millisecond
+	startTestHost(t, h)
+	t.Cleanup(release)
+	dir := t.TempDir()
+
+	first = newClient(t, dir, h.PIN())
+	if err := connect(t, first, h.Addr().String()); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "video on the first stream", func() bool { return first.sink.Units.Load() >= 5 })
+	if firstHolds != nil {
+		if err := first.client.SendInput(*firstHolds); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "the first client's press at the host", func() bool { return len(inj.events()) == 1 })
+	}
+	old = h.current()
+
+	second = newClient(t, dir, "")
+	if err := connect(t, second, h.Addr().String()); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "video on the second stream", func() bool { return second.sink.Units.Load() >= 5 })
+	return inj, first, second, old, release
+}
+
+// endWedged lets the first stream's teardown finish and gives its exit a
+// moment to inject anything it would.
+func endWedged(t *testing.T, old *stream, release func()) {
+	t.Helper()
+	release()
+	select {
+	case <-old.done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first stream did not end after its teardown unwedged")
+	}
+	time.Sleep(300 * time.Millisecond)
+}
+
+// TestWedgedTeardownKeepsReplacementKeyHeld: a stream that ends after the
+// host gave up on its teardown does not let go of the key the client that
+// took over holds.
+func TestWedgedTeardownKeepsReplacementKeyHeld(t *testing.T) {
+	inj, _, second, old, release := wedgedTakeover(t, nil)
+	press := input.Event{Type: input.TypeKey, Key: input.KeyEvent{Usage: input.KeyA, Pressed: true}}
+	if err := second.client.SendInput(press); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the second client's press at the host", func() bool { return len(inj.events()) == 1 })
+
+	endWedged(t, old, release)
+	if got := inj.events(); !slices.Equal(got, []input.Event{press}) {
+		t.Fatalf("after the first stream ended: injected %+v; want only %+v", got, press)
+	}
+
+	second.client.Disconnect()
+	want := []input.Event{press, {Type: input.TypeKey, Key: input.KeyEvent{Usage: input.KeyA}}}
+	waitFor(t, "the host to let go after the second client left", func() bool { return len(inj.events()) >= len(want) })
+	if got := inj.events(); !slices.Equal(got, want) {
+		t.Fatalf("after the second client left: injected %+v; want %+v", got, want)
+	}
+}
+
+// TestTakeoverReleasesFirstClientKey: the key the first client held goes
+// up when another client takes over, though its stream's teardown hangs,
+// and only once.
+func TestTakeoverReleasesFirstClientKey(t *testing.T) {
+	b := input.Event{Type: input.TypeKey, Key: input.KeyEvent{Usage: input.KeyB, Pressed: true}}
+	inj, _, second, old, release := wedgedTakeover(t, &b)
+	up := []input.Event{b, {Type: input.TypeKey, Key: input.KeyEvent{Usage: input.KeyB}}}
+	if got := inj.events(); !slices.Equal(got, up) {
+		t.Fatalf("after the takeover: injected %+v; want %+v", got, up)
+	}
+	a := input.Event{Type: input.TypeKey, Key: input.KeyEvent{Usage: input.KeyA, Pressed: true}}
+	if err := second.client.SendInput(a); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the second client's press at the host", func() bool { return len(inj.events()) == 3 })
+
+	endWedged(t, old, release)
+	if got, want := inj.events(), append(slices.Clone(up), a); !slices.Equal(got, want) {
+		t.Fatalf("after the first stream ended: injected %+v; want %+v", got, want)
+	}
+}

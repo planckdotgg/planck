@@ -255,6 +255,9 @@ type Host struct {
 	inject input.Injector
 	// held is what inject holds down, let go of as each client leaves.
 	held input.Held
+	// heldBy is the stream whose client held is from, nil once no client
+	// connected since the last release.
+	heldBy *stream
 	// injMu orders every use of inject against Stop closing it; injClosed
 	// is set once Stop let go of held and closed inject.
 	injMu     sync.Mutex
@@ -472,7 +475,7 @@ func (h *Host) revoke(fps []string) error {
 	}
 	h.mu.Unlock()
 	if st != nil {
-		st.stop()
+		h.stopStream(st)
 	}
 	return nil
 }
@@ -685,6 +688,7 @@ func (h *Host) acceptLoop(ctx context.Context) {
 		if old != nil {
 			h.stopWithin(old)
 		}
+		h.claimHeld(st)
 		h.logf("planck: %s connected from %v (%s)", sess.Identity(), sess.RemoteControlAddr(), st.path)
 		h.wg.Go(func() {
 			st.run(ctx)
@@ -694,7 +698,7 @@ func (h *Host) acceptLoop(ctx context.Context) {
 			}
 			replaced := h.cur != nil
 			h.mu.Unlock()
-			h.releaseInput()
+			h.releaseHeld(st)
 			if !replaced {
 				h.releasePads()
 			}
@@ -772,10 +776,19 @@ func (h *Host) Err() error {
 	return nil
 }
 
-// stopWithin ends st and waits up to stopWait for its teardown, so a
-// teardown that hangs cannot hold up the client taking over.
+// stopStream ends st, which the caller took out of h.cur, lets go of what
+// its client held once no more of its input can arrive, and waits for its
+// teardown.
+func (h *Host) stopStream(st *stream) {
+	st.end()
+	h.releaseHeld(st)
+	<-st.done
+}
+
+// stopWithin is stopStream waiting up to stopWait, so a teardown that
+// hangs cannot hold up the client taking over.
 func (h *Host) stopWithin(st *stream) {
-	if !h.within(st.stop) {
+	if !h.within(func() { h.stopStream(st) }) {
 		h.fail("the stream of %s took over %v to stop; going on without it", st.sess.Identity(), h.stopWait)
 	}
 }
@@ -826,9 +839,13 @@ func (h *Host) preempt() {
 	st := h.cur
 	h.cur = nil
 	h.mu.Unlock()
-	if st != nil {
-		h.stopWithin(st)
+	if st == nil {
+		// What is held is from a client that already left, whose stream
+		// may not have let go yet; the one authorizing has sent nothing.
+		h.releaseHeld(nil)
+		return
 	}
+	h.stopWithin(st)
 }
 
 func (h *Host) trust(ctx context.Context, info transport.AuthInfo) (string, error) {
@@ -979,10 +996,23 @@ func (h *Host) injectHeld(ev input.Event) (bool, error) {
 	return true, nil
 }
 
-// releaseInput lets go of every key and button the last client left down.
-func (h *Host) releaseInput() {
+// claimHeld makes st the stream whose client's input is held.
+func (h *Host) claimHeld(st *stream) {
+	h.injMu.Lock()
+	h.heldBy = st
+	h.injMu.Unlock()
+}
+
+// releaseHeld lets go of every key and button held down when they are
+// from's client's, or whoever's for a nil from. A stream that ended after
+// another client took over leaves that client's keys down.
+func (h *Host) releaseHeld(from *stream) {
 	h.injMu.Lock()
 	defer h.injMu.Unlock()
+	if from != nil && h.heldBy != from {
+		return
+	}
+	h.heldBy = nil
 	if h.inject != nil && !h.injClosed {
 		h.releaseLocked()
 	}
