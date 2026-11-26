@@ -57,6 +57,24 @@ func TestLiveLinuxPlayerAndCapture(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
+	p, err := NewOutputPlayer("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	go func() {
+		frame := make([]int16, FrameSamples(DefaultFrameDuration)*Channels)
+		tick := time.NewTicker(DefaultFrameDuration)
+		defer tick.Stop()
+		for n := 0; ctx.Err() == nil; n += len(frame) / Channels {
+			<-tick.C
+			for i := 0; i < len(frame); i += Channels {
+				v := int16(100 * math.Sin(2*math.Pi*440*float64(n+i/Channels)/SampleRate))
+				frame[i], frame[i+1] = v, v
+			}
+			_ = p.Write(frame)
+		}
+	}()
 	var mu sync.Mutex
 	var samples int
 	var first, last int64
