@@ -79,3 +79,57 @@ func TestHostReleasesHeldInputOnDisconnect(t *testing.T) {
 		t.Fatalf("injected:\n got %+v\nwant %+v", got, want)
 	}
 }
+
+// TestHostInjectsChordedButtons: buttons chorded at the client, as aiming
+// down sights with the right while firing with the left, with motion
+// between, reach the host's injector each on its own and in order, and a
+// client dropping mid-chord leaves none of them down.
+func TestHostInjectsChordedButtons(t *testing.T) {
+	rec := &recordInjector{}
+	var forced, kbps atomic.Int64
+	h, err := NewHost(HostConfig{
+		ConfigDir: t.TempDir(), Name: "test-host", ListenAddr: "127.0.0.1:0", DiscoveryAddr: "off", FPS: 60, NoTailscale: true,
+		OpenVideo: func(p VideoParams) (VideoPipe, error) {
+			return &fakePipe{fps: p.FPS, forced: &forced, kbps: &kbps}, nil
+		},
+		OpenAudio:   func() (audio.Capturer, error) { return &fakeCapturer{}, nil },
+		InjectInput: true, Injector: rec, Logf: t.Logf,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(h.Stop)
+	r := newClient(t, t.TempDir(), h.PIN())
+	if err := connect(t, r, h.Addr().String()); err != nil {
+		t.Fatal(err)
+	}
+	btn := func(b input.Button, down bool) input.Event {
+		return input.Event{Type: input.TypeMouseButton, Button: input.MouseButton{Button: b, Pressed: down}}
+	}
+	move := input.Event{Type: input.TypeMouseMoveRel, MouseRel: input.MouseMoveRel{DX: 4, DY: -1}}
+	sent := []input.Event{
+		btn(input.ButtonRight, true), move, btn(input.ButtonLeft, true), move, btn(input.ButtonLeft, false),
+		btn(input.ButtonLeft, true), move, btn(input.ButtonLeft, false), btn(input.ButtonRight, false),
+		btn(input.ButtonLeft, true), btn(input.ButtonRight, true), btn(input.ButtonRight, false), btn(input.ButtonLeft, false),
+		btn(input.ButtonRight, true), btn(input.ButtonLeft, true), btn(input.ButtonMiddle, true),
+		btn(input.ButtonX1, true), btn(input.ButtonX2, true), move,
+	}
+	for _, ev := range sent {
+		if err := r.client.SendInput(ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitFor(t, "the chords at the host", func() bool { return len(rec.events()) >= len(sent) })
+	r.client.Disconnect()
+	want := append(slices.Clone(sent),
+		btn(input.ButtonLeft, false), btn(input.ButtonRight, false), btn(input.ButtonMiddle, false),
+		btn(input.ButtonX1, false), btn(input.ButtonX2, false),
+	)
+	waitFor(t, "the host to let go", func() bool { return len(rec.events()) >= len(want) })
+	if got := rec.events(); !slices.Equal(got, want) {
+		t.Fatalf("injected:\n got %+v\nwant %+v", got, want)
+	}
+}

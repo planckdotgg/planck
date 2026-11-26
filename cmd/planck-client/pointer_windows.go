@@ -8,6 +8,8 @@ import (
 	"unsafe"
 
 	"github.com/egoist/mygo"
+
+	"github.com/planckdotgg/planck/pkg/input"
 )
 
 var (
@@ -92,13 +94,15 @@ func (p *winPointer) screen(a rect) winRect {
 	return winRect{o.X + px(a.X), o.Y + px(a.Y), o.X + px(a.X+a.W), o.Y + px(a.Y+a.H)}
 }
 
-// rawMouse reads the mouse's raw motion on a message-only window of its
-// own thread, from the first relative hold on, and passes it on while on
-// is set.
+// rawMouse reads the mouse's raw input on a message-only window of its
+// own thread, from the first relative hold or the stream view's first
+// build on: its motion while on is set, and the side buttons, which the
+// window hears as Back and Forward alone, to buttons if set before start.
 type rawMouse struct {
-	once   sync.Once
-	on     atomic.Bool
-	motion func(dx, dy float64)
+	once    sync.Once
+	on      atomic.Bool
+	motion  func(dx, dy float64)
+	buttons func(b input.Button, down bool)
 }
 
 func (r *rawMouse) start() { r.once.Do(func() { go r.run() }) }
@@ -139,12 +143,15 @@ func (r *rawMouse) run() {
 }
 
 func (r *rawMouse) wndProc(hwnd, msg, wparam, lparam uintptr) uintptr {
-	if msg == wmInput && r.on.Load() {
+	if on := r.on.Load(); msg == wmInput && (on || r.buttons != nil) {
 		var buf [rawInputMouseLen]byte
 		size := uint32(len(buf))
 		n, _, _ := procGetRawInputData.Call(lparam, ridInput, uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&size)), rawInputHeader)
 		if int32(n) == rawInputMouseLen && *(*uint32)(unsafe.Pointer(&buf[0])) == rimTypeMouse {
-			if dx, dy, ok := rawMotion(buf[rawInputHeader:]); ok {
+			if r.buttons != nil {
+				rawSideButtons(buf[rawInputHeader:], r.buttons)
+			}
+			if dx, dy, ok := rawMotion(buf[rawInputHeader:]); ok && on {
 				r.motion(dx, dy)
 			}
 		}
@@ -161,4 +168,29 @@ func rawMotion(m []byte) (dx, dy float64, ok bool) {
 	}
 	x, y := *(*int32)(unsafe.Pointer(&m[12])), *(*int32)(unsafe.Pointer(&m[16]))
 	return float64(x), float64(y), x != 0 || y != 0
+}
+
+// RAWMOUSE usButtonFlags of the side buttons.
+const (
+	riMouseButton4Down = 0x0040
+	riMouseButton4Up   = 0x0080
+	riMouseButton5Down = 0x0100
+	riMouseButton5Up   = 0x0200
+)
+
+// rawSideButtons passes on a RAWMOUSE's side button presses and releases.
+func rawSideButtons(m []byte, to func(b input.Button, down bool)) {
+	flags := *(*uint16)(unsafe.Pointer(&m[4]))
+	for _, e := range [...]struct {
+		flag uint16
+		b    input.Button
+		down bool
+	}{
+		{riMouseButton4Down, input.ButtonX1, true}, {riMouseButton4Up, input.ButtonX1, false},
+		{riMouseButton5Down, input.ButtonX2, true}, {riMouseButton5Up, input.ButtonX2, false},
+	} {
+		if flags&e.flag != 0 {
+			to(e.b, e.down)
+		}
+	}
 }

@@ -69,7 +69,8 @@ func runGUI(o options) error {
 	local := &localKeys{}
 	local.update(b.Hotkeys(), b.NeverSend())
 	sys.local, b.onKeys = local, local.update
-	fwd := &inputForwarder{send: b.SendInput, video: video.videoSize, lock: ptr, sys: sys, local: local}
+	fwd := &inputForwarder{send: b.SendInput, video: video.videoSize, lock: ptr, sys: sys, local: local, notify: app.Notify}
+	fwd.btnSys = newButtonSys(ptr.sys, fwd.sideButton)
 	// The UI asks for Ctrl+Alt+Del on the main thread, which fwd runs on.
 	b.heldMods = func() uint8 { return fwd.mods | sys.held.Modifiers() }
 	app.SetStreamView(fwd.view)
@@ -80,6 +81,7 @@ func runGUI(o options) error {
 	streams.userClosed = app.StreamWindowClosed
 	streams.gone = func() {
 		sys.streamEnded()
+		fwd.streamEnded()
 		video.detach()
 		ptr.reset()
 	}

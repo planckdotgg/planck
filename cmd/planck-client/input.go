@@ -3,6 +3,8 @@ package main
 import (
 	"runtime"
 	"slices"
+	"sync"
+	"sync/atomic"
 
 	"github.com/egoist/mygo/gpusurface"
 	mui "github.com/egoist/mygo/ui"
@@ -33,13 +35,44 @@ type inputForwarder struct {
 	// over is whether the host has the pointer's position x, y.
 	over bool
 	x, y uint16
-	// button and pressed are the press on the view; held is whether the
-	// host has it, as only a press begun on the picture goes to the host.
-	button        int
-	pressed, held bool
+	// btnSys tells what MyGo does not of the buttons; nil takes MyGo's
+	// buttons 0, 1 and 2 as left, right and middle, and its releases alone.
+	btnSys     buttonSys
+	btnStarted bool
+	// notify asks for a frame, from any goroutine.
+	notify func()
+	// edges are the presses and releases come since the last frame; a side
+	// button's may come from another thread.
+	edgeMu            sync.Mutex
+	edges, edgesSpare []buttonEdge
+	// buttons are the buttons down on the host, as 1<<Button: only a press
+	// begun on the picture goes to the host.
+	buttons uint8
+	// sideOK is whether a side button pressed now goes to the host.
+	sideOK atomic.Bool
 	// bw and bh are the view's size; wx and wy the scrolling not sent
 	// yet, under a wheel unit.
 	bw, bh, wx, wy float32
+}
+
+// buttonSys is what the system tells of the mouse's buttons that MyGo does
+// not. MyGo follows one press at a time, the button pressed last, so the
+// forwarder takes each button's press and release as it comes instead.
+type buttonSys interface {
+	// start runs once, on the main thread, as the stream view first builds.
+	start()
+	// other is the host's button for the press or release of MyGo's button
+	// 2 being delivered, which on macOS is any button past the right; ok
+	// is false for one the host has not.
+	other() (b input.Button, ok bool)
+	// down reports whether b is down now.
+	down(b input.Button) bool
+}
+
+// buttonEdge is a press, begun on the picture or not (in), or a release.
+type buttonEdge struct {
+	b        input.Button
+	down, in bool
 }
 
 // view builds the stream's input surface, which fills the stream view.
@@ -52,8 +85,17 @@ type inputForwarder struct {
 func (f *inputForwarder) view(c *mui.Context) {
 	c.Key("planck-stream-input")
 	el := mui.Box(c).Fill().Label("Stream")
-	el.HandleInput(f.scroll)
-	f.keysFrame(c.KeysDown(), c.Modifiers(), c.WindowActive())
+	el.HandleInput(f.handle)
+	el.ObserveInput(f.observe)
+	// Taking presses, the view gets the releases of the button pressed
+	// last wherever the pointer goes; the observer gets those over it.
+	el.Pressed()
+	if f.btnSys != nil && !f.btnStarted {
+		f.btnSys.start()
+		f.btnStarted = true
+	}
+	active := c.WindowActive()
+	f.keysFrame(c.KeysDown(), c.Modifiers(), active)
 	x, y, over := el.PointerPosition()
 	hovered := el.Hovered()
 	b := el.Bounds()
@@ -63,7 +105,7 @@ func (f *inputForwarder) view(c *mui.Context) {
 	if f.lock != nil {
 		pic := pictureRect(b.W, b.H, fw, fh, dw, dh)
 		pic.X, pic.Y = pic.X+b.X, pic.Y+b.Y
-		f.lock.frame(c.WindowActive(), pic)
+		f.lock.frame(active, pic)
 		relative = f.lock.held() == pointerRelative
 		onPic := over && hovered && b.W > 0 && b.H > 0 && onPicture(x, y, b.W, b.H, fw, fh, dw, dh)
 		if f.lock.pictureCursor(onPic) != cursorLocal {
@@ -73,7 +115,7 @@ func (f *inputForwarder) view(c *mui.Context) {
 	in := relative
 	if over && b.W > 0 && b.H > 0 && !relative {
 		in = onPicture(x, y, b.W, b.H, fw, fh, dw, dh)
-		if in || f.held {
+		if in || f.buttons != 0 {
 			nx, ny := mapPointer(x, y, b.W, b.H, fw, fh, dw, dh)
 			if !f.over || nx != f.x || ny != f.y {
 				f.send(input.Event{Type: input.TypeMouseMoveAbs, MouseAbs: input.MouseMoveAbs{X: nx, Y: ny}})
@@ -81,18 +123,115 @@ func (f *inputForwarder) view(c *mui.Context) {
 			f.x, f.y = nx, ny
 		}
 	}
-	f.over = in || (over && f.held)
-	btn, pressed := el.PressedButton()
-	if f.held && (!pressed || btn != f.button) {
-		f.sendButton(f.button, false)
-		f.held = false
+	f.over = in || (over && f.buttons != 0)
+	reaches := over && hovered && x >= 0 && y >= 0 && x <= b.W && y <= b.H
+	f.sideOK.Store(active && (relative || in && reaches))
+	f.buttonsFrame(active, reaches)
+}
+
+// handle takes the wheel, and sees the releases MyGo gives the view as the
+// one pressed.
+func (f *inputForwarder) handle(ev mui.InputEvent) bool {
+	if ev.Kind == mui.InputPointerUp {
+		f.observe(ev)
+		return false
 	}
-	if pressed && (!f.pressed || btn != f.button) && in {
-		if f.lock == nil || !f.lock.clickPicture() {
-			f.held = f.sendButton(btn, true)
+	return f.scroll(ev)
+}
+
+// observe queues each button's press over the view, and its release, for
+// the frame to send after the pointer's move.
+func (f *inputForwarder) observe(ev mui.InputEvent) {
+	if ev.Kind != mui.InputPointerDown && ev.Kind != mui.InputPointerUp {
+		return
+	}
+	b, ok := f.hostButton(ev.Button)
+	if !ok {
+		return
+	}
+	e := buttonEdge{b: b, down: ev.Kind == mui.InputPointerDown}
+	if e.down {
+		fw, fh, dw, dh := f.videoSize()
+		e.in = f.lock != nil && f.lock.held() == pointerRelative ||
+			f.bw > 0 && f.bh > 0 && onPicture(ev.X, ev.Y, f.bw, f.bh, fw, fh, dw, dh)
+	}
+	f.queue(e)
+}
+
+// sideButton takes a side button's press or release, which MyGo does not
+// report, from any goroutine.
+func (f *inputForwarder) sideButton(b input.Button, down bool) {
+	if down && !f.sideOK.Load() {
+		return
+	}
+	f.queue(buttonEdge{b: b, down: down, in: true})
+	if f.notify != nil {
+		f.notify()
+	}
+}
+
+func (f *inputForwarder) queue(e buttonEdge) {
+	f.edgeMu.Lock()
+	f.edges = append(f.edges, e)
+	f.edgeMu.Unlock()
+}
+
+// hostButton is the host's button for MyGo's button b.
+func (f *inputForwarder) hostButton(b int) (input.Button, bool) {
+	switch b {
+	case 0:
+		return input.ButtonLeft, true
+	case 1:
+		return input.ButtonRight, true
+	case 2:
+		if f.btnSys != nil {
+			return f.btnSys.other()
+		}
+		return input.ButtonMiddle, true
+	}
+	return 0, false
+}
+
+// buttonsFrame sends the presses and releases queued since the last frame,
+// each button on its own. With the window inactive every button goes up;
+// with the pointer where the view hears no release, as off the window or
+// over the overlay, a button the system no longer holds goes up.
+func (f *inputForwarder) buttonsFrame(active, reaches bool) {
+	f.edgeMu.Lock()
+	edges := f.edges
+	f.edges, f.edgesSpare = f.edgesSpare[:0], edges
+	f.edgeMu.Unlock()
+	for _, e := range edges {
+		bit := uint8(1) << e.b
+		switch {
+		case e.down && e.in && active && f.buttons&bit == 0:
+			if f.lock != nil && f.lock.clickPicture() {
+				continue
+			}
+			f.buttons |= bit
+			f.sendButton(e.b, true)
+		case !e.down && f.buttons&bit != 0:
+			f.buttons &^= bit
+			f.sendButton(e.b, false)
 		}
 	}
-	f.button, f.pressed = btn, pressed
+	for b := input.ButtonLeft; b <= input.ButtonX2 && f.buttons != 0; b++ {
+		bit := uint8(1) << b
+		if f.buttons&bit != 0 && (!active || !reaches && f.btnSys != nil && !f.btnSys.down(b)) {
+			f.buttons &^= bit
+			f.sendButton(b, false)
+		}
+	}
+}
+
+// streamEnded forgets the buttons held, as the host lets go of them as the
+// stream ends.
+func (f *inputForwarder) streamEnded() {
+	f.sideOK.Store(false)
+	f.edgeMu.Lock()
+	f.edges = f.edges[:0]
+	f.edgeMu.Unlock()
+	f.buttons = 0
 }
 
 func (f *inputForwarder) videoSize() (fw, fh, dw, dh int) {
@@ -188,21 +327,8 @@ func normalize(v, n float32) uint16 {
 	return uint16(v / n * 65535)
 }
 
-// sendButton reports whether b is a button the host has.
-func (f *inputForwarder) sendButton(b int, pressed bool) bool {
-	var hb input.Button
-	switch b {
-	case 0:
-		hb = input.ButtonLeft
-	case 1:
-		hb = input.ButtonRight
-	case 2:
-		hb = input.ButtonMiddle
-	default:
-		return false
-	}
-	f.send(input.Event{Type: input.TypeMouseButton, Button: input.MouseButton{Button: hb, Pressed: pressed}})
-	return true
+func (f *inputForwarder) sendButton(b input.Button, pressed bool) {
+	f.send(input.Event{Type: input.TypeMouseButton, Button: input.MouseButton{Button: b, Pressed: pressed}})
 }
 
 // localKey reports whether k with m stays on this device: a hotkey or a
