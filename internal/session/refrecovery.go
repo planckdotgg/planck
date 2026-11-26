@@ -42,13 +42,14 @@ type admission struct {
 func (r *refRecovery) admit(info wire.VideoInfo, now int64) admission {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.haveLast && !newerFrame(info.FrameID, r.last) {
+		// Late, keyframe or not: the frames after it were decoded or
+		// skipped already.
+		return admission{}
+	}
 	if info.Keyframe {
 		r.last, r.haveLast, r.waiting = info.FrameID, true, false
 		return admission{decode: true}
-	}
-	if r.haveLast && !newerFrame(info.FrameID, r.last) {
-		// Late: the frames after it were decoded or skipped already.
-		return admission{}
 	}
 	var a admission
 	if r.haveLast && info.FrameID != r.last+1 {
@@ -67,6 +68,14 @@ func (r *refRecovery) admit(info wire.VideoInfo, now int64) admission {
 		a.giveUp = true
 	}
 	return a
+}
+
+// reset forgets the frames seen so far, for a stream whose frame IDs
+// start over: a new host session after a route switch.
+func (r *refRecovery) reset() {
+	r.mu.Lock()
+	r.haveLast, r.waiting = false, false
+	r.mu.Unlock()
 }
 
 // lose records that frame id, admitted, will not be decoded (a full

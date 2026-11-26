@@ -1049,6 +1049,7 @@ func (c *Client) switchRoute(cc *conn, r resolved) error {
 	}
 	cc.profile.Store(prof)
 	cc.policy.Store(hostPolicy(rt.sess))
+	cc.ref.reset()
 	cc.stream.Store(&streamState{sink: cur})
 	if cc.jb != nil {
 		cc.jb.Restart()

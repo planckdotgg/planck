@@ -37,6 +37,8 @@ type sendJob struct {
 	nEnds    int
 	critical int
 	buf      []byte
+	// bytes is the encoded frame's size, counted once it went out.
+	bytes int
 	// sent says a frame went out whole; a sendEnd after an encode error
 	// only hands the buffer back.
 	sent   bool

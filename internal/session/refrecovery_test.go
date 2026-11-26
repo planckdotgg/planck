@@ -77,3 +77,45 @@ func TestRefRecoveryFollowsIDWrap(t *testing.T) {
 		t.Fatalf("frame after the wrap: %+v", a)
 	}
 }
+
+// TestRefRecoveryRejectsALateKeyframe: a keyframe older than the frames
+// already admitted is late like any other frame, and must not take the
+// recovery state back to before them.
+func TestRefRecoveryRejectsALateKeyframe(t *testing.T) {
+	var r refRecovery
+	if a := r.admit(wire.VideoInfo{FrameID: 100, Keyframe: true}, 0); !a.decode {
+		t.Fatalf("keyframe 100: %+v", a)
+	}
+	if a := r.admit(wire.VideoInfo{FrameID: 101}, 0); !a.decode || a.invalidate {
+		t.Fatalf("frame 101: %+v", a)
+	}
+	if a := r.admit(wire.VideoInfo{FrameID: 99, Keyframe: true}, 0); a.decode || a.invalidate {
+		t.Fatalf("late keyframe 99: %+v, want rejected", a)
+	}
+	if a := r.admit(wire.VideoInfo{FrameID: 102}, 0); !a.decode || a.invalidate {
+		t.Fatalf("frame 102 after the late keyframe: %+v, want decoded with nothing invalidated", a)
+	}
+	// A newer keyframe still ends a wait for recovery.
+	r.admit(wire.VideoInfo{FrameID: 104}, 0)
+	if a := r.admit(wire.VideoInfo{FrameID: 105, Keyframe: true}, 0); !a.decode {
+		t.Fatalf("keyframe 105 while waiting: %+v", a)
+	}
+	if a := r.admit(wire.VideoInfo{FrameID: 106}, 0); !a.decode || a.invalidate {
+		t.Fatalf("frame after keyframe 105: %+v", a)
+	}
+}
+
+// TestRefRecoveryResetTakesFrameIDsStartingOver: after a route switch the
+// new host session numbers its frames from 0.
+func TestRefRecoveryResetTakesFrameIDsStartingOver(t *testing.T) {
+	var r refRecovery
+	r.admit(wire.VideoInfo{FrameID: 5000, Keyframe: true}, 0)
+	r.admit(wire.VideoInfo{FrameID: 5001}, 0)
+	r.reset()
+	if a := r.admit(wire.VideoInfo{FrameID: 0, Keyframe: true}, 0); !a.decode {
+		t.Fatalf("first keyframe of the new session: %+v", a)
+	}
+	if a := r.admit(wire.VideoInfo{FrameID: 1}, 0); !a.decode || a.invalidate {
+		t.Fatalf("frame 1 of the new session: %+v", a)
+	}
+}

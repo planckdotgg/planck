@@ -1,8 +1,10 @@
 package session
 
 import (
+	"context"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -170,5 +172,41 @@ func TestVideoSenderHandOverDoesNotAllocate(t *testing.T) {
 	}
 	if a := testing.AllocsPerRun(1000, push); a > 0.05 {
 		t.Fatalf("hand-over allocates %.2f per frame", a)
+	}
+}
+
+// TestSentRateCountsOnlyFramesSent: frames the sender drops under
+// backpressure never count toward the host's sent FPS and bitrate.
+func TestSentRateCountsOnlyFramesSent(t *testing.T) {
+	st := &stream{ctx: context.Background()}
+	out := &slowOut{delay: 20 * time.Millisecond}
+	var dropped atomic.Int32
+	s := newVideoSender(out, 1, func(uint32) { dropped.Add(1) }, st.frameSent)
+	const size = 1000
+	for id := uint32(1); id <= 10; id++ {
+		buf := append(s.buffer(), make([]byte, size)...)
+		s.push(&sendJob{kind: sendFrame, info: wire.VideoInfo{FrameID: id}, data: buf, buf: buf, bytes: size, sent: true})
+	}
+	waitFor(t, "the last frame sent", func() bool {
+		out.mu.Lock()
+		defer out.mu.Unlock()
+		return len(out.frames) > 0 && out.frames[len(out.frames)-1] == 10
+	})
+	s.close()
+	out.mu.Lock()
+	sent := len(out.frames)
+	out.mu.Unlock()
+	if dropped.Load() == 0 {
+		t.Fatal("no frame was dropped; the test needs backpressure")
+	}
+	st.sent.mu.Lock()
+	counted, bytes := len(st.sent.stamps), 0
+	for _, b := range st.sent.bytes {
+		bytes += b
+	}
+	st.sent.mu.Unlock()
+	if counted != sent || bytes != sent*size || st.frames.Load() != uint64(sent) {
+		t.Fatalf("counted %d frames, %d bytes, frames %d; sent %d frames of %d bytes (%d dropped)",
+			counted, bytes, st.frames.Load(), sent, size, dropped.Load())
 	}
 }

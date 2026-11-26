@@ -725,7 +725,7 @@ func (st *stream) videoLoop() {
 		recovery = false
 		slot := &st.pts[frameID%ptsRingSize]
 		slot.id, slot.pts = frameID, pkt.PTS
-		job := &sendJob{kind: sendFrame, info: info, data: pkt.Data, buf: pkt.Data, sent: true}
+		job := &sendJob{kind: sendFrame, info: info, data: pkt.Data, buf: pkt.Data, bytes: len(pkt.Data), sent: true}
 		switch {
 		case streamed:
 			info = out.info
@@ -772,7 +772,6 @@ func (st *stream) videoLoop() {
 		st.encodeW.add(ms(info.EncodeTS - acquired))
 		st.parityPct = 100 * float64(parity) / float64(max(data, 1))
 		st.mu.Unlock()
-		st.sent.add(info.EncodeTS, len(pkt.Data))
 	}
 }
 
@@ -820,6 +819,7 @@ func (st *stream) frameSent(j *sendJob, err error) {
 		return
 	}
 	st.frames.Add(1)
+	st.sent.add(transport.Mono(), j.bytes)
 	if j.traced {
 		st.trace.add(j.row)
 	}
