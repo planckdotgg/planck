@@ -141,3 +141,5 @@ powershell -ExecutionPolicy Bypass -File scripts\bundle-windows.ps1 -Installer
 ```
 
 `release-macos.sh` uses `create-dmg` when it is installed (`brew install create-dmg`) and plain `hdiutil` otherwise. With a Developer ID identity it notarizes the app and the DMG unless `--skip-notarize` is given, with an App Store Connect key (`APPLE_API_KEY_PATH`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER_ID`) or a `notarytool` keychain profile (`PLANCK_NOTARY_PROFILE`). Everything goes to `dist/`, which git ignores.
+
+For an install of your own checkout rather than a release, see [Local development install](../README.md#local-development-install).

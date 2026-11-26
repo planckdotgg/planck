@@ -27,3 +27,6 @@
 
 # Release build output (scripts/bundle-*.sh, scripts/release-macos.sh)
 /dist/
+
+# Local dev settings (scripts/install-macos.sh reads PLANCK_SIGN_IDENTITY)
+/.env.local

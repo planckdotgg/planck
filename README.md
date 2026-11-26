@@ -75,6 +75,26 @@ The release packages are built by these scripts, which [docs/releasing.md](docs/
 
 The `cmd/spike-*` and `cmd/planck-spike2` programs are Phase 0 experiments, and `cmd/planck-trace` and `cmd/planck-vdd` are developer tools. None of them ship.
 
+## Local development install
+
+One command builds Planck from your checkout and installs it:
+
+```sh
+make install              # macOS: /Applications/Planck.app, then launches it
+make install-no-launch    # same, without launching
+```
+
+On macOS the app is built and signed by `scripts/bundle-macos.sh` into a temporary folder, verified, then swapped into place. A running copy in the destination is stopped first. Pick the signing identity with `--identity "Developer ID Application: …"`, `PLANCK_SIGN_IDENTITY`, or a git-ignored `.env.local` in the repo root containing `PLANCK_SIGN_IDENTITY="…"`; `--adhoc` signs ad hoc. With none of these, a single Developer ID Application identity in your keychain is used, several are an error, and none means an ad hoc signature. `scripts/install-macos.sh --help` lists `--arch` and `--dest`.
+
+On Windows (PowerShell):
+
+```powershell
+make install
+powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1 [-InstallDir <dir>] [-NoShortcut] [-NoHostTask] [-LaunchClient]
+```
+
+This installs to `%LOCALAPPDATA%\Programs\Planck`, adds a Start Menu shortcut, and runs `planck-host.exe` from a Scheduled Task named `Planck Host` (`-HostTaskName`, `-HostArgs`). The `.syso` resources are only regenerated when missing or with `-RegenerateResources`.
+
 ## License
 
 Planck is licensed under the [Apache License 2.0](LICENSE). [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) lists the parts that come from other projects.
