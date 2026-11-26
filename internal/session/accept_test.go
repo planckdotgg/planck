@@ -667,3 +667,66 @@ func TestTakeoverWithInputInFlight(t *testing.T) {
 		t.Fatalf("injected %+v; want %+v", got, want)
 	}
 }
+
+// TestRetiredSessionSendsNoSecureAttention: Ctrl+Alt+Del from a session
+// that was taken over asks for no SAS; the same keys from the session that
+// took over do.
+func TestRetiredSessionSendsNoSecureAttention(t *testing.T) {
+	sys := &fakeSystem{}
+	h, err := NewHost(HostConfig{ConfigDir: t.TempDir(), NoTailscale: true, System: sys.hooks(), Logf: t.Logf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.inject = &recordInjector{}
+	saved := hasSAS
+	hasSAS = true
+	t.Cleanup(func() { hasSAS = saved })
+	old, repl := new(transport.Session), new(transport.Session)
+	h.claimInput(old)
+	h.retireStream(&stream{h: h, sess: old})
+	h.claimInput(repl)
+	press := func(from *transport.Session) {
+		t.Helper()
+		for _, ev := range input.CtrlAltDel(0) {
+			in, err := toWire(ev)
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.onInput(from, in)
+		}
+	}
+	press(old)
+	if n := sys.count(&sys.sas); n != 0 {
+		t.Fatalf("Ctrl+Alt+Del from the retired session asked for the SAS %d times, want 0", n)
+	}
+	press(repl)
+	if n := sys.count(&sys.sas); n != 1 {
+		t.Fatalf("Ctrl+Alt+Del from the owner asked for the SAS %d times, want 1", n)
+	}
+}
+
+// TestLateStopStreamKeepsEndedSessionOutOfRetired: stopping a stream that
+// already ended and cleaned up leaves its session out of retired.
+func TestLateStopStreamKeepsEndedSessionOutOfRetired(t *testing.T) {
+	h := newTestHost(t, HostConfig{InjectInput: true, Injector: &recordInjector{}}, &logBuf{})
+	startTestHost(t, h)
+	r := newClient(t, t.TempDir(), h.PIN())
+	if err := connect(t, r, h.Addr().String()); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the host to run the stream", func() bool { return h.current() != nil })
+	st := h.current()
+	r.client.Disconnect()
+	waitFor(t, "the stream to finish its cleanup", func() bool {
+		h.injMu.Lock()
+		defer h.injMu.Unlock()
+		return st.inputDone
+	})
+	h.stopStream(st)
+	h.injMu.Lock()
+	_, kept := h.retired[st.sess]
+	h.injMu.Unlock()
+	if kept {
+		t.Fatal("a late stopStream put the ended session back in retired")
+	}
+}

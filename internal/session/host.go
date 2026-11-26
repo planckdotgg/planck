@@ -701,8 +701,7 @@ func (h *Host) acceptLoop(ctx context.Context) {
 			}
 			replaced := h.cur != nil
 			h.mu.Unlock()
-			h.retireInput(sess)
-			h.forgetRetired(sess)
+			h.endInput(st)
 			if !replaced {
 				h.releasePads()
 			}
@@ -784,7 +783,7 @@ func (h *Host) Err() error {
 // rest of its client's input and lets go of what that client held before
 // the teardown, which an input callback still running can hold up.
 func (h *Host) stopStream(st *stream) {
-	h.retireInput(st.sess)
+	h.retireStream(st)
 	st.end()
 	<-st.done
 }
@@ -967,7 +966,6 @@ func (h *Host) onInput(from *transport.Session, in wire.Input) {
 		h.cfg.OnInput(ev)
 	}
 	if h.inject != nil {
-		h.secureAttention(ev)
 		injected, err := h.injectHeld(from, ev)
 		if err != nil {
 			h.inputErr.Add(1)
@@ -980,11 +978,11 @@ func (h *Host) onInput(from *transport.Session, in wire.Input) {
 	}
 }
 
-// injectHeld injects ev from the session from and notes what it holds
-// down, unless Stop closed the injector, another session owns the input,
-// from was retired, or the gamepad settings drop it. Checking and noting
-// under injMu keeps a press from landing after its client's keys were let
-// go of.
+// injectHeld injects ev from the session from, asking for Ctrl+Alt+Del
+// when it is that, and notes what it holds down, unless Stop closed the
+// injector, another session owns the input, from was retired, or the
+// gamepad settings drop it. Checking and noting under injMu keeps a press,
+// or a Ctrl+Alt+Del, from landing after its client's keys were let go of.
 func (h *Host) injectHeld(from *transport.Session, ev input.Event) (bool, error) {
 	h.injMu.Lock()
 	defer h.injMu.Unlock()
@@ -995,6 +993,7 @@ func (h *Host) injectHeld(from *transport.Session, ev input.Event) (bool, error)
 		return false, nil
 	}
 	h.inputOwner = from
+	h.secureAttention(ev)
 	if ev.Type == input.TypeGamepad {
 		if dropped, err := h.injectGamepad(ev); dropped || err != nil {
 			return false, err
@@ -1050,12 +1049,25 @@ func (h *Host) retireLocked(sess *transport.Session) {
 	}
 }
 
-// forgetRetired drops sess from retired once its session closed, when no
-// callback of it can run any more.
-func (h *Host) forgetRetired(sess *transport.Session) {
+// retireStream retires st's session unless st already ended, so a late
+// stop cannot leave an ended session in retired for good.
+func (h *Host) retireStream(st *stream) {
 	h.injMu.Lock()
-	delete(h.retired, sess)
-	h.injMu.Unlock()
+	defer h.injMu.Unlock()
+	if !st.inputDone {
+		h.retireLocked(st.sess)
+	}
+}
+
+// endInput lets go of what st's session held, when it owns the input,
+// and drops it from retired once its session closed, when no callback of
+// it can run any more.
+func (h *Host) endInput(st *stream) {
+	h.injMu.Lock()
+	defer h.injMu.Unlock()
+	st.inputDone = true
+	h.retireLocked(st.sess)
+	delete(h.retired, st.sess)
 }
 
 // closeInput lets go of what is held and closes an injector the host

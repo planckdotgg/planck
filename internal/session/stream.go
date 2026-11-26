@@ -43,6 +43,8 @@ type stream struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 	once   sync.Once
+	// inputDone is set under h.injMu once the stream's input is torn down.
+	inputDone bool
 
 	invalid chan uint32
 	// epoch counts the streams a resize switched to; every frame carries
