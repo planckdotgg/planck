@@ -589,7 +589,15 @@ func (st *stream) videoLoop() {
 			st.h.logf("planck: trace: %v", err)
 		}
 	}()
-	buf := make([]byte, 0, 2<<20)
+	// Frames go out from a sender goroutine of their own; one that falls
+	// two frames behind drops the oldest, which the encoder then stops
+	// predicting from.
+	send := newVideoSender(st.sess, 2, func(id uint32) {
+		st.dropped.Add(1)
+		st.invalidate(id)
+	}, st.frameSent)
+	defer send.close()
+	buf := send.buffer()
 	kbps := st.params.BitrateKbps
 	var frameID uint32
 	forceKey := true
@@ -597,7 +605,7 @@ func (st *stream) videoLoop() {
 	mirror.MinLoss = st.h.cfg.FECMinLoss
 	shard := st.sess.ShardSize()
 	slices := max(1, int(st.sess.Config().Slices))
-	out := &sliceSender{sess: st.sess, slices: uint8(slices)}
+	out := &sliceSender{send: send, slices: uint8(slices)}
 	emit := out.emit
 	for st.ctx.Err() == nil {
 		select {
@@ -669,8 +677,11 @@ func (st *stream) videoLoop() {
 			out.start(frameID)
 			pkt, captureTS, streamed, err = sp.NextSlices(captureWait, forceKey, buf, emit)
 			if err != nil && out.begun {
-				// Some slices of this frame went out: its ID is taken.
+				// Some slices of this frame went out: its ID is taken, and
+				// its buffer is the sender's until they are sent.
 				frameID++
+				send.push(&sendJob{kind: sendEnd, info: out.info, buf: buf})
+				buf = send.buffer()
 			}
 		} else {
 			pkt, captureTS, err = pipe.Next(captureWait, forceKey, buf)
@@ -707,49 +718,52 @@ func (st *stream) videoLoop() {
 		info := wire.VideoInfo{FrameID: frameID, Keyframe: pkt.Keyframe, CaptureTS: captureTS, EncodeTS: transport.Mono(), Epoch: st.epoch}
 		slot := &st.pts[frameID%ptsRingSize]
 		slot.id, slot.pts = frameID, pkt.PTS
+		job := &sendJob{kind: sendFrame, info: info, data: pkt.Data, buf: pkt.Data, sent: true}
 		switch {
 		case streamed:
 			info = out.info
+			job.kind, job.info, job.data = sendEnd, info, nil
 		case st.params.Codec == encode.PyroWave && len(pkt.SliceEnds) > 0:
-			err = st.sess.SendChunkedFrame(info, pkt.Data, pkt.SliceEnds, pkt.Critical)
-		default:
-			err = st.sess.SendVideoFrame(info, pkt.Data)
+			job.kind, job.critical = sendChunked, pkt.Critical
+			job.nEnds = copy(job.ends[:], pkt.SliceEnds)
 		}
 		frameID++
-		buf = pkt.Data[:0]
-		if err != nil {
-			if errors.Is(err, transport.ErrClosed) || st.ctx.Err() != nil {
-				return
-			}
-			st.h.fail("video send: %v", err)
-			continue
-		}
-		st.frames.Add(1)
 		acquired := captureTS
 		sp, staged := pipe.(interface{ stages() pipeStages })
 		if staged {
 			acquired = sp.stages().Acquired
 		}
 		if st.trace != nil {
-			row := hostTraceRow{Frame: info.FrameID, Key: pkt.Keyframe, Bytes: len(pkt.Data), Present: captureTS, SendEnd: transport.Mono(), Kbps: kbps, SetRateNs: setRate}
+			job.traced = true
+			job.row = hostTraceRow{Frame: info.FrameID, Key: pkt.Keyframe, Bytes: len(pkt.Data), Present: captureTS, Kbps: kbps, SetRateNs: setRate}
 			if staged {
 				g := sp.stages()
-				row.WaitStart, row.Acquired, row.EncStart, row.EncEnd, row.FirstSlice, row.Accum = g.WaitStart, g.Acquired, g.EncStart, g.EncEnd, g.FirstSlice, g.Accum
-				row.SubmitNs, row.QueryNs, row.Tries = g.SubmitNs, g.QueryNs, g.Tries
+				job.row.WaitStart, job.row.Acquired, job.row.EncStart, job.row.EncEnd, job.row.FirstSlice, job.row.Accum = g.WaitStart, g.Acquired, g.EncStart, g.EncEnd, g.FirstSlice, g.Accum
+				job.row.SubmitNs, job.row.QueryNs, job.row.Tries = g.SubmitNs, g.QueryNs, g.Tries
 			}
-			st.trace.add(row)
 		}
+		send.push(job)
+		buf = send.buffer()
 		mirror.SetLoss(st.sess.FECLoss())
-		data := 0
+		data, parity := 0, 0
 		for s := 0; s < slices; s++ {
 			n := len(pkt.Data)*(s+1)/slices - len(pkt.Data)*s/slices
-			data += (n + shard - 1) / shard
+			d := (n + shard - 1) / shard
+			blocks := max(1, (d+fec.MaxDataPerBlock-1)/fec.MaxDataPerBlock)
+			for b := 0; b < blocks; b++ {
+				db := d / blocks
+				if b < d%blocks {
+					db++
+				}
+				parity += max(mirror.Parity(db), fec.BurstFloor(db, blocks, pkt.Keyframe))
+			}
+			data += d
 		}
 		st.mu.Lock()
 		st.encodeMs.add(ms(info.EncodeTS - captureTS))
 		st.captureW.add(ms(acquired - captureTS))
 		st.encodeW.add(ms(info.EncodeTS - acquired))
-		st.parityPct = 100 * float64(mirror.Parity(data)) / float64(max(data, 1))
+		st.parityPct = 100 * float64(parity) / float64(max(data, 1))
 		st.mu.Unlock()
 		st.sent.add(info.EncodeTS, len(pkt.Data))
 	}
@@ -761,11 +775,11 @@ type slicePipe interface {
 	NextSlices(timeout time.Duration, forceKey bool, dst []byte, emit sliceEmit) (encode.Packet, int64, bool, error)
 }
 
-// sliceSender sends one frame's slices as they come. Every slice of a
-// frame carries the same VideoInfo, stamped when the first one was ready:
-// EncodeTS is then when sending began.
+// sliceSender queues one frame's slices for the sender as they come. Every
+// slice of a frame carries the same VideoInfo, stamped when the first one
+// was ready: EncodeTS is then when sending began.
 type sliceSender struct {
-	sess   *transport.Session
+	send   *videoSender
 	slices uint8
 	epoch  uint8
 	frame  uint32
@@ -780,7 +794,25 @@ func (s *sliceSender) emit(captureTS int64, index int, slice []byte, key bool) e
 		s.info = wire.VideoInfo{FrameID: s.frame, Keyframe: key, CaptureTS: captureTS, EncodeTS: transport.Mono(), SliceCount: s.slices, Epoch: s.epoch}
 		s.begun = true
 	}
-	return s.sess.SendVideoSlice(s.info, index, slice)
+	s.send.push(&sendJob{kind: sendSlice, info: s.info, slice: index, data: slice})
+	return nil
+}
+
+// frameSent runs on the sender goroutine after each frame.
+func (st *stream) frameSent(j *sendJob, err error) {
+	if err != nil {
+		if !errors.Is(err, transport.ErrClosed) && st.ctx.Err() == nil {
+			st.h.fail("video send: %v", err)
+		}
+		return
+	}
+	if !j.sent {
+		return
+	}
+	st.frames.Add(1)
+	if j.traced {
+		st.trace.add(j.row)
+	}
 }
 
 // applyInvalidations forwards lost reference frames to the encoder and
