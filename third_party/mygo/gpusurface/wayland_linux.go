@@ -46,6 +46,9 @@ type waySurface struct {
 	// fit is the video's place in the backdrop as last committed.
 	fit [4]int
 
+	// clock is the clock wp_presentation reports on.
+	clock atomic.Int32
+
 	imports map[uint64]*importedBuffer
 	shmBufs []*shmBuffer
 
@@ -107,6 +110,14 @@ func newWaySurface(s *Surface, opts Options) (*waySurface, error) {
 		})
 	}
 	w.presentation, _ = q.Bind(wl.WpPresentation, 1)
+	w.clock.Store(clockMonotonic)
+	if w.presentation != 0 {
+		w.presentation.Listen(func(op uint32, e wl.Event) {
+			if op == 0 {
+				w.clock.Store(int32(e.Uint(0)))
+			}
+		})
+	}
 	if err := q.Roundtrip(); err != nil {
 		w.destroyGlobals()
 		q.Close()
@@ -244,6 +255,10 @@ func (w *waySurface) feedback(tag, submitted int64, rec int) {
 		switch op {
 		case 1: // presented: tv_sec_hi, tv_sec_lo, tv_nsec, refresh, seq_hi, seq_lo, flags
 			at = (int64(e.Uint(0))<<32|int64(e.Uint(1)))*int64(time.Second) + int64(e.Uint(2))
+			if c := w.clock.Load(); c != clockMonotonic {
+				// Now's clock, by the offset between the two now.
+				at += Now() - clockNow(c)
+			}
 		case 2: // discarded
 		default:
 			return

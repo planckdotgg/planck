@@ -215,9 +215,13 @@ func (s *Surface) Close() {
 
 // Now reads CLOCK_MONOTONIC, in nanoseconds: the clock of Timing and
 // OnPresented, and the one Wayland compositors report presentation on.
-func Now() int64 {
+func Now() int64 { return clockNow(clockMonotonic) }
+
+const clockMonotonic = 1
+
+func clockNow(clock int32) int64 {
 	var ts syscall.Timespec
-	syscall.Syscall(syscall.SYS_CLOCK_GETTIME, 1, uintptr(unsafe.Pointer(&ts)), 0)
+	syscall.Syscall(syscall.SYS_CLOCK_GETTIME, uintptr(clock), uintptr(unsafe.Pointer(&ts)), 0)
 	return ts.Nano()
 }
 

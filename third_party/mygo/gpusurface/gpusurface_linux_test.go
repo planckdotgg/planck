@@ -154,7 +154,7 @@ func TestPresentLive(t *testing.T) {
 	}
 	t.Logf("wayland subsurface: %v; content %dx%d at scale %v", s.Wayland(), s.native.AreaW, s.native.AreaH, s.Scale())
 	if s.Wayland() {
-		t.Logf("shm formats %v, dmabuf formats %d", len(s.way.shmFormats), len(s.way.modifiers))
+		t.Logf("shm formats %v, dmabuf formats %d, presentation clock %d", s.way.shmFormats, len(s.way.modifiers), s.way.clock.Load())
 	}
 	presented := make(chan int64, 64)
 	s.OnPresented(func(tag, submitted, at int64) { presented <- at })
@@ -183,7 +183,17 @@ func TestPresentLive(t *testing.T) {
 		if onScreen == 0 {
 			t.Fatalf("none of %d presentation reports had a frame on screen", got)
 		}
-		t.Logf("%d of 30 frames reported, %d on screen; first present to screen %.2f ms", got, onScreen, float64(tms[0].Presented-tms[0].Submitted)/1e6)
+		last := tms[0]
+		for _, tm := range tms {
+			if tm.Presented != 0 {
+				last = tm
+			}
+		}
+		glass := float64(last.Presented-last.Submitted) / 1e6
+		t.Logf("%d of 30 frames reported, %d on screen; last present to screen %.2f ms", got, onScreen, glass)
+		if glass < 0 || glass > 1000 {
+			t.Errorf("present to screen %.2f ms: the clocks disagree", glass)
+		}
 	}
 }
 
