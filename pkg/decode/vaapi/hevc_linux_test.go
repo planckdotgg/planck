@@ -171,4 +171,6 @@ func TestExportsDMABufs(t *testing.T) {
 	}
 }
 
-func fourcc(f uint32) string { return string([]byte{byte(f), byte(f >> 8), byte(f >> 16), byte(f >> 24)}) }
+func fourcc(f uint32) string {
+	return string([]byte{byte(f), byte(f >> 8), byte(f >> 16), byte(f >> 24)})
+}

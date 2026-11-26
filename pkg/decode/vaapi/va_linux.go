@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -174,6 +175,11 @@ func openDisplay(vendor gpu.Vendor) (*display, error) {
 				break
 			}
 		}
+	}
+	// Mesa's d3d12 driver under WSL initializes on the primary node only.
+	cards, _ := filepath.Glob("/dev/dri/card*")
+	for _, c := range cards {
+		nodes = append(nodes, gpu.RenderNode{Path: c})
 	}
 	var errs []error
 	for _, n := range nodes {
