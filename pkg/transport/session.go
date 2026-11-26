@@ -102,6 +102,10 @@ type SessionStats struct {
 	ClipboardSent     uint64
 	ClipboardReceived uint64
 	ClipboardRefused  uint64
+	// ShardsExpected and ShardsReceived count a client's video shards
+	// before FEC, as each frame leaves the reassembly window: the loss the
+	// host's parity is sized for.
+	ShardsExpected, ShardsReceived uint64
 }
 
 type sentFrame struct {
@@ -204,6 +208,7 @@ type Session struct {
 	stats struct {
 		sent, recv, authFail, simDrop, complete, lost, recovered, pliSent, pliRecv, feedback, inputResent, inputDup, partial atomic.Uint64
 		clipSent, clipRecv, clipRefused                                                                                      atomic.Uint64
+		shardsExpected, shardsReceived                                                                                       atomic.Uint64
 	}
 
 	clipMu  sync.Mutex
@@ -447,6 +452,8 @@ func (s *Session) Stats() SessionStats {
 		ClipboardSent:     s.stats.clipSent.Load(),
 		ClipboardReceived: s.stats.clipRecv.Load(),
 		ClipboardRefused:  s.stats.clipRefused.Load(),
+		ShardsExpected:    s.stats.shardsExpected.Load(),
+		ShardsReceived:    s.stats.shardsReceived.Load(),
 	}
 }
 
@@ -880,6 +887,8 @@ func (s *Session) onFrameFinal(st fec.FrameStats) {
 	s.finID = st.FrameID
 	s.hasFin = true
 	s.stats.recovered.Add(uint64(st.SlicesRecovered))
+	s.stats.shardsExpected.Add(uint64(st.SentShards))
+	s.stats.shardsReceived.Add(uint64(min(st.RecvShards, st.SentShards)))
 	if st.RecvShards < st.SentShards {
 		s.lossAt.Store(Mono())
 	}

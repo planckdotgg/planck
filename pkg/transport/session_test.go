@@ -556,3 +556,27 @@ func BenchmarkSessionVideo(b *testing.B) {
 		})
 	}
 }
+
+// TestShardLossCounters: the client counts video shards expected and
+// received before FEC, near the simulated 2% loss.
+func TestShardLossCounters(t *testing.T) {
+	p := newPair(t, pairOpts{server: func(c *ServerConfig) { c.SimulateLoss = 0.02 }})
+	buf := make([]byte, 64<<10)
+	for id := uint32(1); id <= 200; id++ {
+		fillFrame(buf, id)
+		if err := p.host.SendVideoFrame(wire.VideoInfo{FrameID: id, Keyframe: id == 1, CaptureTS: Mono(), EncodeTS: Mono()}, buf); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	cs := p.client.Stats()
+	if cs.ShardsExpected == 0 {
+		t.Fatal("no shards counted")
+	}
+	loss := 1 - float64(cs.ShardsReceived)/float64(cs.ShardsExpected)
+	t.Logf("%d of %d shards: %.2f%% loss, %d simulated drops", cs.ShardsReceived, cs.ShardsExpected, 100*loss, p.host.Stats().SimulatedDrops)
+	if loss < 0.005 || loss > 0.06 {
+		t.Fatalf("shard loss %.4f, want near 0.02", loss)
+	}
+}

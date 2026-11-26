@@ -1341,6 +1341,7 @@ func (cc *conn) audioLoop() {
 func (cc *conn) reportLoop() {
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
+	var loss shardLoss
 	for {
 		select {
 		case <-cc.ctx.Done():
@@ -1348,9 +1349,10 @@ func (cc *conn) reportLoop() {
 		case <-t.C:
 		}
 		s := cc.stats()
-		_ = cc.session().SendControl(&wire.StatsReport{
+		sess := cc.session()
+		_ = sess.SendControl(&wire.StatsReport{
 			RTTMicros:       uint32(s.RTTMs * 1000),
-			LossPermille:    uint16(s.LossPct * 10),
+			LossPermille:    loss.permille(sess.Stats()),
 			FramesReceived:  uint32(s.FramesReceived),
 			FramesDropped:   uint32(s.FramesDropped),
 			FramesRecovered: uint32(s.SlicesRecovered),
@@ -1358,6 +1360,24 @@ func (cc *conn) reportLoop() {
 			ReceivedKbps:    uint32(s.Kbps),
 		})
 	}
+}
+
+// shardLoss is the pre-FEC shard loss between reports, the measure the
+// host's FEC loss estimate keeps: the share of frames lost since the start
+// stayed at 0.3% for minutes after the host's estimate was back to 0.
+type shardLoss struct{ expected, received uint64 }
+
+func (l *shardLoss) permille(ss transport.SessionStats) uint16 {
+	if ss.ShardsExpected < l.expected || ss.ShardsReceived < l.received {
+		// A new session after a route switch counts from zero.
+		*l = shardLoss{}
+	}
+	exp, recv := ss.ShardsExpected-l.expected, ss.ShardsReceived-l.received
+	l.expected, l.received = ss.ShardsExpected, ss.ShardsReceived
+	if exp == 0 {
+		return 0
+	}
+	return uint16((1000*(exp-min(recv, exp)) + exp - 1) / exp)
 }
 
 func (cc *conn) stats() ClientStats {
