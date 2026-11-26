@@ -289,14 +289,7 @@ func Open(adapter gpu.Adapter, cfg encode.Config, opts Options) (*Encoder, error
 	if err != nil {
 		return nil, err
 	}
-	e, err := openEncoder(deviceTypeCUDA, ctx, adapter, cfg, opts, platform{ctx: ctx})
-	if err != nil {
-		if e == nil {
-			ccall(lib.cuCtxDestroy, ctx)
-		}
-		return nil, err
-	}
-	return e, nil
+	return openEncoder(deviceTypeCUDA, ctx, adapter, cfg, opts, platform{ctx: ctx})
 }
 
 func (e *Encoder) startEvents() error { return nil }

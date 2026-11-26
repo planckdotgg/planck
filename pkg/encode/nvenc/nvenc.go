@@ -313,25 +313,30 @@ func probe(deviceType uint32, device uintptr, adapter gpu.Adapter) (encode.Caps,
 }
 
 // openEncoder starts an encoder on device; plat holds what the platform layer
-// needs to feed it, and is released by Close.
+// needs to feed it, and is released by Close, or here when the encoder
+// does not open.
 func openEncoder(deviceType uint32, device uintptr, adapter gpu.Adapter, cfg encode.Config, opts Options, plat platform) (*Encoder, error) {
-	if err := cfg.Validate(); err != nil {
+	fail := func(err error) (*Encoder, error) {
+		plat.close()
 		return nil, err
 	}
+	if err := cfg.Validate(); err != nil {
+		return fail(err)
+	}
 	if cfg.Adapter != 0 && cfg.Adapter != adapter.LUID {
-		return nil, errors.New("nvenc: encode adapter must own the device; copy frames across adapters first")
+		return fail(errors.New("nvenc: encode adapter must own the device; copy frames across adapters first"))
 	}
 	a, err := loadAPI()
 	if err != nil {
-		return nil, err
+		return fail(err)
 	}
 	codec, err := codecGUID(cfg.Codec)
 	if err != nil {
-		return nil, err
+		return fail(err)
 	}
 	enc, err := openSession(a, deviceType, device)
 	if err != nil {
-		return nil, err
+		return fail(err)
 	}
 	e := &Encoder{
 		api: a, enc: enc, adapter: adapter, cfg: cfg, opts: opts, codec: codec, plat: plat,
