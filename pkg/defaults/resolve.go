@@ -975,11 +975,19 @@ func (r *resolver) present() {
 	default:
 		r.decide("directDisplay", "off", SourceAuto, "the client has no direct display path")
 	}
-	r.p.VSync = r.o.VSyncMode == ToggleOn
+	// VSync is the client's frame pacing: on shows one frame a refresh in
+	// step with the display (player.PaceSmooth), off each frame at once.
 	src = r.source(func(o UserOverrides) string { return string(o.VSyncMode) })
-	why := "lowest latency"
-	if src != SourceAuto {
+	why := "lowest latency on the LAN"
+	switch {
+	case src != SourceAuto:
+		r.p.VSync = r.o.VSyncMode == ToggleOn
 		why = "override"
+	case r.p.Route != RouteLAN:
+		// Frames come with the route's jitter; at its latency a refresh
+		// of smoothing costs relatively little.
+		r.p.VSync = true
+		why = "smooth pacing over the route's jitter"
 	}
 	r.decide("vsync", onOff(r.p.VSync), src, why)
 }

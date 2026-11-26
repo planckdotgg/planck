@@ -46,7 +46,7 @@ var (
 	knobDirect = knob{id: "metalDirectDisplay", title: "Direct to display", desc: "In full screen on macOS, the video skips the compositor while the stream controls are closed.",
 		values: []string{"auto", "on", "off"}, labels: []string{"Auto", "On", "Off"},
 		field: func(o *defaults.UserOverrides) *string { return (*string)(&o.MetalDirectDisplay) }}
-	knobVSync = knob{id: "vsyncMode", title: "VSync", desc: "Off shows each frame at once and may tear. Auto is off.",
+	knobVSync = knob{id: "vsyncMode", title: "VSync", desc: "On shows one frame a refresh, in step with the display: smoother, up to a refresh slower. Off shows each frame at once. Auto is off on the LAN.",
 		values: []string{"auto", "off", "on"}, labels: []string{"Auto", "Off", "On"},
 		field: func(o *defaults.UserOverrides) *string { return (*string)(&o.VSyncMode) }}
 	knobHDR = knob{id: "hdr10", title: "HDR10 output", desc: "Auto streams 10-bit BT.2020 PQ when the host desktop and this display are both in HDR.",
