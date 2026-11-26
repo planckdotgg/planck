@@ -37,3 +37,19 @@ func TestBoostThread(t *testing.T) {
 		t.Fatalf("priority %d after revert, want %d", p, before)
 	}
 }
+
+// TestDisablePowerThrottling: the process leaves EcoQoS for good. A
+// throttled background host stalled every thread 20-140 ms every few
+// seconds.
+func TestDisablePowerThrottling(t *testing.T) {
+	if err := DisablePowerThrottling(); err != nil {
+		t.Fatal(err)
+	}
+	control, state, err := powerThrottled()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if control&powerThrottlingOptOut != powerThrottlingOptOut || state != 0 {
+		t.Fatalf("throttling control %#x state %#x, want control %#x with state 0", control, state, powerThrottlingOptOut)
+	}
+}

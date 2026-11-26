@@ -1,8 +1,18 @@
 package rtprio
 
-import "github.com/planckdotgg/planck/internal/win"
+import (
+	"sync"
+
+	"github.com/planckdotgg/planck/internal/win"
+)
+
+var unthrottle sync.Once
 
 func boost() error {
-	_, err := win.BoostThread("Games")
+	var err error
+	unthrottle.Do(func() { err = win.DisablePowerThrottling() })
+	if _, berr := win.BoostThread("Games"); berr != nil {
+		return berr
+	}
 	return err
 }

@@ -7,7 +7,8 @@ import "runtime"
 
 // Boost locks the calling goroutine to its OS thread and raises that
 // thread's class: QOS_CLASS_USER_INTERACTIVE on macOS, the MMCSS "Games"
-// task on Windows. The goroutine must return still locked, which ends the
+// task on Windows, where the first call also takes the process out of
+// power throttling. The goroutine must return still locked, which ends the
 // thread, so the class never reaches another goroutine. A failure leaves
 // the thread locked at its normal class.
 func Boost() error {
