@@ -571,7 +571,9 @@ func (b *backend) resolveTarget(ctx context.Context, id string) (session.Target,
 	}
 	for _, last := range []string{p.LastLANAddr, p.LastTailscaleAddr} {
 		ap, err := netip.ParseAddrPort(last)
-		if err != nil {
+		if err != nil || t.HostID == "" {
+			// With no host ID the race cannot tell this host from
+			// another answering discovery at the IP; it dials t.Addr.
 			continue
 		}
 		c := discovery.Candidate{HostID: t.HostID, Kind: kindOf(ap.Addr()), Addr: netip.AddrPortFrom(ap.Addr(), b.finder.port)}

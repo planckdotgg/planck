@@ -521,3 +521,29 @@ func TestIdentifyKeepsTypedPort(t *testing.T) {
 		t.Errorf("no port typed: %+v, want the answering host's control port", tgt)
 	}
 }
+
+// TestResolveAddressPinRacesNoStranger: a host paired by address, which
+// never said its host ID, is dialed at its address. Probing discovery at
+// its IP could only be checked against an ID it never gave, so whatever
+// host answers there, as bigboi's installed host did for a test host on
+// 127.0.0.1, would win the race and fail on the pinned certificate.
+func TestResolveAddressPinRacesNoStranger(t *testing.T) {
+	dir := t.TempDir()
+	err := config.UpdateClientConfig(dir, func(c *config.ClientConfig) error {
+		return c.Pin(config.PinnedHost{HostID: "addr:127.0.0.1:5555", CertFingerprint: strings.Repeat("ef", 32),
+			LastAddr: "127.0.0.1:5555", LastLANAddr: "127.0.0.1:5555"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := newTestBackend(t, dir, nil)
+	tgt, _ := b.resolveTarget(context.Background(), "addr:127.0.0.1:5555")
+	for _, c := range tgt.Candidates {
+		if c.HostID == "" {
+			t.Errorf("candidate %+v has no host ID to check the answer against", c)
+		}
+	}
+	if tgt.Addr != "127.0.0.1:5555" {
+		t.Errorf("address %q, want the pinned one", tgt.Addr)
+	}
+}
