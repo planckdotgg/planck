@@ -10,6 +10,10 @@ import (
 	"github.com/planckdotgg/planck/pkg/defaults"
 )
 
+// routeFallback finds the interface when the kernel has no source address
+// toward the peer; a platform sets it from its routing table.
+var routeFallback func(netip.Addr) (net.Interface, error)
+
 var errNoInterface = errors.New("linkinfo: no interface holds the route's local address")
 
 // Route returns the local interface the system routes to remote through.
@@ -31,6 +35,9 @@ func Route(remote netip.Addr) (name string, link defaults.Link, err error) {
 func routeInterface(remote netip.Addr) (net.Interface, error) {
 	c, err := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(netip.AddrPortFrom(remote.Unmap(), 9)))
 	if err != nil {
+		if routeFallback != nil {
+			return routeFallback(remote)
+		}
 		return net.Interface{}, err
 	}
 	local := c.LocalAddr().(*net.UDPAddr).AddrPort().Addr().Unmap()

@@ -6,8 +6,11 @@ INSTALL_NO_LAUNCH = $(INSTALL)
 else ifeq ($(shell uname -s),Darwin)
 INSTALL = ./scripts/install-macos.sh
 INSTALL_NO_LAUNCH = ./scripts/install-macos.sh --no-launch
+else ifeq ($(shell uname -s),Linux)
+INSTALL = ./scripts/install-linux.sh
+INSTALL_NO_LAUNCH = $(INSTALL)
 else
-INSTALL = @echo "install is supported on macOS and Windows only"; exit 1
+INSTALL = @echo "install is supported on macOS, Windows and Linux only"; exit 1
 INSTALL_NO_LAUNCH = $(INSTALL)
 endif
 

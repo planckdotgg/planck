@@ -24,6 +24,16 @@ func TestHostname(t *testing.T) {
 		}
 		return
 	}
+	if runtime.GOOS == "linux" {
+		if b, err := os.ReadFile("/etc/machine-info"); err == nil {
+			if want := prettyHostname(b); want != "" {
+				if n != want {
+					t.Fatalf("Hostname() = %q, want PRETTY_HOSTNAME %q", n, want)
+				}
+				return
+			}
+		}
+	}
 	if h, _ := os.Hostname(); n != strings.TrimSuffix(h, ".local") {
 		t.Fatalf("Hostname() = %q, os.Hostname() = %q", n, h)
 	}
@@ -71,5 +81,24 @@ func TestUpdateClientConfigSerializes(t *testing.T) {
 	}
 	if p := c.PinnedHosts["h"]; p.LastLANAddr != "192.168.1.2:47701" || p.LastTailscaleAddr != "100.64.0.2:47701" {
 		t.Fatalf("pin %+v", p)
+	}
+}
+
+func TestPrettyHostname(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"", ""},
+		{"CHASSIS=desktop\nPRETTY_HOSTNAME=\"Chris's Desktop\"\n", "Chris's Desktop"},
+		{"PRETTY_HOSTNAME='Living Room PC'\n", "Living Room PC"},
+		{"PRETTY_HOSTNAME=plain\n", "plain"},
+		{"  PRETTY_HOSTNAME = \"spaced\"  \n", "spaced"},
+		{"PRETTY_HOSTNAME=\"say \\\"hi\\\"\"\n", `say "hi"`},
+		{"# PRETTY_HOSTNAME=commented\nICON_NAME=computer\n", ""},
+		{"PRETTY_HOSTNAME=\"\"\n", ""},
+		{"OTHER_PRETTY_HOSTNAME=x\n", ""},
+	}
+	for _, c := range cases {
+		if got := prettyHostname([]byte(c.in)); got != c.want {
+			t.Errorf("prettyHostname(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }

@@ -1,0 +1,12 @@
+# Lets the logged-in user create the virtual keyboard, mouse and gamepads
+# planck-host uses to inject a client's input. Install as
+# /etc/udev/rules.d/60-planck-uinput.rules, then:
+#
+#   echo uinput | sudo tee /etc/modules-load.d/uinput.conf
+#   sudo modprobe uinput
+#   sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=uinput
+#
+# and log in again. uaccess gives the user on the active seat access; the
+# group fallback covers headless and remote sessions: add yourself to
+# "input" (sudo usermod -aG input $USER) if the host runs without a seat.
+KERNEL=="uinput", SUBSYSTEM=="misc", OPTIONS+="static_node=uinput", TAG+="uaccess", GROUP="input", MODE="0660"
