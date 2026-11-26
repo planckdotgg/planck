@@ -48,6 +48,11 @@ type ClientConfig struct {
 	// CursorShape offers wire.FeatureCursorShape: the Control handler
 	// takes wire.CursorShape.
 	CursorShape bool
+	// RefInvalidation offers wire.FeatureRefInvalidate: the application
+	// sends wire.RefInvalidate for each lost frame and skips frames up to
+	// the next Recovery one. With a host that offers it too, the session
+	// sends no PLI for a lost frame.
+	RefInvalidation bool
 }
 
 // Dial connects to a host, authenticates, negotiates the session and brings
@@ -131,6 +136,9 @@ func clientHandshake(ctx context.Context, conn *quic.Conn, cfg ClientConfig) (*S
 	}
 	if cfg.CursorShape {
 		features |= wire.FeatureCursorShape
+	}
+	if cfg.RefInvalidation {
+		features |= wire.FeatureRefInvalidate
 	}
 	if err := wire.WriteMessage(ctrl, &wire.Hello{Version: wire.Version, Role: wire.RoleClient, Name: cfg.Name, Features: features}); err != nil {
 		return nil, err
@@ -225,6 +233,7 @@ func clientHandshake(ctx context.Context, conn *quic.Conn, cfg ClientConfig) (*S
 		pingInterval: cfg.PingInterval,
 		simLoss:      cfg.SimulateLoss,
 		peerFeatures: hello.Features,
+		refInv:       cfg.RefInvalidation && hello.Features&wire.FeatureRefInvalidate != 0,
 		peerName:     hello.Name,
 		peerCaps:     hostCaps,
 		profile:      profile,

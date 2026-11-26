@@ -343,6 +343,8 @@ type conn struct {
 	// queue may grow to warmupQueue. needKey discards frames until the next
 	// keyframe, after one was lost.
 	decoding, needKey atomic.Bool
+	// ref skips the frames after a lost one, with reference invalidation.
+	ref refRecovery
 
 	trace *tracer[clientTraceRow]
 }
@@ -618,7 +620,7 @@ func (c *Client) dialRoute(ctx context.Context, cc *conn, r resolved) (*route, e
 	sess, err := transport.Dial(ctx, r.addr, transport.ClientConfig{
 		Certificate: cert, Name: cfg.Name, VerifyHost: verify, Auth: method, PIN: cfg.PIN, Session: req,
 		HandshakeTimeout: cfg.HandshakeTimeout, SimulateLoss: cfg.SimulateLoss, LANPath: r.kind == discovery.PathLANDirect,
-		Capabilities: capsJSON, StreamSwitch: true, CursorShape: cfg.OnCursorShape != nil,
+		Capabilities: capsJSON, StreamSwitch: true, CursorShape: cfg.OnCursorShape != nil, RefInvalidation: true,
 		Handlers: transport.Handlers{
 			VideoFrame: cc.onFrame,
 			Audio:      cc.onAudio,
@@ -1082,6 +1084,20 @@ func (cc *conn) onFrame(info wire.VideoInfo, frame []byte) {
 		}
 		cc.needKey.Store(false)
 	}
+	if sess.RefInvalidation() && !cc.intra.Load() {
+		a := cc.ref.admit(info, now)
+		if a.invalidate {
+			_ = sess.SendControl(&wire.RefInvalidate{FrameID: a.invalidFrom})
+		}
+		switch {
+		case a.giveUp:
+			cc.drop()
+			return
+		case !a.decode:
+			cc.dropped.Add(1)
+			return
+		}
+	}
 	limit := frameQueue
 	if !cc.decoding.Load() {
 		limit = warmupQueue
@@ -1090,12 +1106,12 @@ func (cc *conn) onFrame(info wire.VideoInfo, frame []byte) {
 	select {
 	case fb = <-cc.free:
 	default:
-		cc.drop()
+		cc.lose(sess, info, now)
 		return
 	}
 	if len(cc.frames) >= limit {
 		cc.free <- fb
-		cc.drop()
+		cc.lose(sess, info, now)
 		return
 	}
 	fb.info, fb.arrival = info, now
@@ -1116,8 +1132,21 @@ func (cc *conn) onFrame(info wire.VideoInfo, frame []byte) {
 	case cc.frames <- fb:
 	default:
 		cc.free <- fb
-		cc.drop()
+		cc.lose(sess, info, now)
 	}
+}
+
+// lose drops a frame that was admitted to decode: the frames after it
+// wait for a Recovery frame, or with no reference invalidation for a
+// keyframe.
+func (cc *conn) lose(sess *transport.Session, info wire.VideoInfo, now int64) {
+	if !sess.RefInvalidation() || cc.intra.Load() || info.Keyframe {
+		cc.drop()
+		return
+	}
+	cc.dropped.Add(1)
+	cc.ref.lose(info.FrameID, now)
+	_ = sess.SendControl(&wire.RefInvalidate{FrameID: info.FrameID})
 }
 
 func (cc *conn) drop() {

@@ -130,6 +130,11 @@ const (
 	// moves the stream to another of its displays and announces it in a
 	// Stream message.
 	FeatureSwitchDisplay uint32 = 1 << 13
+	// FeatureRefInvalidate, offered by both ends, says a client that loses
+	// a frame sends RefInvalidate instead of PLI and skips frames up to
+	// the host's next Recovery frame (or keyframe), and the host answers
+	// it so; neither end then turns a lost frame into a keyframe request.
+	FeatureRefInvalidate uint32 = 1 << 14
 )
 
 type AuthMethod uint8

@@ -131,6 +131,8 @@ type Session struct {
 	peerName     string
 	peerCaps     []byte
 	profile      []byte
+	// refInv: both ends offered wire.FeatureRefInvalidate.
+	refInv bool
 	// intra marks a PyroWave stream: every frame decodes alone, so a lost
 	// chunk is delivered as zeros instead of costing a keyframe.
 	intra atomic.Bool
@@ -239,6 +241,7 @@ type sessionParams struct {
 	peerName     string
 	peerCaps     []byte
 	profile      []byte
+	refInv       bool
 }
 
 func newSession(p sessionParams) (*Session, error) {
@@ -274,6 +277,7 @@ func newSession(p sessionParams) (*Session, error) {
 		peerFP:       p.peerFP,
 		h:            p.handlers,
 		peerFeatures: p.peerFeatures,
+		refInv:       p.refInv,
 		peerName:     p.peerName,
 		peerCaps:     p.peerCaps,
 		profile:      p.profile,
@@ -359,6 +363,11 @@ func (s *Session) Clock() *ClockEstimator      { return &s.clock }
 func (s *Session) RTT() time.Duration          { return s.clock.RTT() }
 func (s *Session) Done() <-chan struct{}       { return s.done }
 func (s *Session) RemoteControlAddr() net.Addr { return s.conn.RemoteAddr() }
+
+// RefInvalidation reports whether both ends offered
+// wire.FeatureRefInvalidate: lost frames are recovered with RefInvalidate
+// and Recovery frames, not keyframes.
+func (s *Session) RefInvalidation() bool { return s.refInv }
 
 // SocketBuffers are the media socket's buffer sizes the kernel granted.
 func (s *Session) SocketBuffers() SocketBuffers { return s.sockBufs }
@@ -880,7 +889,9 @@ func (s *Session) onFrameFinal(st fec.FrameStats) {
 	s.finLost = true
 	s.pendingFB = true
 	s.stats.lost.Add(1)
-	if s.intra.Load() {
+	if s.intra.Load() || s.refInv {
+		// An intra frame loses nothing past itself; with reference
+		// invalidation the application asks for the frame itself.
 		return
 	}
 	now := Mono()
@@ -927,7 +938,7 @@ func (s *Session) handleFeedback(fb wire.Feedback, now int64) {
 	d := s.rc.Update(a)
 	s.rcMu.Unlock()
 	s.target.Store(int64(d.TargetKbps))
-	if d.RequestKeyframe {
+	if d.RequestKeyframe && !s.refInv {
 		s.keyframe.Store(true)
 	}
 }

@@ -564,6 +564,9 @@ func (h *Host) Start(ctx context.Context) error {
 		MediaAddr:    net.JoinHostPort(mediaHost, fmt.Sprint(h.cfg.MediaPort)),
 		FECMinLoss:   h.cfg.FECMinLoss,
 		SimulateLoss: h.cfg.SimulateLoss,
+		// The video loop answers RefInvalidate, with a keyframe when the
+		// encoder cannot invalidate.
+		RefInvalidation: true,
 		Handlers: transport.Handlers{
 			Input:   h.onInput,
 			Control: h.onControl,

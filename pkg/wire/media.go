@@ -38,7 +38,10 @@ const (
 
 var ErrBadDatagram = errors.New("wire: bad media datagram")
 
-const flagKeyframe = 1
+const (
+	flagKeyframe = 1
+	flagRecovery = 2
+)
 
 // VideoHeaderLen is the plaintext header in front of every video shard.
 const VideoHeaderLen = 36
@@ -53,6 +56,10 @@ type VideoInfo struct {
 	CaptureTS  int64
 	EncodeTS   int64
 	SliceCount uint8
+	// Recovery marks the first frame encoded after a RefInvalidate: it
+	// predicts only from frames before the invalidated one, so a client
+	// that skipped the frames since decodes again from it.
+	Recovery bool
 	// Epoch is the stream the frame belongs to: 0 from the start, and the
 	// Epoch of each Stream message after it.
 	Epoch uint8
@@ -80,6 +87,9 @@ func (h *VideoHeader) Put(b []byte) {
 	if h.Keyframe {
 		b[1] = flagKeyframe
 	}
+	if h.Recovery {
+		b[1] |= flagRecovery
+	}
 	b[2] = h.SliceIndex
 	b[3] = h.SliceCount
 	b[4] = h.BlockIndex
@@ -102,6 +112,7 @@ func (h *VideoHeader) Parse(b []byte) error {
 		return ErrBadDatagram
 	}
 	h.Keyframe = b[1]&flagKeyframe != 0
+	h.Recovery = b[1]&flagRecovery != 0
 	h.SliceIndex = b[2]
 	h.SliceCount = b[3]
 	h.BlockIndex = b[4]

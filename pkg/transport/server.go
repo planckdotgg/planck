@@ -61,6 +61,10 @@ type ServerConfig struct {
 	// SwitchDisplay offers wire.FeatureSwitchDisplay: the Control handler
 	// takes wire.SwitchDisplay.
 	SwitchDisplay bool
+	// RefInvalidation offers wire.FeatureRefInvalidate: the Control
+	// handler takes wire.RefInvalidate and marks the frame encoded after it
+	// Recovery.
+	RefInvalidation bool
 	// MediaAddr is the local address for media sockets; default ":0".
 	MediaAddr string
 	// MaxDatagram caps sealed media datagrams. Zero takes
@@ -274,6 +278,9 @@ func (sv *Server) handshake(parent context.Context, conn *quic.Conn) (*Session, 
 	if sv.cfg.SwitchDisplay {
 		features |= wire.FeatureSwitchDisplay
 	}
+	if sv.cfg.RefInvalidation {
+		features |= wire.FeatureRefInvalidate
+	}
 	if err := wire.WriteMessage(ctrl, &wire.Hello{Version: wire.Version, Role: wire.RoleHost, Name: *sv.name.Load(), Features: features}); err != nil {
 		return nil, err
 	}
@@ -387,6 +394,7 @@ func (sv *Server) handshake(parent context.Context, conn *quic.Conn) (*Session, 
 		fecPolicy:    policy,
 		parity:       resolved.Parity,
 		peerFeatures: hello.Features,
+		refInv:       sv.cfg.RefInvalidation && hello.Features&wire.FeatureRefInvalidate != 0,
 		peerName:     hello.Name,
 		peerCaps:     peerCaps,
 		profile:      resolved.Profile,

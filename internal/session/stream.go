@@ -47,6 +47,9 @@ type stream struct {
 	inputDone bool
 
 	invalid chan uint32
+	// keyNeeded asks the video loop for a keyframe: an invalidation that
+	// did not fit in invalid.
+	keyNeeded atomic.Bool
 	// epoch counts the streams a resize switched to; every frame carries
 	// it. Only the video loop touches it.
 	epoch uint8
@@ -557,7 +560,7 @@ func (st *stream) invalidate(frameID uint32) {
 	select {
 	case st.invalid <- frameID:
 	default:
-		st.sess.SendControl(&wire.PLI{})
+		st.keyNeeded.Store(true)
 	}
 }
 
@@ -590,17 +593,16 @@ func (st *stream) videoLoop() {
 		}
 	}()
 	// Frames go out from a sender goroutine of their own; one that falls
-	// two frames behind drops the oldest, which the encoder then stops
-	// predicting from.
-	send := newVideoSender(st.sess, 2, func(id uint32) {
-		st.dropped.Add(1)
-		st.invalidate(id)
-	}, st.frameSent)
+	// two frames behind drops the oldest, and the client's RefInvalidate
+	// for the gap stops the encoder predicting from it.
+	send := newVideoSender(st.sess, 2, func(uint32) { st.dropped.Add(1) }, st.frameSent)
 	defer send.close()
 	buf := send.buffer()
 	kbps := st.params.BitrateKbps
 	var frameID uint32
 	forceKey := true
+	// recovery marks the next frame encoded after an invalidation.
+	recovery := false
 	mirror := fec.NewPolicy()
 	mirror.MinLoss = st.h.cfg.FECMinLoss
 	shard := st.sess.ShardSize()
@@ -657,10 +659,11 @@ func (st *stream) videoLoop() {
 				info.Adapter.Name, info.Source, info.Power, info.GPUPriority)
 			forceKey = true
 		}
-		if st.sess.KeyframeRequested() {
+		if st.sess.KeyframeRequested() || st.keyNeeded.Swap(false) {
 			forceKey = true
 		}
-		forceKey = st.applyInvalidations(pipe) || forceKey
+		key, rec := st.applyInvalidations(pipe, frameID)
+		forceKey, recovery = forceKey || key, recovery || rec
 		var setRate int64
 		if t := st.sess.TargetBitrateKbps(); t > 0 && abs(t-kbps)*20 > kbps {
 			t0 := transport.Mono()
@@ -674,7 +677,7 @@ func (st *stream) videoLoop() {
 		var err error
 		streamed := false
 		if sp, ok := pipe.(slicePipe); ok && st.params.SubFrame {
-			out.start(frameID)
+			out.start(frameID, recovery)
 			pkt, captureTS, streamed, err = sp.NextSlices(captureWait, forceKey, buf, emit)
 			if err != nil && out.begun {
 				// Some slices of this frame went out: its ID is taken, and
@@ -715,7 +718,8 @@ func (st *stream) videoLoop() {
 			forceKey = false
 			st.keyframes.Add(1)
 		}
-		info := wire.VideoInfo{FrameID: frameID, Keyframe: pkt.Keyframe, CaptureTS: captureTS, EncodeTS: transport.Mono(), Epoch: st.epoch}
+		info := wire.VideoInfo{FrameID: frameID, Keyframe: pkt.Keyframe, Recovery: recovery && !pkt.Keyframe, CaptureTS: captureTS, EncodeTS: transport.Mono(), Epoch: st.epoch}
+		recovery = false
 		slot := &st.pts[frameID%ptsRingSize]
 		slot.id, slot.pts = frameID, pkt.PTS
 		job := &sendJob{kind: sendFrame, info: info, data: pkt.Data, buf: pkt.Data, sent: true}
@@ -779,19 +783,22 @@ type slicePipe interface {
 // slice of a frame carries the same VideoInfo, stamped when the first one
 // was ready: EncodeTS is then when sending began.
 type sliceSender struct {
-	send   *videoSender
-	slices uint8
-	epoch  uint8
-	frame  uint32
-	info   wire.VideoInfo
-	begun  bool
+	send     *videoSender
+	slices   uint8
+	epoch    uint8
+	frame    uint32
+	recovery bool
+	info     wire.VideoInfo
+	begun    bool
 }
 
-func (s *sliceSender) start(frame uint32) { s.frame, s.begun = frame, false }
+func (s *sliceSender) start(frame uint32, recovery bool) {
+	s.frame, s.recovery, s.begun = frame, recovery, false
+}
 
 func (s *sliceSender) emit(captureTS int64, index int, slice []byte, key bool) error {
 	if !s.begun {
-		s.info = wire.VideoInfo{FrameID: s.frame, Keyframe: key, CaptureTS: captureTS, EncodeTS: transport.Mono(), SliceCount: s.slices, Epoch: s.epoch}
+		s.info = wire.VideoInfo{FrameID: s.frame, Keyframe: key, Recovery: s.recovery && !key, CaptureTS: captureTS, EncodeTS: transport.Mono(), SliceCount: s.slices, Epoch: s.epoch}
 		s.begun = true
 	}
 	s.send.push(&sendJob{kind: sendSlice, info: s.info, slice: index, data: slice})
@@ -815,19 +822,36 @@ func (st *stream) frameSent(j *sendJob, err error) {
 	}
 }
 
-// applyInvalidations forwards lost reference frames to the encoder and
-// reports whether only a keyframe can recover.
-func (st *stream) applyInvalidations(pipe VideoPipe) bool {
-	key := false
+// maxInvalidSpan is how many frames back an invalidation may reach: NVENC
+// keeps refDPB (5) pictures, and invalidating more than four of them may
+// leave it nothing the client still holds to predict from.
+const maxInvalidSpan = 4
+
+// applyInvalidations tells the encoder to stop predicting from each frame
+// a client lost and every frame encoded since, up to next, the frame about
+// to be encoded. key says only a keyframe recovers; recovery that the next
+// frame recovers without one, and must say so (wire.VideoInfo.Recovery).
+func (st *stream) applyInvalidations(pipe VideoPipe, next uint32) (key, recovery bool) {
 	for {
 		select {
 		case id := <-st.invalid:
-			slot := st.pts[id%ptsRingSize]
-			if slot.id != id || pipe.InvalidateRefs(slot.pts) != nil {
+			span := int32(next - id)
+			switch {
+			case key || span <= 0:
+			case span > maxInvalidSpan:
 				key = true
+			default:
+				for f := id; f != next; f++ {
+					slot := st.pts[f%ptsRingSize]
+					if slot.id != f || pipe.InvalidateRefs(slot.pts) != nil {
+						key = true
+						break
+					}
+				}
+				recovery = true
 			}
 		default:
-			return key
+			return key, recovery && !key
 		}
 	}
 }
