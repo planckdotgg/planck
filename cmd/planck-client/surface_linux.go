@@ -8,6 +8,8 @@ import (
 	mui "github.com/egoist/mygo/ui"
 
 	"github.com/planckdotgg/planck/internal/ui"
+	"github.com/planckdotgg/planck/pkg/encode/all"
+	"github.com/planckdotgg/planck/pkg/gpu"
 	"github.com/planckdotgg/planck/pkg/player"
 )
 
@@ -51,5 +53,20 @@ func (h *surfaceHost) picture(c *mui.Context) {
 		Background(mui.RGBA(0, 0, 0, 1)).IgnoreInput(true)
 }
 
-// localEncoders: a Linux machine hosts no stream yet.
-func localEncoders() []ui.EncoderInfo { return nil }
+// localEncoders lists the GPUs with an encoder backend, by name.
+func localEncoders() []ui.EncoderInfo {
+	var out []ui.EncoderInfo
+	seen := map[string]bool{}
+	for _, d := range all.Devices() {
+		api := "VA-API"
+		if d.Adapter.Vendor == gpu.VendorNVIDIA {
+			api = "NVENC"
+		}
+		if seen[d.Adapter.Name+api] {
+			continue
+		}
+		seen[d.Adapter.Name+api] = true
+		out = append(out, ui.EncoderInfo{GPU: d.Adapter.Name, API: api})
+	}
+	return out
+}

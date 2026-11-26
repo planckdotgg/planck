@@ -43,8 +43,9 @@ func needX(t *testing.T) {
 }
 
 // TestCaptureFrames grabs the primary monitor at 60 Hz and checks the
-// frames are BGRX of the monitor's size with something drawn in them,
-// and that the source paces them.
+// frames are BGRX of the monitor's size, hold a rectangle drawn on the
+// root window where it was drawn, and come paced. Rootless XWayland
+// keeps no root image, so there only size and pacing are checked.
 func TestCaptureFrames(t *testing.T) {
 	needX(t)
 	all, err := Displays()
@@ -58,6 +59,8 @@ func TestCaptureFrames(t *testing.T) {
 	}
 	defer src.Close()
 	d := src.Display()
+	xwayland := XWayland()
+	t.Logf("XWayland: %v", xwayland)
 	drawMark(t, d)
 	var took []time.Duration
 	start := time.Now()
@@ -71,7 +74,7 @@ func TestCaptureFrames(t *testing.T) {
 			t.Fatalf("frame %d: %dx%d %v", i, f.Width, f.Height, f.Format)
 		}
 		took = append(took, f.Acquired-f.Presented)
-		if i == 2 {
+		if i == 2 && !xwayland {
 			checkMark(t, f, d)
 		}
 		src.Release()

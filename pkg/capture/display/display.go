@@ -1,6 +1,7 @@
 // Package display lists the capturable displays of this machine and opens
 // one with the platform's capture backend: DXGI Desktop Duplication on
-// Windows, ScreenCaptureKit on macOS.
+// Windows, ScreenCaptureKit on macOS, and MIT-SHM or the desktop portal's
+// PipeWire stream on Linux.
 package display
 
 import (
@@ -14,7 +15,8 @@ type Options struct {
 	// (Windows).
 	HDR bool
 	// Width, Height and FPS set the stream size and rate where the backend
-	// scales (macOS). Zero takes the display's own.
+	// scales (macOS); FPS is also the rate X11 capture polls at. Zero
+	// takes the display's own.
 	Width, Height, FPS int
 	// NV12 asks for 4:2:0 frames where the backend converts (macOS); BGRA
 	// otherwise.

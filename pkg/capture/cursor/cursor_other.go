@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !(linux && !android && (amd64 || arm64))
 
 package cursor
 

@@ -30,7 +30,8 @@ func (v Vendor) String() string {
 }
 
 // LUID identifies an adapter for the lifetime of a boot on Windows (DXGI
-// adapter LUID). On macOS it is the Metal registry ID.
+// adapter LUID). On macOS it is the Metal registry ID; on Linux the device
+// number of its DRM render node (see RenderNodes).
 type LUID uint64
 
 type Adapter struct {
@@ -48,6 +49,7 @@ type Device struct {
 	Adapter Adapter
 	// Handle is the ID3D11Device* on Windows. It is 0 on macOS, where
 	// IOSurfaces move between Metal, VideoToolbox and ScreenCaptureKit on
-	// their own.
+	// their own, and on Linux, where frames are DMA-BUFs or memory and
+	// each encoder opens its own context on the adapter.
 	Handle uintptr
 }

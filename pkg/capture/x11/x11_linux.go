@@ -35,7 +35,7 @@ var lib struct {
 
 	initThreads, openDisplay, closeDisplay, defaultScreen, rootWindow, defaultVisual uintptr
 	defaultDepth, displayWidth, displayHeight, xfree, xsync, getAtomName             uintptr
-	queryPointer, resourceManagerString, setErrorHandler                             uintptr
+	queryPointer, resourceManagerString, setErrorHandler, queryExtension             uintptr
 
 	shmQueryExtension, shmCreateImage, shmAttach, shmDetach, shmGetImage uintptr
 
@@ -77,6 +77,7 @@ func load() error {
 			{x, &lib.queryPointer, "XQueryPointer"},
 			{x, &lib.resourceManagerString, "XResourceManagerString"},
 			{x, &lib.setErrorHandler, "XSetErrorHandler"},
+			{x, &lib.queryExtension, "XQueryExtension"},
 			{ext, &lib.shmQueryExtension, "XShmQueryExtension"},
 			{ext, &lib.shmCreateImage, "XShmCreateImage"},
 			{ext, &lib.shmAttach, "XShmAttach"},
@@ -166,6 +167,21 @@ func Available() error {
 	}
 	c.close()
 	return nil
+}
+
+// XWayland reports whether the X server is XWayland. A rootless one, as
+// a Wayland desktop runs for its X clients, composes no root image:
+// capture there goes through the desktop portal.
+func XWayland() bool {
+	c, err := connect()
+	if err != nil {
+		return false
+	}
+	defer c.close()
+	name := []byte("XWAYLAND\x00")
+	var op, ev, er int32
+	return call(lib.queryExtension, c.dpy, uintptr(unsafe.Pointer(&name[0])),
+		uintptr(unsafe.Pointer(&op)), uintptr(unsafe.Pointer(&ev)), uintptr(unsafe.Pointer(&er))) != 0
 }
 
 // conn is one Xlib connection to the default screen.
