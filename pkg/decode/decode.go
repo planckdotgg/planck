@@ -84,6 +84,11 @@ type Target struct {
 	// and present run in order without a fence. 0 on Windows.
 	Queue   uintptr
 	Adapter gpu.Adapter
+	// Accepts, on Linux, reports whether the presenting surface shows
+	// DMA-BUFs of a DRM fourcc and modifier as they are. A decoder whose
+	// pictures it does not accept (or with Accepts nil) copies them into
+	// memory (capture.DMABuf.CPU).
+	Accepts func(fourcc uint32, modifier uint64) bool
 }
 
 // Backend opens a decoder for one codec on a Target.
