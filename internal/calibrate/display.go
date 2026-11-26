@@ -61,7 +61,8 @@ func (r *run) display(ctx context.Context) error {
 		v := &vs[i]
 		r.report(PhaseDisplay, v.Name, 75+25*i/len(vs))
 		o := defaults.Merge(defaults.Merge(pick, v.Overrides), r.o.User)
-		st, err := r.measure(ctx, o, true, r.timing.DisplayMeasure)
+		st, hints, err := r.measureShown(ctx, o, true, r.timing.DisplayMeasure)
+		v.hints = hints
 		if err != nil {
 			if ctx.Err() != nil || errors.Is(err, transport.ErrCalibrationUnsupported) {
 				return err
@@ -87,12 +88,8 @@ func (r *run) display(ctx context.Context) error {
 		return nil
 	}
 	dp.Status = DisplayMeasured
-	var hints *DisplayHints
-	if r.o.Hints != nil {
-		h := r.o.Hints()
-		hints = &h
-	}
-	r.res.Warnings = append(r.res.Warnings, displayWarnings(dp.Variants[dp.Best], hints)...)
+	best := dp.Variants[dp.Best]
+	r.res.Warnings = append(r.res.Warnings, displayWarnings(best, best.hints)...)
 	return nil
 }
 

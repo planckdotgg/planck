@@ -796,4 +796,27 @@ type Backend interface {
 	HostGamepadSlots() []HostGamepadSlot
 	ResetGamepadSlots() error
 	ReorderGamepadSlot(from, to int) error
+
+	// StartCalibration measures the route to hostID, a paired HostInfo.ID,
+	// and picks the stream settings for it, in the background for about 40
+	// seconds; Calibration reports it as it goes, and onChange hears each
+	// step. Its display phase shows the stream in the stream window, which
+	// it opens. It refuses with ErrCalibrating while a calibration runs and
+	// ErrStreaming while a stream does; Connect refuses while it runs.
+	StartCalibration(hostID string) error
+	// CancelCalibration ends the running calibration at once; its state
+	// then says Cancelled.
+	CancelCalibration()
+	// Calibration is the calibration running now, or the last one.
+	Calibration() CalibrationState
+	// ApplyCalibration keeps the last finished calibration of hostID for
+	// the route it ran on, so streams there take its settings wherever the
+	// overrides are auto; ErrNoCalibration without one.
+	ApplyCalibration(hostID string) error
+	// ResetCalibration forgets what was kept for hostID on routes, or on
+	// every route with none, so its streams take the defaults again.
+	ResetCalibration(hostID string, routes ...discovery.PathKind) error
+	// CalibrationStatus lists what is kept for hostID, one per route, LAN
+	// first; nil when nothing is.
+	CalibrationStatus(hostID string) []CalibrationSummary
 }

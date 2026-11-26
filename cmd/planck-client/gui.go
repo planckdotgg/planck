@@ -17,6 +17,7 @@ import (
 	mui "github.com/egoist/mygo/ui"
 
 	"github.com/planckdotgg/planck/assets"
+	"github.com/planckdotgg/planck/internal/calibrate"
 	"github.com/planckdotgg/planck/internal/session"
 	usage "github.com/planckdotgg/planck/internal/telemetry"
 	"github.com/planckdotgg/planck/internal/ui"
@@ -52,6 +53,13 @@ func runGUI(o options) error {
 		hostConfig: appHostConfig(o.configDir, logf),
 		encoders:   localEncoders(), logf: logf, overrides: o.overrides, viewSize: video.liveSize, display: video.display, onCursor: ptr.setHost, onCursorShape: ptr.setShape,
 		onSystemKeys: sys.setEnabled, globals: desktopShortcuts{}, openGamepads: session.OpenGamepads,
+		calibrationHints: func() calibrate.DisplayHints {
+			h := calibrate.DisplayHints{OverlayOpen: video.mode.overlay.Load()}
+			if w := video.win.Load(); w != nil {
+				mygo.RunOnMain(func() { h.Fullscreen = !w.IsDestroyed() && w.IsFullScreen() })
+			}
+			return h
+		},
 		onHostDisplays: func(host string, ds []defaults.HostDisplay, streamed string) {
 			s := b.Settings()
 			p := planDisplayWindows(ds, streamed, s.OpenEveryHostDisplay, s.MaxStreamWindows, hostStreamsAtOnce)

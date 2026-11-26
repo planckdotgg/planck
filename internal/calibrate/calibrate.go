@@ -153,6 +153,8 @@ type DisplayVariant struct {
 	RefreshHz     float64 `json:"refreshHz,omitempty"`
 	Locked        bool    `json:"locked"`
 	Samples       int     `json:"samples"`
+	// hints are the window's while the variant showed.
+	hints *DisplayHints
 }
 
 // Result is a whole run.
@@ -228,8 +230,8 @@ type Options struct {
 	// Display runs Phase 3 in the Dialer's window; off, as headless, it is
 	// skipped.
 	Display bool
-	// Hints describe the window while Phase 3 runs, for its warnings; nil
-	// knows nothing of it.
+	// Hints describe the window while a Phase 3 stream shows, for its
+	// warnings; nil knows nothing of it.
 	Hints func() DisplayHints
 	// Timing replaces DefaultTiming.
 	Timing *Timing

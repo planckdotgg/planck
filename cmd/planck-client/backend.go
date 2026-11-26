@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/planckdotgg/planck/internal/calibrate"
 	"github.com/planckdotgg/planck/internal/session"
 	usage "github.com/planckdotgg/planck/internal/telemetry"
 	"github.com/planckdotgg/planck/internal/ui"
@@ -128,6 +129,12 @@ type backend struct {
 	// what it counted of the stream now, nil without one.
 	usageTel    *usage.Client
 	usageStream *usage.Session
+	// cal is the calibration running or last run. calibrationHints
+	// describe the stream window to it, nil knowing nothing, and
+	// calibrationTiming replaces calibrate.DefaultTiming for tests.
+	cal               calibration
+	calibrationHints  func() calibrate.DisplayHints
+	calibrationTiming *calibrate.Timing
 }
 
 type backendConfig struct {
@@ -167,6 +174,8 @@ type backendConfig struct {
 	// gamepad.VirtualPadStatus.
 	openGamepads func() (session.GamepadSource, error)
 	virtualPads  func() ui.VirtualPadStatus
+	// calibrationHints describe the stream window to a calibration.
+	calibrationHints func() calibrate.DisplayHints
 }
 
 func newBackend(c backendConfig) (*backend, error) {
@@ -186,7 +195,7 @@ func newBackend(c backendConfig) (*backend, error) {
 		encoders: c.encoders, logf: c.logf, routeConfig: c.route, overrides: c.overrides, viewSize: c.viewSize, display: c.display, onCursor: c.onCursor, onCursorShape: c.onCursorShape, onSystemKeys: c.onSystemKeys, onHostDisplays: c.onHostDisplays, settings: settingsFrom(stored), pinned: stored.PinnedHosts, aliases: stored.HostAliases,
 		storedAll: stored.Overrides, storedHosts: stored.HostOverrides, layout: layoutFrom(stored.Overlay), self: map[string]bool{},
 		measure: c.measure, displays: c.displays, audioOutputs: c.audioOutputs, audioInputs: c.audioInputs, runningApps: c.runningApps,
-		globals: c.globals, keys: config.ClientConfig{Hotkeys: stored.Hotkeys, NeverSend: stored.NeverSend}}
+		globals: c.globals, keys: config.ClientConfig{Hotkeys: stored.Hotkeys, NeverSend: stored.NeverSend}, calibrationHints: c.calibrationHints}
 	b.swap.Store(stored.SwapCmdCtrl)
 	if b.audioOutputs == nil {
 		b.audioOutputs = audio.OutputDevices
@@ -585,6 +594,9 @@ func (b *backend) resolveTarget(ctx context.Context, id string) (session.Target,
 }
 
 func (b *backend) Connect(ctx context.Context, target string) error {
+	if b.calibrating() {
+		return ui.ErrCalibrating
+	}
 	id, err := b.quickConnect(target)
 	if err != nil {
 		return err
@@ -1298,6 +1310,7 @@ func (b *backend) CancelPairing() {
 
 // close stops the stream and hosting, for quitting.
 func (b *backend) close() {
+	b.cancelCalibration()
 	b.mu.Lock()
 	c, h := b.client, b.host
 	b.client, b.host = nil, nil

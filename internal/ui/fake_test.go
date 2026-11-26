@@ -73,6 +73,7 @@ type fakeBackend struct {
 	apps           []string
 	privacyProblem string
 	gamepad        fakeGamepad
+	cal            fakeCalibration
 }
 
 func newFake() *fakeBackend {

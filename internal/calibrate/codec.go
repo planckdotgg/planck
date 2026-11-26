@@ -292,32 +292,43 @@ func mismatch(o defaults.UserOverrides, p *defaults.ResolvedProfile) string {
 }
 
 // measure dials a calibration stream asking for o, waits for its first
-// picture and the encoder to settle, and returns its stats over d.
+// picture and the encoder to settle, and returns its stats over d. A
+// display stream's window hints are read while it still shows.
 func (r *run) measure(ctx context.Context, o defaults.UserOverrides, display bool, d time.Duration) (session.ClientStats, error) {
+	st, _, err := r.measureShown(ctx, o, display, d)
+	return st, err
+}
+
+func (r *run) measureShown(ctx context.Context, o defaults.UserOverrides, display bool, d time.Duration) (session.ClientStats, *DisplayHints, error) {
 	c, err := r.d.Dial(ctx, session.CalibrateVideo, o, display)
 	if err != nil {
-		return session.ClientStats{}, err
+		return session.ClientStats{}, nil, err
 	}
 	defer c.Close()
 	deadline := time.Now().Add(r.timing.Warmup)
 	for c.Stats().FramesReceived == 0 {
 		if time.Now().After(deadline) {
-			return session.ClientStats{}, errors.New("no picture arrived")
+			return session.ClientStats{}, nil, errors.New("no picture arrived")
 		}
 		if err := sleep(ctx, 20*time.Millisecond); err != nil {
-			return session.ClientStats{}, err
+			return session.ClientStats{}, nil, err
 		}
 	}
 	if err := sleep(ctx, rampUp); err != nil {
-		return session.ClientStats{}, err
+		return session.ClientStats{}, nil, err
 	}
 	c.ResetStats()
 	if err := sleep(ctx, d); err != nil {
-		return session.ClientStats{}, err
+		return session.ClientStats{}, nil, err
 	}
 	st := c.Stats()
 	if !st.Connected {
-		return st, errors.New("the stream ended")
+		return st, nil, errors.New("the stream ended")
 	}
-	return st, nil
+	var hints *DisplayHints
+	if display && r.o.Hints != nil {
+		h := r.o.Hints()
+		hints = &h
+	}
+	return st, hints, nil
 }
