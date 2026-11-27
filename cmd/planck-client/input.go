@@ -41,6 +41,9 @@ type inputForwarder struct {
 	// relative is whether the last frame found the pointer held relative,
 	// which moves the host's cursor where no place sent says.
 	relative bool
+	// relMoves is the lock's count of relative moves sent, as the last
+	// frame found it.
+	relMoves uint32
 	warp     warpPin
 	// btnSys tells what MyGo does not of the buttons; nil takes MyGo's
 	// buttons 0, 1 and 2 as left, right and middle, and its releases alone.
@@ -138,8 +141,9 @@ func (f *inputForwarder) view(c *mui.Context) {
 		f.lock.frame(active, pic)
 		relative = f.lock.held() == pointerRelative
 		x, y, over = f.warped(x, y, over, b.X, b.Y)
-		if f.relative && !relative {
+		if moves := f.lock.relativeMoves(); f.relative && !relative || moves != f.relMoves {
 			f.over = false
+			f.relMoves = moves
 		}
 		f.relative = relative
 		onPic := over && hovered && b.W > 0 && b.H > 0 && onPicture(x, y, b.W, b.H, fw, fh, dw, dh)
@@ -327,13 +331,15 @@ func (f *inputForwarder) edgeAt(e buttonEdge, abs bool, at framePointer) {
 }
 
 // streamEnded forgets the buttons held, as the host lets go of them as the
-// stream ends.
+// stream ends, and the pointer's place: the next host has none, and a
+// warp's pin is the old picture's.
 func (f *inputForwarder) streamEnded() {
 	f.live.Store(false)
 	f.edgeMu.Lock()
 	f.edges = f.edges[:0]
 	f.edgeMu.Unlock()
 	f.buttons = 0
+	f.over, f.relative, f.warp.on = false, false, false
 }
 
 func (f *inputForwarder) videoSize() (fw, fh, dw, dh int) {

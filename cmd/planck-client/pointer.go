@@ -113,9 +113,11 @@ type pointerLock struct {
 	heldArea rect
 	hidden   bool
 	dx, dy   float64
-	// warps counts the warps made, the last to warpX, warpY.
+	// warps counts the warps made, the last to warpX, warpY; relMoves the
+	// relative moves sent.
 	warps        uint32
 	warpX, warpY float32
+	relMoves     uint32
 }
 
 func newPointerLock(sys pointerSys, send func(input.Event)) *pointerLock {
@@ -373,6 +375,14 @@ func (l *pointerLock) lastWarp() (n uint32, x, y float32) {
 	return l.warps, l.warpX, l.warpY
 }
 
+// relativeMoves is the count of relative moves sent, each of which moves
+// the host's cursor from the last place sent.
+func (l *pointerLock) relativeMoves() uint32 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.relMoves
+}
+
 // hostPoint is the host's cursor on the picture.
 func (l *pointerLock) hostPoint() (float32, float32) {
 	return l.area.X + float32(l.host.X)/65535*l.area.W, l.area.Y + float32(l.host.Y)/65535*l.area.H
@@ -396,6 +406,7 @@ func (l *pointerLock) motion(dx, dy float64) {
 		}
 		l.dx -= float64(x)
 		l.dy -= float64(y)
+		l.relMoves++
 		l.send(input.Event{Type: input.TypeMouseMoveRel, MouseRel: input.MouseMoveRel{DX: x, DY: y}})
 	}
 }
