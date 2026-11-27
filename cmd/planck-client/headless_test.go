@@ -25,6 +25,7 @@ import (
 	"github.com/planckdotgg/planck/pkg/audio"
 	"github.com/planckdotgg/planck/pkg/encode"
 	"github.com/planckdotgg/planck/pkg/input"
+	"github.com/planckdotgg/planck/pkg/inputtrace"
 	"github.com/planckdotgg/planck/pkg/tailscale"
 	"github.com/planckdotgg/planck/pkg/transport"
 )
@@ -422,5 +423,48 @@ func TestParseOptionsVersion(t *testing.T) {
 		if _, err := parseOptions(args, io.Discard); !errors.Is(err, errShowVersion) {
 			t.Errorf("%q: err = %v, want errShowVersion", args, err)
 		}
+	}
+}
+
+// TestHeadlessInputTrace: -input-trace writes the client's trace with its
+// session_meta, and closes it as the run ends.
+func TestHeadlessInputTrace(t *testing.T) {
+	tr := privateClientTrace(t)
+	h := startFakeHost(t, "off")
+	deps := headlessDeps{openSink: (&countSink{}).open(), tailscale: noTailnet{}, logf: t.Logf}
+	o := headlessOpts(t, "-connect", h.Addr().String(), "-pin", "246810", "-duration", "500ms", "-silent-audio", "-input-trace")
+	if _, err := headless(context.Background(), o, deps); err != nil {
+		t.Fatal(err)
+	}
+	if tr.On() {
+		t.Fatal("the client still traces after the run")
+	}
+	files, _ := filepath.Glob(filepath.Join(inputtrace.Dir(o.configDir), "input-trace-client-*.jsonl"))
+	if len(files) != 1 {
+		t.Fatalf("client trace files %v, want one", files)
+	}
+	data, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kinds []string
+	var meta map[string]any
+	for line := range strings.Lines(string(data)) {
+		var r map[string]any
+		if err := json.Unmarshal([]byte(line), &r); err != nil {
+			t.Fatalf("%q: %v", line, err)
+		}
+		kinds = append(kinds, r["kind"].(string))
+		if r["kind"] == "session_meta" {
+			meta = r
+		}
+	}
+	// The fake host sends no profile, so the stream's size is the
+	// session's, 0; a real host's profile fills it.
+	if _, sized := meta["video_w"]; meta == nil || meta["platform"] != platformName() || !sized {
+		t.Fatalf("session_meta %v in %v", meta, kinds)
+	}
+	if kinds[0] != "trace_start" || kinds[len(kinds)-1] != "trace_stop" {
+		t.Fatalf("trace kinds %v", kinds)
 	}
 }

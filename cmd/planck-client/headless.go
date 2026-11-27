@@ -21,6 +21,7 @@ import (
 	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/input"
+	"github.com/planckdotgg/planck/pkg/inputtrace"
 	"github.com/planckdotgg/planck/pkg/player"
 	"github.com/planckdotgg/planck/pkg/tailscale"
 	"github.com/planckdotgg/planck/pkg/transport"
@@ -189,6 +190,18 @@ func headless(ctx context.Context, o options, d headlessDeps) (Summary, error) {
 	if ts == nil {
 		ts = tailscale.New()
 	}
+	if o.inputTrace {
+		if path, err := itrace.Enable(inputtrace.Dir(o.configDir)); err != nil {
+			logf("planck: input trace: %v", err)
+		} else {
+			logf("planck: input trace in %s", path)
+		}
+		defer func() {
+			if err := itrace.Disable(); err != nil {
+				logf("planck: input trace: %v", err)
+			}
+		}()
+	}
 	var sinkMu sync.Mutex
 	var sink *countingSink
 	cfg := session.ClientConfig{
@@ -234,8 +247,18 @@ func headless(ctx context.Context, o options, d headlessDeps) (Summary, error) {
 		return Summary{}, err
 	}
 	defer c.Close()
-	if st := c.Stats(); !pathAllowed(o.pathMode, st.Path) {
+	st := c.Stats()
+	if !pathAllowed(o.pathMode, st.Path) {
 		return Summary{}, fmt.Errorf("connected over %s, but -path-mode is %s", st.Path, o.pathMode)
+	}
+	if itrace.On() {
+		// No window: the stream's size is all a headless run's coordinates
+		// have.
+		m := sessionMeta{windowMeta: windowMeta{Platform: platformName()}, VideoW: st.Width, VideoH: st.Height}
+		if p := st.Profile; p != nil && p.Width > 0 {
+			m.VideoW, m.VideoH = p.Width, p.Height
+		}
+		inputtrace.Emit(itrace, "session_meta", m)
 	}
 
 	var rtts, audioBuf []float64
