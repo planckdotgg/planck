@@ -9,7 +9,12 @@ type Pacer struct {
 	// next is when the bytes sent so far are due at the rate: how far it
 	// runs ahead of now is the burst in flight.
 	next int64
-	// now and sleepUntil stand in for Mono and SleepUntilMono in tests.
+	// clock stands in for Mono and SleepUntilMono in tests; kept behind a
+	// pointer so Pacer remains comparable.
+	clock *pacerClock
+}
+
+type pacerClock struct {
 	now        func() int64
 	sleepUntil func(int64)
 }
@@ -41,8 +46,8 @@ func (p *Pacer) Wait(n int) {
 	until := p.Reserve(n)
 	switch {
 	case until == 0:
-	case p.sleepUntil != nil:
-		p.sleepUntil(until)
+	case p.clock != nil && p.clock.sleepUntil != nil:
+		p.clock.sleepUntil(until)
 	default:
 		SleepUntilMono(until)
 	}
@@ -56,8 +61,8 @@ func (p *Pacer) Reserve(n int) int64 {
 		return 0
 	}
 	var now int64
-	if p.now != nil {
-		now = p.now()
+	if p.clock != nil && p.clock.now != nil {
+		now = p.clock.now()
 	} else {
 		now = Mono()
 	}

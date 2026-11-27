@@ -178,14 +178,17 @@ type fakeClock struct {
 }
 
 func (c *fakeClock) pacer(bytesPerSec float64, burstBytes int) *Pacer {
+	var _ = map[Pacer]struct{}{}
 	p := &Pacer{
-		now: func() int64 { return c.now },
-		sleepUntil: func(until int64) {
-			if until <= c.now {
-				c.t.Fatalf("sleep %d until %d, not after now %d", c.sleeps, until, c.now)
-			}
-			c.now = until + c.late[c.sleeps]
-			c.sleeps++
+		clock: &pacerClock{
+			now: func() int64 { return c.now },
+			sleepUntil: func(until int64) {
+				if until <= c.now {
+					c.t.Fatalf("sleep %d until %d, not after now %d", c.sleeps, until, c.now)
+				}
+				c.now = until + c.late[c.sleeps]
+				c.sleeps++
+			},
 		},
 	}
 	p.SetRate(bytesPerSec, burstBytes)
@@ -243,6 +246,9 @@ func TestPacerBurstDeadlines(t *testing.T) {
 		if got > due || got < due-burstNs {
 			t.Fatalf("packet %d left at +%d ns, want within a %d ns burst before +%d", i, got-t0, burstNs, due-t0)
 		}
+	}
+	if at[15] != t0 {
+		t.Fatalf("first burst did not leave back to back: packet 15 at +%d ns", at[15]-t0)
 	}
 	if span, ideal := at[n-1]-at[0], int64(n-1)*fakeGap; span < ideal-burstNs || span > ideal {
 		t.Fatalf("%d packets over %d ns, want %d less at most a burst", n, span, ideal)
