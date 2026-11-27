@@ -86,6 +86,8 @@ type pointerLock struct {
 	mu        sync.Mutex
 	host      wire.CursorState
 	hostKnown bool
+	// fresh is whether host came since the pointer last went relative.
+	fresh bool
 	// shape is the host's cursor image; look what cursor shows over the
 	// picture.
 	shape *wire.CursorShape
@@ -102,6 +104,9 @@ type pointerLock struct {
 	heldArea rect
 	hidden   bool
 	dx, dy   float64
+	// warps counts the warps made, the last to warpX, warpY.
+	warps        uint32
+	warpX, warpY float32
 }
 
 func newPointerLock(sys pointerSys, send func(input.Event)) *pointerLock {
@@ -127,7 +132,7 @@ func (l *pointerLock) setHost(s wire.CursorState) {
 	if s.Captured && !l.host.Captured {
 		l.paused = false
 	}
-	l.host, l.hostKnown = s, true
+	l.host, l.hostKnown, l.fresh = s, true, true
 	if !l.wanted() {
 		l.paused = false
 	}
@@ -313,19 +318,25 @@ func (l *pointerLock) apply() {
 		return
 	}
 	from := l.mode
+	// Free or confined, the local cursor is what places the host's, whose
+	// reported place lags it by a round trip, so only coming back from
+	// relative, with a place sampled since, does the cursor go there.
+	back := from == pointerRelative && l.fresh && l.host.HasPos && l.area.valid()
 	switch {
 	case want == pointerFree:
 		l.release()
-		if from == pointerRelative && l.host.HasPos && !l.host.Captured && l.area.valid() {
-			// The game let go: the cursor comes back where the host has it.
-			l.sys.warp(l.hostPoint())
+		if back && !l.host.Captured {
+			l.warpTo(l.hostPoint())
 		}
 		return
 	case want == pointerRelative:
 		l.dx, l.dy = 0, 0
-		l.sys.warp(l.area.X+l.area.W/2, l.area.Y+l.area.H/2)
-	case from != pointerConfined && l.host.HasPos:
-		l.sys.warp(l.hostPoint())
+		if from != pointerRelative {
+			l.fresh = false
+		}
+		l.warpTo(l.area.X+l.area.W/2, l.area.Y+l.area.H/2)
+	case back:
+		l.warpTo(l.hostPoint())
 	}
 	l.sys.hold(want, l.area)
 	l.mode, l.heldArea = want, l.area
@@ -337,6 +348,20 @@ func (l *pointerLock) apply() {
 		}
 		l.hidden = hide
 	}
+}
+
+func (l *pointerLock) warpTo(x, y float32) {
+	l.sys.warp(x, y)
+	l.warps++
+	l.warpX, l.warpY = x, y
+}
+
+// lastWarp is the count of warps made and where the last went, in the
+// window's DIPs.
+func (l *pointerLock) lastWarp() (n uint32, x, y float32) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.warps, l.warpX, l.warpY
 }
 
 // hostPoint is the host's cursor on the picture.

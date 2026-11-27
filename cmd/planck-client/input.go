@@ -38,6 +38,10 @@ type inputForwarder struct {
 	// over is whether the host has the pointer's position x, y.
 	over bool
 	x, y uint16
+	// relative is whether the last frame found the pointer held relative,
+	// which moves the host's cursor where no place sent says.
+	relative bool
+	warp     warpPin
 	// btnSys tells what MyGo does not of the buttons; nil takes MyGo's
 	// buttons 0, 1 and 2 as left, right and middle, and its releases alone.
 	btnSys     buttonSys
@@ -86,6 +90,14 @@ type buttonEdge struct {
 	x, y                       float32
 }
 
+// warpPin is the lock's warp number n, to x, y in the view, taken while on
+// and MyGo still has the pointer at myX, myY, where it had it then.
+type warpPin struct {
+	n              uint32
+	on             bool
+	myX, myY, x, y float32
+}
+
 // framePointer is where the frame finds the pointer, on the host's
 // picture, where ok.
 type framePointer struct {
@@ -125,6 +137,11 @@ func (f *inputForwarder) view(c *mui.Context) {
 		pic.X, pic.Y = pic.X+b.X, pic.Y+b.Y
 		f.lock.frame(active, pic)
 		relative = f.lock.held() == pointerRelative
+		x, y, over = f.warped(x, y, over, b.X, b.Y)
+		if f.relative && !relative {
+			f.over = false
+		}
+		f.relative = relative
 		onPic := over && hovered && b.W > 0 && b.H > 0 && onPicture(x, y, b.W, b.H, fw, fh, dw, dh)
 		if f.lock.pictureCursor(onPic) != cursorLocal {
 			el.Cursor(mui.CursorNone)
@@ -148,6 +165,23 @@ func (f *inputForwarder) view(c *mui.Context) {
 	if f.picture != nil {
 		el.Children(func() { f.picture(c) })
 	}
+}
+
+// warped is where the pointer is, x, y and over as MyGo has it in a view
+// at bx, by: no system tells MyGo of a warp, so after the lock's last
+// warp the pointer is where the warp put it until MyGo's place moves.
+func (f *inputForwarder) warped(x, y float32, over bool, bx, by float32) (float32, float32, bool) {
+	if n, wx, wy := f.lock.lastWarp(); n != f.warp.n {
+		f.warp = warpPin{n: n, on: true, myX: x, myY: y, x: wx - bx, y: wy - by}
+	}
+	if !f.warp.on {
+		return x, y, over
+	}
+	if x != f.warp.myX || y != f.warp.myY {
+		f.warp.on = false
+		return x, y, over
+	}
+	return f.warp.x, f.warp.y, true
 }
 
 // moveAbs puts the host's pointer at x, y, unless it is there.
