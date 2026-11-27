@@ -134,10 +134,12 @@ type backend struct {
 	usageStream *usage.Session
 	// cal is the calibration running or last run. calibrationHints
 	// describe the stream window to it, nil knowing nothing, and
-	// calibrationTiming replaces calibrate.DefaultTiming for tests.
+	// calibrationTiming replaces calibrate.DefaultTiming for tests, and
+	// calibrationDecode the hardware decoder the codec phase measures.
 	cal               calibration
 	calibrationHints  func() calibrate.DisplayHints
 	calibrationTiming *calibrate.Timing
+	calibrationDecode session.SinkOpener
 }
 
 type backendConfig struct {

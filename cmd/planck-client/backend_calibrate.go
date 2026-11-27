@@ -84,7 +84,7 @@ func (b *backend) runCalibration(ctx context.Context, hostID string) (calibrate.
 	device := b.name
 	b.mu.Unlock()
 	d := &calibrate.SessionDialer{
-		Config: session.ClientConfig{ConfigDir: b.dir, Name: device, Tailscale: b.ts, Logf: b.logf, Capabilities: b.capabilities},
+		Config: session.ClientConfig{ConfigDir: b.dir, Name: device, Tailscale: b.ts, Logf: b.logf, Capabilities: b.capabilities, OpenSink: b.calibrationDecode},
 		Target: t, DisplaySink: b.openSink,
 	}
 	o := calibrate.Options{Client: b.capabilities(), User: ov, Display: b.openSink != nil, Hints: b.calibrationHints, Timing: b.calibrationTiming}

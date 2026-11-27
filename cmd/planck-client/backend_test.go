@@ -52,6 +52,7 @@ func newTestBackend(t *testing.T, dir string, probe []netip.AddrPort) (*backend,
 		t.Fatal(err)
 	}
 	t.Cleanup(b.close)
+	b.calibrationDecode = sink.open()
 	var changes atomic.Int64
 	b.Subscribe(func() { changes.Add(1) })
 	return b, &changes
