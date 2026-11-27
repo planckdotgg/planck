@@ -270,15 +270,25 @@ func (s *sink) noteDrops() {
 }
 
 func (s *sink) flush() {
+	if s.err != nil {
+		return
+	}
 	if err := s.w.Flush(); err != nil && s.err == nil {
 		s.err = err
 	}
 }
 
+// write adds e to the file, unless an earlier write, flush or rotation
+// failed: the trace stops there and Disable reports why.
 func (s *sink) write(e entry) {
+	if s.err != nil {
+		return
+	}
 	s.line = s.encode(s.line[:0], e)
 	if s.size > 0 && s.size+int64(len(s.line)) > s.t.maxBytes {
-		s.rotate()
+		if s.rotate(); s.err != nil {
+			return
+		}
 	}
 	n, err := s.w.Write(s.line)
 	s.size += int64(n)
@@ -308,8 +318,7 @@ func (s *sink) encode(b []byte, e entry) []byte {
 
 // open starts a new file, named for now, and prunes the side's old ones.
 func (s *sink) open() error {
-	name := s.newName(time.Now())
-	f, err := os.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	name, f, err := s.create(time.Now())
 	if err != nil {
 		return fmt.Errorf("inputtrace: %w", err)
 	}
@@ -340,10 +349,14 @@ func (s *sink) rotate() {
 	}
 }
 
-// newName is a file name for a trace started at now that sorts after the
-// side's last one and that no file has: a second's second file takes a
-// sequence number.
-func (s *sink) newName(now time.Time) string {
+// maxSeq bounds the files tried for one second's trace before create gives
+// up.
+const maxSeq = 1000
+
+// create makes a new file for a trace started at now, named to sort after
+// the side's last one: a second's second file takes a sequence number. Only
+// a name that exists already moves it to the next; any other error ends it.
+func (s *sink) create(now time.Time) (string, *os.File, error) {
 	t := s.t
 	stamp := now.Format(timeLayout)
 	seq := 0
@@ -351,16 +364,22 @@ func (s *sink) newName(now time.Time) string {
 		stamp, seq = t.lastStamp, t.lastSeq+1
 	}
 	base := filepath.Join(s.dir, "input-trace-"+string(t.side)+"-"+stamp)
-	for ; ; seq++ {
+	for end := seq + maxSeq; seq < end; seq++ {
 		name := base + ".jsonl"
 		if seq > 0 {
 			name = base + "-" + strconv.Itoa(seq) + ".jsonl"
 		}
-		if _, err := os.Lstat(name); errors.Is(err, os.ErrNotExist) {
-			t.lastStamp, t.lastSeq = stamp, seq
-			return name
+		f, err := os.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if errors.Is(err, os.ErrExist) {
+			continue
 		}
+		if err != nil {
+			return "", nil, err
+		}
+		t.lastStamp, t.lastSeq = stamp, seq
+		return name, f, nil
 	}
+	return "", nil, fmt.Errorf("%s: %d names taken", base, maxSeq)
 }
 
 // traceFile is a trace file of a side, ordered by when it started.

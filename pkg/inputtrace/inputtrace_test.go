@@ -308,3 +308,41 @@ func TestEnvOn(t *testing.T) {
 		}
 	}
 }
+
+// A rotation that cannot make a file ends the trace's writing, and Disable
+// returns with the error instead of waiting on a writer that retries.
+func TestRotationIntoAFileDoesNotHangDisable(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "logs")
+	tr := New(SideClient)
+	tr.maxBytes = 1 << 10
+	tr.hold = make(chan struct{})
+	if _, err := tr.Enable(dir); err != nil {
+		t.Fatal(err)
+	}
+	// The open file moves with its directory; a file takes the directory's
+	// place, so every name in it fails with ENOTDIR.
+	if err := os.Rename(dir, dir+".moved"); err != nil {
+		t.Skipf("cannot move a directory with an open file: %v", err)
+	}
+	if err := os.WriteFile(dir, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pad := strings.Repeat("p", 200)
+	for i := range 20 {
+		Emit(tr, "client_input", sample{X: i, Mode: pad})
+	}
+	close(tr.hold)
+	done := make(chan error, 1)
+	go func() { done <- tr.Disable() }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Disable reported no error for a failed rotation")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Disable hung after a failed rotation")
+	}
+	if tr.On() || tr.Path() != "" {
+		t.Fatal("tracer still on")
+	}
+}
