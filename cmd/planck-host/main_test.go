@@ -12,6 +12,7 @@ import (
 	"github.com/planckdotgg/planck/internal/session"
 	"github.com/planckdotgg/planck/pkg/config"
 	"github.com/planckdotgg/planck/pkg/encode"
+	"github.com/planckdotgg/planck/pkg/inputtrace"
 )
 
 func TestParseConfigDefaults(t *testing.T) {
@@ -175,5 +176,30 @@ func TestHostSendsNothingAfterTheAppTurnsTelemetryOff(t *testing.T) {
 	tel.Close(5 * time.Second)
 	if n := requests.Load(); n != 1 {
 		t.Fatalf("%d requests, want only the one before telemetry was turned off", n)
+	}
+}
+
+// TestInputTraceFlag: -input-trace and PLANCK_INPUT_TRACE=1 each trace
+// every session; neither leaves it to the client.
+func TestInputTraceFlag(t *testing.T) {
+	t.Setenv(inputtrace.Env, "")
+	for _, c := range []struct {
+		args []string
+		env  string
+		want bool
+	}{
+		{nil, "", false},
+		{[]string{"-input-trace"}, "", true},
+		{nil, "1", true},
+		{nil, "0", false},
+	} {
+		t.Setenv(inputtrace.Env, c.env)
+		cfg, _, err := parseConfig(c.args, io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.InputTrace != c.want {
+			t.Errorf("%v %s=%q: InputTrace %v", c.args, inputtrace.Env, c.env, cfg.InputTrace)
+		}
 	}
 }

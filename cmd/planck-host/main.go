@@ -25,6 +25,7 @@ import (
 	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/encode"
+	"github.com/planckdotgg/planck/pkg/inputtrace"
 )
 
 func main() {
@@ -101,6 +102,7 @@ func parseOptions(args []string, out io.Writer) (options, error) {
 	fs.StringVar(&cfg.MicDevice, "mic-device", "", `virtual input device the client's microphone plays into, by part of its name (default: Planck Virtual Audio, then Steam Streaming Microphone, VB-Cable or BlackHole); "off" refuses the microphone`)
 	clip := fs.String("clipboard", "both", "share the clipboard: both, host-to-client, client-to-host or off")
 	fs.BoolVar(&cfg.Synth, "synth", false, "stream a generated test pattern at -width x -height and -fps instead of a display")
+	fs.BoolVar(&cfg.InputTrace, "input-trace", false, "trace input and the cursor to the config directory's logs/input-trace-host-*.jsonl for every session (also "+inputtrace.Env+"=1); without it the host traces while a client asks")
 	fs.BoolVar(&o.noTelemetry, "no-telemetry", false, "send no anonymous usage telemetry this run (Settings › General, or \"telemetryEnabled\": false in client.json, turns it off for good)")
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); err != nil {
@@ -155,6 +157,7 @@ func parseOptions(args []string, out io.Writer) (options, error) {
 		cfg.DiscoveryAddr = fmt.Sprintf(":%d", *discoveryPort)
 	}
 	cfg.InjectInput = !*noInput
+	cfg.InputTrace = cfg.InputTrace || inputtrace.EnvOn()
 	if cfg.MicDevice == "off" {
 		cfg.MicDevice, cfg.NoMic = "", true
 	}
