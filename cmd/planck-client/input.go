@@ -331,15 +331,19 @@ func (f *inputForwarder) edgeAt(e buttonEdge, abs bool, at framePointer) {
 }
 
 // streamEnded forgets the buttons held, as the host lets go of them as the
-// stream ends, and the pointer's place: the next host has none, and a
-// warp's pin is the old picture's.
+// stream ends, and the pointer's place: the next host has none, and every
+// warp so far, seen by a frame or not, is the old picture's.
 func (f *inputForwarder) streamEnded() {
 	f.live.Store(false)
 	f.edgeMu.Lock()
 	f.edges = f.edges[:0]
 	f.edgeMu.Unlock()
 	f.buttons = 0
-	f.over, f.relative, f.warp.on = false, false, false
+	f.over, f.relative = false, false
+	f.warp = warpPin{}
+	if f.lock != nil {
+		f.warp.n, _, _ = f.lock.lastWarp()
+	}
 }
 
 func (f *inputForwarder) videoSize() (fw, fh, dw, dh int) {

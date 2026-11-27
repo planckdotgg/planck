@@ -48,32 +48,36 @@ func (p *linuxPointer) show() {
 	}
 }
 
-func (p *linuxPointer) hold(m pointerMode, area rect, at spot) {
+// hold and free warp on X11; on Wayland the place goes as a lock's
+// cursor hint, which the compositor may ignore, so it is no warp.
+func (p *linuxPointer) hold(m pointerMode, area rect, at spot) bool {
 	s := p.seat()
 	if s == nil {
-		return
+		return false
 	}
 	s.relOn.Store(m == pointerRelative)
 	if s.x != nil {
 		s.x.hold(m, area, at)
-	} else {
-		s.waylandHold(m, area, at)
+		return at.set
 	}
+	s.waylandHold(m, area, at)
+	return false
 }
 
-func (p *linuxPointer) free(at spot) {
+func (p *linuxPointer) free(at spot) bool {
 	s := p.seat()
 	if s == nil {
-		return
+		return false
 	}
 	s.relOn.Store(false)
 	if s.x != nil {
 		s.x.free()
 		s.x.warp(at)
-	} else {
-		s.waylandHint(at)
-		s.waylandFree()
+		return at.set
 	}
+	s.waylandHint(at)
+	s.waylandFree()
+	return false
 }
 
 var blank uintptr

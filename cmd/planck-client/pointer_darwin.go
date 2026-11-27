@@ -64,7 +64,7 @@ func (p *macPointer) show() { cgDisplayShowCursor(cgMainDisplayID()) }
 
 // hold warps before the cursor dissociates, and free after it associates
 // again, so that the warp associates it outside relative mode.
-func (p *macPointer) hold(m pointerMode, area rect, at spot) {
+func (p *macPointer) hold(m pointerMode, area rect, at spot) bool {
 	p.watch()
 	x, y := p.origin()
 	p.area = rect{X: x + area.X, Y: y + area.Y, W: area.W, H: area.H}
@@ -78,9 +78,10 @@ func (p *macPointer) hold(m pointerMode, area rect, at spot) {
 	}
 	cgAssociateMouseAndPosition(connected)
 	p.allMoves(true)
+	return at.set
 }
 
-func (p *macPointer) free(at spot) {
+func (p *macPointer) free(at spot) bool {
 	p.mode = pointerFree
 	cgAssociateMouseAndPosition(1)
 	p.allMoves(false)
@@ -88,6 +89,7 @@ func (p *macPointer) free(at spot) {
 		ox, oy := p.origin()
 		p.warpGlobal(float64(ox+at.x), float64(oy+at.y))
 	}
+	return at.set
 }
 
 // allMoves has the window take the mouse's moves off its view too, or

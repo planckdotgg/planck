@@ -19,6 +19,8 @@ type fakePointer struct {
 	mode   pointerMode
 	area   rect
 	warped [2]float32
+	// noWarp has the system not move the cursor where asked.
+	noWarp bool
 }
 
 func (f *fakePointer) hide() { f.hides++; f.calls = append(f.calls, "hide") }
@@ -31,20 +33,22 @@ func (f *fakePointer) show() {
 	f.calls = append(f.calls, "show")
 }
 
-func (f *fakePointer) hold(m pointerMode, area rect, at spot) {
+func (f *fakePointer) hold(m pointerMode, area rect, at spot) bool {
 	if m == pointerFree {
 		f.t.Fatal("held free")
 	}
 	f.mode, f.area = m, area
 	f.calls = append(f.calls, fmt.Sprintf("hold %d", m)+f.at(at))
+	return at.set && !f.noWarp
 }
 
-func (f *fakePointer) free(at spot) {
+func (f *fakePointer) free(at spot) bool {
 	if f.mode == pointerFree {
 		f.t.Fatal("freed a pointer not held")
 	}
 	f.mode = pointerFree
 	f.calls = append(f.calls, "free"+f.at(at))
+	return at.set && !f.noWarp
 }
 
 func (f *fakePointer) at(at spot) string {

@@ -65,7 +65,7 @@ func (p *winPointer) show() { procShowCursor.Call(1) }
 
 // hold and free warp after the clip changes: SetCursorPos clamps to the
 // clip in place, the relative one a pixel wide.
-func (p *winPointer) hold(m pointerMode, area rect, at spot) {
+func (p *winPointer) hold(m pointerMode, area rect, at spot) bool {
 	r := p.screen(area)
 	if m == pointerRelative {
 		cx, cy := (r.Left+r.Right)/2, (r.Top+r.Bottom)/2
@@ -75,12 +75,14 @@ func (p *winPointer) hold(m pointerMode, area rect, at spot) {
 	p.raw.on.Store(m == pointerRelative)
 	p.clip(&r)
 	p.warp(at)
+	return at.set
 }
 
-func (p *winPointer) free(at spot) {
+func (p *winPointer) free(at spot) bool {
 	p.raw.on.Store(false)
 	p.clip(nil)
 	p.warp(at)
+	return at.set
 }
 
 func (p *winPointer) warp(at spot) {

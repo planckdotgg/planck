@@ -38,9 +38,10 @@ type pointerSys interface {
 	// it go. Each puts the cursor at at, where set, ordered against the
 	// hold changing as the system needs for the cursor to end up there:
 	// a Windows clip clamps a move to the old clip, and a Wayland lock
-	// takes its place only as a hint before it goes.
-	hold(m pointerMode, area rect, at spot)
-	free(at spot)
+	// takes its place only as a hint before it goes. Each reports whether
+	// it moved the cursor there: a Wayland compositor may ignore the hint.
+	hold(m pointerMode, area rect, at spot) (warped bool)
+	free(at spot) (warped bool)
 }
 
 // spot is where to put the cursor, in the window's DIPs, where set.
@@ -113,8 +114,8 @@ type pointerLock struct {
 	heldArea rect
 	hidden   bool
 	dx, dy   float64
-	// warps counts the warps made, the last to warpX, warpY; relMoves the
-	// relative moves sent.
+	// warps counts the warps the system made, the last to warpX, warpY;
+	// relMoves the relative moves sent.
 	warps        uint32
 	warpX, warpY float32
 	relMoves     uint32
@@ -313,7 +314,7 @@ func (l *pointerLock) unsetCursor() {
 
 func (l *pointerLock) release(at spot) {
 	if l.mode != pointerFree {
-		l.sys.free(at)
+		l.counted(l.sys.free(at), at)
 		l.mode = pointerFree
 	}
 	if l.hidden {
@@ -340,15 +341,16 @@ func (l *pointerLock) apply() {
 		if from != pointerRelative {
 			l.fresh = false
 		}
-		at = l.warpTo(l.area.X+l.area.W/2, l.area.Y+l.area.H/2)
+		at = spot{x: l.area.X + l.area.W/2, y: l.area.Y + l.area.H/2, set: true}
 	case back && (want == pointerConfined || !l.host.Captured):
-		at = l.warpTo(l.hostPoint())
+		at.x, at.y = l.hostPoint()
+		at.set = true
 	}
 	if want == pointerFree {
 		l.release(at)
 		return
 	}
-	l.sys.hold(want, l.area, at)
+	l.counted(l.sys.hold(want, l.area, at), at)
 	l.mode, l.heldArea = want, l.area
 	if hide := want == pointerRelative; hide != l.hidden {
 		if hide {
@@ -360,11 +362,12 @@ func (l *pointerLock) apply() {
 	}
 }
 
-// warpTo counts a warp to x, y, for the system to make with the hold.
-func (l *pointerLock) warpTo(x, y float32) spot {
-	l.warps++
-	l.warpX, l.warpY = x, y
-	return spot{x: x, y: y, set: true}
+// counted counts the warp to at the system reports it made.
+func (l *pointerLock) counted(warped bool, at spot) {
+	if warped && at.set {
+		l.warps++
+		l.warpX, l.warpY = at.x, at.y
+	}
 }
 
 // lastWarp is the count of warps made and where the last went, in the
