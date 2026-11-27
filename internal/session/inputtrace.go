@@ -3,7 +3,6 @@ package session
 import (
 	"runtime"
 	"sync"
-	"sync/atomic"
 
 	"github.com/planckdotgg/planck/pkg/capture/cursor"
 	"github.com/planckdotgg/planck/pkg/input"
@@ -37,9 +36,12 @@ type hostTrace struct {
 	prevSet   bool
 	prevEpoch uint32
 	// injects counts the traced injections and after holds the cursor
-	// after the last, x in the high half, for cursorLoop's jump check.
-	injects atomic.Uint32
-	after   atomic.Uint64
+	// after the last, in the trace of epoch afterEpoch, for cursorLoop's
+	// jump check.
+	lastMu     sync.Mutex
+	injects    uint32
+	after      tracePoint
+	afterEpoch uint32
 }
 
 // on reports whether the host traces.
@@ -59,9 +61,6 @@ type traceRect struct {
 
 func rectOfInput(r input.Rect) traceRect   { return traceRect{r.X, r.Y, r.W, r.H} }
 func rectOfCursor(r cursor.Rect) traceRect { return traceRect{r.X, r.Y, r.W, r.H} }
-
-func packPoint(x, y int) uint64       { return uint64(uint32(int32(x)))<<32 | uint64(uint32(int32(y))) }
-func unpackPoint(p uint64) (int, int) { return int(int32(uint32(p >> 32))), int(int32(uint32(p))) }
 
 // startTrace turns the trace on for good with HostConfig.InputTrace.
 func (h *Host) startTrace() {
@@ -197,6 +196,9 @@ type hostInput struct {
 	Sent   []input.SentMouse `json:"sent,omitempty"`
 	Before *tracePoint       `json:"before,omitempty"`
 	After  *tracePoint       `json:"after,omitempty"`
+
+	// epoch is the trace the input began in.
+	epoch uint32
 }
 
 // cursorJump is the cursor found moved with nothing of the host's to
@@ -233,7 +235,7 @@ func buttonName(b input.Button) string {
 // traceInputStart begins the trace of ev, a mouse event, before it is
 // injected, or returns nil for another.
 func (h *Host) traceInputStart(in wire.Input, ev input.Event) *hostInput {
-	rec := hostInput{Seq: in.Seq}
+	rec := hostInput{Seq: in.Seq, epoch: h.itrace.t.Epoch()}
 	switch ev.Type {
 	case input.TypeMouseMoveAbs:
 		x, y := ev.MouseAbs.X, ev.MouseAbs.Y
@@ -273,20 +275,35 @@ func (h *Host) traceInputEnd(rec *hostInput, injected bool, err error) {
 	ht.sentMu.Unlock()
 	if s, err := h.readCursor(); err == nil {
 		rec.After = &tracePoint{s.X, s.Y}
-		ht.after.Store(packPoint(s.X, s.Y))
 	}
-	if e := ht.t.Epoch(); e != ht.prevEpoch {
-		ht.prevSet, ht.prevEpoch = false, e
+	// An input begun in an earlier trace saw a cursor that may have moved
+	// while off: it is no base for the next.
+	if !ht.t.On() || ht.t.Epoch() != rec.epoch {
+		ht.prevSet = false
+		ht.lastMu.Lock()
+		ht.afterEpoch = 0
+		ht.injects++
+		ht.lastMu.Unlock()
+		inputtrace.Emit(ht.t, "host_input", *rec)
+		return
+	}
+	if rec.epoch != ht.prevEpoch {
+		ht.prevSet, ht.prevEpoch = false, rec.epoch
 	}
 	if rec.Before != nil && ht.prevSet && moved(ht.prev, *rec.Before) {
 		inputtrace.Emit(ht.t, "cursor_jump", cursorJump{Source: "input_gap", From: ht.prev, To: *rec.Before,
 			DX: rec.Before.X - ht.prev.X, DY: rec.Before.Y - ht.prev.Y})
 	}
 	ht.prevSet = rec.After != nil
+	ht.lastMu.Lock()
 	if rec.After != nil {
 		ht.prev = *rec.After
+		ht.after, ht.afterEpoch = *rec.After, rec.epoch
+	} else {
+		ht.afterEpoch = 0
 	}
-	ht.injects.Add(1)
+	ht.injects++
+	ht.lastMu.Unlock()
 	inputtrace.Emit(ht.t, "host_input", *rec)
 }
 
@@ -329,7 +346,9 @@ func (ct *cursorTrace) poll(h *Host, s cursor.State, m wire.CursorState, warped 
 	t := h.itrace.t
 	if e := t.Epoch(); e != ct.epoch {
 		// An injection of an earlier trace leaves no base.
-		*ct = cursorTrace{epoch: e, injects: h.itrace.injects.Load()}
+		h.itrace.lastMu.Lock()
+		*ct = cursorTrace{epoch: e, injects: h.itrace.injects}
+		h.itrace.lastMu.Unlock()
 	}
 	if !ct.started || s != ct.last || act != reportSame {
 		rec := cursorPollRec{Visible: s.Visible, Captured: s.Captured, CursorX: s.X, CursorY: s.Y, HCursor: uint64(s.Handle),
@@ -340,10 +359,12 @@ func (ct *cursorTrace) poll(h *Host, s cursor.State, m wire.CursorState, warped 
 		rec.ForegroundHWND, rec.ForegroundPID = uint64(hwnd), pid
 		inputtrace.Emit(t, "cursor_poll", rec)
 	}
-	if n := h.itrace.injects.Load(); n != ct.injects {
+	h.itrace.lastMu.Lock()
+	n, after, afterEpoch := h.itrace.injects, h.itrace.after, h.itrace.afterEpoch
+	h.itrace.lastMu.Unlock()
+	if n != ct.injects {
 		ct.injects = n
-		x, y := unpackPoint(h.itrace.after.Load())
-		ct.base, ct.based = tracePoint{x, y}, true
+		ct.base, ct.based = after, afterEpoch == ct.epoch
 	}
 	at := tracePoint{s.X, s.Y}
 	if ct.based && moved(ct.base, at) {
