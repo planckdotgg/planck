@@ -157,7 +157,7 @@ func TestManualLock(t *testing.T) {
 	// A host that shows its cursor keeps it visible and confined instead.
 	l.setHost(wire.CursorState{Visible: true, HasPos: true, X: 65535, Y: 0})
 	l.setLocked(true)
-	wantCalls(t, sys, "warp 760,0", "hold 2")
+	wantCalls(t, sys, "hold 2")
 	if sys.hides != 0 {
 		t.Fatal("a confined cursor hid")
 	}

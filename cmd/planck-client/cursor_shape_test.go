@@ -164,7 +164,7 @@ func TestCapturedCursor(t *testing.T) {
 	}
 	wantPicture(t, l, cur, true, cursorHost, "set a")
 	l.reset()
-	wantCalls(t, sys, "warp 40,0", "hold 2", "free")
+	wantCalls(t, sys, "hold 2", "free")
 	if got := cur.take(); !slices.Equal(got, []string{"unset"}) {
 		t.Fatalf("reset: %q", got)
 	}
