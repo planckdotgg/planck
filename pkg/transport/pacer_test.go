@@ -167,3 +167,107 @@ func TestReceiveQueueSpreadsBigFrames(t *testing.T) {
 		}
 	}
 }
+
+// fakeClock drives a Pacer without the OS: each sleep wakes exactly at its
+// deadline, plus late[w] for the w-th sleep.
+type fakeClock struct {
+	t      *testing.T
+	now    int64
+	sleeps int
+	late   map[int]int64
+}
+
+func (c *fakeClock) pacer(bytesPerSec float64, burstBytes int) *Pacer {
+	p := &Pacer{
+		now: func() int64 { return c.now },
+		sleepUntil: func(until int64) {
+			if until <= c.now {
+				c.t.Fatalf("sleep %d until %d, not after now %d", c.sleeps, until, c.now)
+			}
+			c.now = until + c.late[c.sleeps]
+			c.sleeps++
+		},
+	}
+	p.SetRate(bytesPerSec, burstBytes)
+	return p
+}
+
+// leaveTimes sends n packets of pkt bytes, spending cost ns on each after
+// it is let go, and returns when each was let go.
+func (c *fakeClock) leaveTimes(p *Pacer, n, pkt int, cost int64) []int64 {
+	at := make([]int64, n)
+	for i := range at {
+		p.Wait(pkt)
+		at[i] = c.now
+		c.now += cost
+	}
+	return at
+}
+
+// fakePacket at fakeRate is exactly 28 µs.
+const fakePacket, fakeRate, fakeGap = 1400, 400e6 / 8, int64(28_000)
+
+// TestPacerDeadlines: without a burst, packet i leaves exactly i packet
+// times after the first, whatever the sender spends between packets, so
+// any added stall or a wrong rate moves a deadline.
+func TestPacerDeadlines(t *testing.T) {
+	const n, t0 = 2000, int64(1e9)
+	for _, cost := range []int64{0, 5_000, fakeGap - 1} {
+		c := &fakeClock{t: t, now: t0}
+		at := c.leaveTimes(c.pacer(fakeRate, 0), n, fakePacket, cost)
+		for i, got := range at {
+			if want := t0 + int64(i)*fakeGap; got != want {
+				t.Fatalf("cost %d ns: packet %d left at +%d ns, want +%d", cost, i, got-t0, want-t0)
+			}
+		}
+		if c.sleeps != n-1 {
+			t.Fatalf("cost %d ns: %d sleeps for %d packets, want %d", cost, c.sleeps, n, n-1)
+		}
+		mbps := float64(fakePacket*(n-1)*8) / (float64(at[n-1]-at[0]) / 1e9) / 1e6
+		if mbps != 400 {
+			t.Fatalf("cost %d ns: paced at %v Mbps, want 400", cost, mbps)
+		}
+	}
+}
+
+// TestPacerBurstDeadlines: with a burst, a packet never leaves more than
+// the burst ahead of its time at the rate, nor after it, and the long-run
+// rate is the set one.
+func TestPacerBurstDeadlines(t *testing.T) {
+	const n, t0, burst = 2000, int64(1e9), 16 * fakePacket
+	c := &fakeClock{t: t, now: t0}
+	at := c.leaveTimes(c.pacer(fakeRate, burst), n, fakePacket, 0)
+	burstNs := int64(burst/fakePacket) * fakeGap
+	for i, got := range at {
+		due := t0 + int64(i)*fakeGap
+		if got > due || got < due-burstNs {
+			t.Fatalf("packet %d left at +%d ns, want within a %d ns burst before +%d", i, got-t0, burstNs, due-t0)
+		}
+	}
+	if span, ideal := at[n-1]-at[0], int64(n-1)*fakeGap; span < ideal-burstNs || span > ideal {
+		t.Fatalf("%d packets over %d ns, want %d less at most a burst", n, span, ideal)
+	}
+}
+
+// TestPacerLateWakeDoesNotCatchUp: after a wake 1 ms late, the packet
+// already due goes with the late one and the rest keep the rate from the
+// wake, rather than a catch-up burst of the 35 packets the stall cost.
+func TestPacerLateWakeDoesNotCatchUp(t *testing.T) {
+	const n, t0, lateAt, lateBy = 400, int64(1e9), 99, int64(1_000_000)
+	c := &fakeClock{t: t, now: t0, late: map[int]int64{lateAt: lateBy}}
+	at := c.leaveTimes(c.pacer(fakeRate, 0), n, fakePacket, 0)
+	// Sleep 99 is packet 100's.
+	wake := t0 + 100*fakeGap + lateBy
+	for i, got := range at {
+		want := t0 + int64(i)*fakeGap
+		switch {
+		case i == 100:
+			want = wake
+		case i > 100:
+			want = wake + int64(i-101)*fakeGap
+		}
+		if got != want {
+			t.Fatalf("packet %d left at +%d ns, want +%d (late wake at +%d)", i, got-t0, want-t0, wake-t0)
+		}
+	}
+}

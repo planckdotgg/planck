@@ -9,6 +9,9 @@ type Pacer struct {
 	// next is when the bytes sent so far are due at the rate: how far it
 	// runs ahead of now is the burst in flight.
 	next int64
+	// now and sleepUntil stand in for Mono and SleepUntilMono in tests.
+	now        func() int64
+	sleepUntil func(int64)
 }
 
 func NewPacer(bytesPerSec float64) *Pacer {
@@ -35,7 +38,12 @@ func (p *Pacer) SetRate(bytesPerSec float64, burstBytes int) {
 // wake, a gap between frames) starts again from now, not with a catch-up
 // burst.
 func (p *Pacer) Wait(n int) {
-	if until := p.Reserve(n); until != 0 {
+	until := p.Reserve(n)
+	switch {
+	case until == 0:
+	case p.sleepUntil != nil:
+		p.sleepUntil(until)
+	default:
 		SleepUntilMono(until)
 	}
 }
@@ -47,7 +55,12 @@ func (p *Pacer) Reserve(n int) int64 {
 	if p.nsPerByte == 0 {
 		return 0
 	}
-	now := Mono()
+	var now int64
+	if p.now != nil {
+		now = p.now()
+	} else {
+		now = Mono()
+	}
 	if p.next < now {
 		p.next = now
 	}

@@ -15,13 +15,20 @@ import (
 // slowOut takes delay to send each frame or slice, as pacing a large
 // frame does, and records what went out.
 type slowOut struct {
-	delay  time.Duration
+	delay time.Duration
+	// hold, when set, runs before each send.
+	hold   func()
 	mu     sync.Mutex
 	frames []uint32
 	slices []uint32
 }
 
-func (o *slowOut) wait() { transport.SleepUntilMono(transport.Mono() + int64(o.delay)) }
+func (o *slowOut) wait() {
+	if o.hold != nil {
+		o.hold()
+	}
+	transport.SleepUntilMono(transport.Mono() + int64(o.delay))
+}
 
 func (o *slowOut) SendVideoFrame(info wire.VideoInfo, _ []byte) error {
 	o.wait()
@@ -105,21 +112,32 @@ func TestVideoSenderNeverBlocksTheLoop(t *testing.T) {
 // TestVideoSenderKeepsTheFrameInFlight: a frame whose slices are going
 // out is never cut short by drops; a whole queued frame behind it is.
 func TestVideoSenderKeepsTheFrameInFlight(t *testing.T) {
-	out := &slowOut{delay: 5 * time.Millisecond}
+	// The first slice holds the sender until every job is queued.
+	entered, release := make(chan struct{}), make(chan struct{})
+	var first sync.Once
+	out := &slowOut{hold: func() { first.Do(func() { close(entered); <-release }) }}
 	var dropped []uint32
 	s := newVideoSender(out, 1, func(id uint32) { dropped = append(dropped, id) }, func(*sendJob, error) {})
 	slice := func(id uint32, i int) {
 		s.push(&sendJob{kind: sendSlice, info: wire.VideoInfo{FrameID: id, SliceCount: 4}, slice: i, data: []byte{1}})
 	}
 	slice(1, 0)
-	time.Sleep(time.Millisecond)
+	<-entered
 	slice(1, 1)
 	s.push(&sendJob{kind: sendFrame, info: wire.VideoInfo{FrameID: 2}, data: []byte{1}})
 	slice(1, 2)
 	slice(1, 3)
 	s.push(&sendJob{kind: sendEnd, info: wire.VideoInfo{FrameID: 1}})
 	s.push(&sendJob{kind: sendFrame, info: wire.VideoInfo{FrameID: 3}, data: []byte{1}})
-	time.Sleep(60 * time.Millisecond)
+	close(release)
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		out.mu.Lock()
+		done := len(out.frames) > 0
+		out.mu.Unlock()
+		if done {
+			break
+		}
+	}
 	s.close()
 	out.mu.Lock()
 	defer out.mu.Unlock()

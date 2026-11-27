@@ -26,7 +26,9 @@ func TestMonoResolutionAndAllocs(t *testing.T) {
 	}
 }
 
-// TestPacerRate measures the rate between scheduler stalls: a pacer that
+// TestPacerRate is a smoke test of the pacer on the real clock; the
+// pacer's deadlines are checked exactly in TestPacerDeadlines. It measures
+// the rate between scheduler stalls: a pacer that
 // woke late starts again from now, so a stall on a busy runner costs wall
 // time the pacer never had. Without a burst it books one 28 µs packet
 // ahead, so a gap of ten is the OS, not the pacer.
