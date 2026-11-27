@@ -3,6 +3,7 @@ package session
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"slices"
 	"sync"
@@ -366,5 +367,28 @@ func TestCursorReportActions(t *testing.T) {
 	want := []reportAction{reportEmit, reportSame, reportHoldHide, reportDropFlicker, reportHoldHide, reportEmit}
 	if !slices.Equal(got, want) {
 		t.Fatalf("actions %v, want %v", got, want)
+	}
+}
+
+// TestInputTraceToggledDuringConnect: a toggle after the connect asked the
+// host but before the stream is live reaches the host once it is.
+func TestInputTraceToggledDuringConnect(t *testing.T) {
+	for _, final := range []bool{true, false} {
+		t.Run(fmt.Sprintf("to %v", final), func(t *testing.T) {
+			tr := inputtrace.New(inputtrace.SideHost)
+			hs := startHostWith(t, t.TempDir(), "127.0.0.1:0", nil, "off", privateTrace(tr))
+			r := newClient(t, t.TempDir(), hs.host.PIN())
+			r.client.SetInputTrace(!final)
+			r.client.beforeLive = func(*conn, *route) { r.client.SetInputTrace(final) }
+			if err := connect(t, r, hs.host.Addr().String()); err != nil {
+				t.Fatal(err)
+			}
+			waitFor(t, "video", func() bool { return r.sink.Units.Load() >= 10 })
+			waitFor(t, "the host to follow the last toggle", func() bool { return tr.On() == final })
+			time.Sleep(200 * time.Millisecond)
+			if tr.On() != final {
+				t.Fatalf("host traces %v, client asked %v", tr.On(), final)
+			}
+		})
 	}
 }

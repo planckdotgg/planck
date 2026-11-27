@@ -397,6 +397,13 @@ type route struct {
 	mu      sync.Mutex
 	isLive  bool
 	pending []wire.Message
+	// traceMu orders what the route tells the host of its input trace;
+	// traceSent is whether it has, and traceOn what. A calibration route
+	// never does.
+	traceMu   sync.Mutex
+	noTrace   bool
+	traceSent bool
+	traceOn   bool
 }
 
 func (cc *conn) session() *transport.Session { return cc.live.Load().sess }
@@ -450,6 +457,7 @@ func (c *Client) Connect(ctx context.Context, t Target) error {
 	c.mu.Lock()
 	c.conn, c.target = cc, t
 	c.mu.Unlock()
+	c.syncInputTrace(cc.live.Load())
 	cc.wg.Go(func() { c.watchRoutes(cc, t) })
 	if p := c.cfg.Gamepads; p != nil {
 		id := p.Attach(c.SendInput)
@@ -753,9 +761,8 @@ func (c *Client) dialRoute(ctx context.Context, cc *conn, r resolved) (*route, e
 	}
 	rt.sess = sess
 	c.sendPeerState(sess)
-	if cfg.Calibrate == "" {
-		c.sendInputTrace(sess)
-	}
+	rt.noTrace = cfg.Calibrate != ""
+	c.syncInputTrace(rt)
 	if cfg.PIN != "" {
 		// A PIN pairs once; the host rotates it, and reconnects use the pin.
 		c.mu.Lock()
@@ -1148,6 +1155,7 @@ func (c *Client) switchRoute(cc *conn, r resolved) error {
 		cc.jb.Restart()
 	}
 	old := cc.goLive(rt, c.logf)
+	c.syncInputTrace(rt)
 	cc.switches.Add(1)
 	c.logf("planck: stream moved from %s %s to %s %s (%d-byte datagrams)", old.kind, old.addr, rt.kind, rt.addr, rt.sess.MaxDatagram())
 	old.sess.Close()
@@ -1793,13 +1801,24 @@ func (c *Client) sendPeerState(sess *transport.Session) {
 	_ = sess.SendControl(&wire.PeerState{ClipboardSend: cfg.Send, ClipboardRecv: cfg.Receive})
 }
 
-// sendInputTrace tells a host that reads it whether to trace its input:
-// every session, so that a host a client before this one asked stops.
-func (c *Client) sendInputTrace(sess *transport.Session) {
-	if sess.PeerFeatures()&wire.FeatureInputTrace == 0 {
+// syncInputTrace tells the host on rt whether to trace its input, unless
+// it was told that already: every session hears it once, so that a host a
+// client before this one asked stops, and again on each change. Connect
+// and a route switch call it as the route goes live, for a toggle that
+// came while it was being set up.
+func (c *Client) syncInputTrace(rt *route) {
+	if rt == nil || rt.noTrace || rt.sess.PeerFeatures()&wire.FeatureInputTrace == 0 {
 		return
 	}
-	_ = sess.SendControl(&wire.InputTrace{On: c.inputTrace.Load()})
+	rt.traceMu.Lock()
+	defer rt.traceMu.Unlock()
+	on := c.inputTrace.Load()
+	if rt.traceSent && rt.traceOn == on {
+		return
+	}
+	if rt.sess.SendControl(&wire.InputTrace{On: on}) == nil {
+		rt.traceSent, rt.traceOn = true, on
+	}
 }
 
 // SetInputTrace asks the host to trace its input, or to stop, at once and
@@ -1808,8 +1827,11 @@ func (c *Client) SetInputTrace(on bool) {
 	if c.inputTrace.Swap(on) == on {
 		return
 	}
-	if sess := c.liveSession(); sess != nil {
-		c.sendInputTrace(sess)
+	c.mu.Lock()
+	cc := c.conn
+	c.mu.Unlock()
+	if cc != nil {
+		c.syncInputTrace(cc.live.Load())
 	}
 }
 
