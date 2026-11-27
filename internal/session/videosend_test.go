@@ -131,6 +131,25 @@ func TestVideoSenderKeepsTheFrameInFlight(t *testing.T) {
 	}
 }
 
+// TestVideoSenderReadyWhenMade: a sender whose thread is slow to boost, as
+// Linux's is over D-Bus, is taking jobs once newVideoSender returns, so the
+// loop's first frames are not dropped behind the boost.
+func TestVideoSenderReadyWhenMade(t *testing.T) {
+	var boosted atomic.Bool
+	boost := boostSender
+	boostSender = func() (func(), error) {
+		time.Sleep(30 * time.Millisecond)
+		boosted.Store(true)
+		return func() {}, nil
+	}
+	t.Cleanup(func() { boostSender = boost })
+	s := newVideoSender(&slowOut{}, 1, func(uint32) {}, func(*sendJob, error) {})
+	defer s.close()
+	if !boosted.Load() {
+		t.Fatal("newVideoSender returned before its thread was boosted")
+	}
+}
+
 // TestVideoSenderCloseDropsTheQueue: close returns after the frame going
 // out, without sending what is queued behind it, and push after close is
 // a no-op.

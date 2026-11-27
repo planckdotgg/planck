@@ -81,9 +81,16 @@ type videoSender struct {
 func newVideoSender(out videoOut, maxFrames int, onDrop func(uint32), onSent func(*sendJob, error)) *videoSender {
 	s := &videoSender{out: out, maxFrames: maxFrames, onDrop: onDrop, onSent: onSent,
 		wake: make(chan struct{}, 1), done: make(chan struct{}), pool: make(chan []byte, maxFrames+2)}
-	go s.run()
+	// Boosting can take a D-Bus round trip on Linux; frames pushed before
+	// the sender takes jobs would be dropped, the first keyframe among them.
+	ready := make(chan struct{})
+	go s.run(ready)
+	<-ready
 	return s
 }
+
+// boostSender raises the sender's thread; tests replace it.
+var boostSender = boostVideoThread
 
 // buffer is an empty buffer to encode the next frame into.
 func (s *videoSender) buffer() []byte {
@@ -189,15 +196,16 @@ func (s *videoSender) dropOldestLocked() (uint32, bool) {
 	return victim, true
 }
 
-func (s *videoSender) run() {
+func (s *videoSender) run(ready chan<- struct{}) {
 	defer close(s.done)
 	// The pacer spins between trains of datagrams; preempted for a
 	// scheduler quantum, a frame would take twice its share to go out.
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
-	if revert, err := boostVideoThread(); err == nil {
+	if revert, err := boostSender(); err == nil {
 		defer revert()
 	}
+	close(ready)
 	var j sendJob
 	// failed is a frame one of whose slices did not go out.
 	var failed uint32
