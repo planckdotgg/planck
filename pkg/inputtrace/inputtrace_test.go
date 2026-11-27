@@ -322,6 +322,8 @@ func TestRotationIntoAFileDoesNotHangDisable(t *testing.T) {
 	// The open file moves with its directory; a file takes the directory's
 	// place, so every name in it fails with ENOTDIR.
 	if err := os.Rename(dir, dir+".moved"); err != nil {
+		close(tr.hold)
+		tr.Disable()
 		t.Skipf("cannot move a directory with an open file: %v", err)
 	}
 	if err := os.WriteFile(dir, []byte("x"), 0o644); err != nil {
