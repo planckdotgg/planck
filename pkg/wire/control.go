@@ -730,6 +730,8 @@ func newMessage(t MsgType) Message {
 		return &ProbeRequest{}
 	case MsgProbeDone:
 		return &ProbeDone{}
+	case MsgInputTrace:
+		return &InputTrace{}
 	}
 	return nil
 }

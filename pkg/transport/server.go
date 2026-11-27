@@ -71,6 +71,9 @@ type ServerConfig struct {
 	// Calibration offers wire.FeatureCalibration: sessions answer a
 	// client's ProbeRequest with a probe train.
 	Calibration bool
+	// InputTrace offers wire.FeatureInputTrace: the Control handler takes
+	// wire.InputTrace.
+	InputTrace bool
 	// MediaAddr is the local address for media sockets; default ":0".
 	MediaAddr string
 	// MaxDatagram caps sealed media datagrams. Zero takes
@@ -292,6 +295,9 @@ func (sv *Server) handshake(parent context.Context, conn *quic.Conn) (*Session, 
 	}
 	if sv.cfg.Calibration {
 		features |= wire.FeatureCalibration
+	}
+	if sv.cfg.InputTrace {
+		features |= wire.FeatureInputTrace
 	}
 	if err := wire.WriteMessage(ctrl, &wire.Hello{Version: wire.Version, Role: wire.RoleHost, Name: *sv.name.Load(), Features: features}); err != nil {
 		return nil, err
