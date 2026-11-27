@@ -48,20 +48,20 @@ func (p *linuxPointer) show() {
 	}
 }
 
-func (p *linuxPointer) hold(m pointerMode, area rect) {
+func (p *linuxPointer) hold(m pointerMode, area rect, at spot) {
 	s := p.seat()
 	if s == nil {
 		return
 	}
 	s.relOn.Store(m == pointerRelative)
 	if s.x != nil {
-		s.x.hold(m, area)
+		s.x.hold(m, area, at)
 	} else {
-		s.waylandHold(m, area)
+		s.waylandHold(m, area, at)
 	}
 }
 
-func (p *linuxPointer) free() {
+func (p *linuxPointer) free(at spot) {
 	s := p.seat()
 	if s == nil {
 		return
@@ -69,20 +69,10 @@ func (p *linuxPointer) free() {
 	s.relOn.Store(false)
 	if s.x != nil {
 		s.x.free()
+		s.x.warp(at)
 	} else {
+		s.waylandHint(at)
 		s.waylandFree()
-	}
-}
-
-func (p *linuxPointer) warp(x, y float32) {
-	s := p.seat()
-	if s == nil {
-		return
-	}
-	if s.x != nil {
-		s.x.warp(rect{X: x, Y: y, W: 1, H: 1})
-	} else {
-		s.waylandWarp(x, y)
 	}
 }
 

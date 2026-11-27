@@ -142,7 +142,7 @@ func TestCapturedCursor(t *testing.T) {
 	l.setShape(arrowShape)
 	l.setHost(wire.CursorState{Captured: true})
 	l.frame(true, testPicture)
-	wantCalls(t, sys, "warp 400,202.5", "hold 1", "hide")
+	wantCalls(t, sys, "hold 1 at 400,202.5", "hide")
 	wantPicture(t, l, cur, true, cursorLocal)
 	l.setLocked(false)
 	wantCalls(t, sys, "free", "show")
@@ -150,7 +150,7 @@ func TestCapturedCursor(t *testing.T) {
 	if !l.clickPicture() {
 		t.Fatal("a click did not lock again")
 	}
-	wantCalls(t, sys, "warp 400,202.5", "hold 1", "hide")
+	wantCalls(t, sys, "hold 1 at 400,202.5", "hide")
 	l.frame(false, testPicture)
 	wantCalls(t, sys, "free", "show")
 	wantPicture(t, l, cur, true, cursorLocal)

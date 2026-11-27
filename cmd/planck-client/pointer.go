@@ -34,10 +34,19 @@ func (r rect) valid() bool { return r.W > 0 && r.H > 0 }
 type pointerSys interface {
 	hide()
 	show()
-	// hold keeps the cursor in area as m has it, until free.
-	hold(m pointerMode, area rect)
-	free()
-	warp(x, y float32)
+	// hold keeps the cursor in area as m has it, until free; free lets
+	// it go. Each puts the cursor at at, where set, ordered against the
+	// hold changing as the system needs for the cursor to end up there:
+	// a Windows clip clamps a move to the old clip, and a Wayland lock
+	// takes its place only as a hint before it goes.
+	hold(m pointerMode, area rect, at spot)
+	free(at spot)
+}
+
+// spot is where to put the cursor, in the window's DIPs, where set.
+type spot struct {
+	x, y float32
+	set  bool
 }
 
 // pictureCursor is what shows over the picture while the pointer is free
@@ -285,7 +294,7 @@ func (l *pointerLock) reset() {
 func (l *pointerLock) close() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.release()
+	l.release(spot{})
 	if l.cursor != nil {
 		l.cursor.close()
 		l.look = cursorLocal
@@ -300,9 +309,9 @@ func (l *pointerLock) unsetCursor() {
 	}
 }
 
-func (l *pointerLock) release() {
+func (l *pointerLock) release(at spot) {
 	if l.mode != pointerFree {
-		l.sys.free()
+		l.sys.free(at)
 		l.mode = pointerFree
 	}
 	if l.hidden {
@@ -322,23 +331,22 @@ func (l *pointerLock) apply() {
 	// reported place lags it by a round trip, so only coming back from
 	// relative, with a place sampled since, does the cursor go there.
 	back := from == pointerRelative && l.fresh && l.host.HasPos && l.area.valid()
+	var at spot
 	switch {
-	case want == pointerFree:
-		l.release()
-		if back && !l.host.Captured {
-			l.warpTo(l.hostPoint())
-		}
-		return
 	case want == pointerRelative:
 		l.dx, l.dy = 0, 0
 		if from != pointerRelative {
 			l.fresh = false
 		}
-		l.warpTo(l.area.X+l.area.W/2, l.area.Y+l.area.H/2)
-	case back:
-		l.warpTo(l.hostPoint())
+		at = l.warpTo(l.area.X+l.area.W/2, l.area.Y+l.area.H/2)
+	case back && (want == pointerConfined || !l.host.Captured):
+		at = l.warpTo(l.hostPoint())
 	}
-	l.sys.hold(want, l.area)
+	if want == pointerFree {
+		l.release(at)
+		return
+	}
+	l.sys.hold(want, l.area, at)
 	l.mode, l.heldArea = want, l.area
 	if hide := want == pointerRelative; hide != l.hidden {
 		if hide {
@@ -350,10 +358,11 @@ func (l *pointerLock) apply() {
 	}
 }
 
-func (l *pointerLock) warpTo(x, y float32) {
-	l.sys.warp(x, y)
+// warpTo counts a warp to x, y, for the system to make with the hold.
+func (l *pointerLock) warpTo(x, y float32) spot {
 	l.warps++
 	l.warpX, l.warpY = x, y
+	return spot{x: x, y: y, set: true}
 }
 
 // lastWarp is the count of warps made and where the last went, in the

@@ -67,10 +67,10 @@ func TestHideFlickerComesBackAtHostCursor(t *testing.T) {
 	sys.take()
 	l.setHost(wire.CursorState{Captured: true, HasPos: true, X: 0, Y: 0})
 	l.frame(true, testPicture)
-	wantCalls(t, sys, "warp 400,202.5", "hold 1", "hide")
+	wantCalls(t, sys, "hold 1 at 400,202.5", "hide")
 	l.setHost(wire.CursorState{Visible: true, Captured: true, HasPos: true, X: 65535, Y: 65535})
 	l.frame(true, testPicture)
-	wantCalls(t, sys, "warp 760,405", "hold 2", "show")
+	wantCalls(t, sys, "hold 2 at 760,405", "show")
 }
 
 // TestReleaseFromRelativeIgnoresOldHostPlace: the host's place from before
@@ -80,7 +80,7 @@ func TestReleaseFromRelativeIgnoresOldHostPlace(t *testing.T) {
 	l, sys, _ := newTestLock(t)
 	l.setHost(wire.CursorState{HasPos: true, X: 0, Y: 0})
 	l.setLocked(true)
-	wantCalls(t, sys, "warp 400,202.5", "hold 1", "hide")
+	wantCalls(t, sys, "hold 1 at 400,202.5", "hide")
 	l.motion(300, 120)
 	l.setLocked(false)
 	wantCalls(t, sys, "free", "show")

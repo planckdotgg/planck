@@ -223,8 +223,11 @@ func (s *seat) surfaceRect(r rect) (x, y, w, h int) {
 	return s.native.AreaX + int(r.X+0.5), s.native.AreaY + int(r.Y+0.5), max(int(r.W+0.5), 1), max(int(r.H+0.5), 1)
 }
 
-// waylandHold locks or confines the pointer to the toplevel surface.
-func (s *seat) waylandHold(m pointerMode, area rect) {
+// waylandHold locks or confines the pointer to the toplevel surface. A
+// client cannot warp the pointer on Wayland, so at goes as the old lock's
+// hint, before it goes; a new lock takes the picture's centre as its own.
+func (s *seat) waylandHold(m pointerMode, area rect, at spot) {
+	s.waylandHint(at)
 	s.waylandFree()
 	if s.constraints == 0 || s.pointer == 0 {
 		return
@@ -253,14 +256,17 @@ func (s *seat) waylandFree() {
 	}
 }
 
-// waylandWarp moves the pointer, which Wayland lets a client do only as
-// where a locked pointer shows when it is let go.
-func (s *seat) waylandWarp(x, y float32) {
-	if s.held != 0 && s.lockedPointer {
-		px, py, _, _ := s.surfaceRect(rect{X: x, Y: y, W: 1, H: 1})
-		s.held.Marshal(wl.LockedSetCursorHint, nil, 0, wl.Fixed(float64(px)), wl.Fixed(float64(py)))
-		s.q.Flush()
+// waylandHint has a locked pointer show at at as it is let go. The hint is
+// the surface's pending state, so the surface commits it before the lock
+// goes.
+func (s *seat) waylandHint(at spot) {
+	if !at.set || s.held == 0 || !s.lockedPointer {
+		return
 	}
+	px, py, _, _ := s.surfaceRect(rect{X: at.x, Y: at.y, W: 1, H: 1})
+	s.held.Marshal(wl.LockedSetCursorHint, nil, 0, wl.Fixed(float64(px)), wl.Fixed(float64(py)))
+	wl.Proxy(s.native.WLSurface).Marshal(wl.SurfaceCommit, nil, 0)
+	s.q.Flush()
 }
 
 // inhibit has the compositor pass the system's shortcuts to the window.
@@ -511,14 +517,17 @@ func (x *x11) rootRect(r rect) (x0, y0, x1, y1 int) {
 // hold keeps the pointer in area with four XFixes barriers, which leave
 // GTK every event (a pointer grab of this connection would take them);
 // relative, in a box of two pixels at its centre, the pointer warped in
-// first, while raw motion brings the mouse's moves.
-func (x *x11) hold(m pointerMode, area rect) {
+// first, while raw motion brings the mouse's moves. Otherwise the pointer
+// warps to at, where set, between the old barriers and the new.
+func (x *x11) hold(m pointerMode, area rect, at spot) {
 	x.free()
 	x0, y0, x1, y1 := x.rootRect(area)
 	if m == pointerRelative {
 		cx, cy := (x0+x1)/2, (y0+y1)/2
 		ccall(xlib.warpPointer, x.req, 0, x.root, 0, 0, 0, 0, uintptr(cx), uintptr(cy))
 		x0, y0, x1, y1 = cx-1, cy-1, cx+1, cy+1
+	} else {
+		x.warp(at)
 	}
 	const posX, posY, negX, negY = 1, 2, 4, 8
 	for _, b := range [...][5]int{
@@ -541,8 +550,11 @@ func (x *x11) free() {
 	ccall(xlib.flush, x.req)
 }
 
-func (x *x11) warp(r rect) {
-	x0, y0, _, _ := x.rootRect(r)
+func (x *x11) warp(at spot) {
+	if !at.set {
+		return
+	}
+	x0, y0, _, _ := x.rootRect(rect{X: at.x, Y: at.y, W: 1, H: 1})
 	ccall(xlib.warpPointer, x.req, 0, x.root, 0, 0, 0, 0, uintptr(x0), uintptr(y0))
 	ccall(xlib.flush, x.req)
 }

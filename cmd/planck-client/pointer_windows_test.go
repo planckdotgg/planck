@@ -5,6 +5,8 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/egoist/mygo"
+
 	"github.com/planckdotgg/planck/pkg/input"
 )
 
@@ -50,5 +52,30 @@ func TestRawReportMotionBeforeSideButton(t *testing.T) {
 	r.report(m, false)
 	if want := []string{"side"}; !slices.Equal(log, want) {
 		t.Fatalf("not relative: passed on %v, want %v", log, want)
+	}
+}
+
+// TestWinWarpAfterClip: SetCursorPos clamps to the clip in place, so
+// leaving relative mode, whose clip is a pixel wide, warps once the clip
+// is wide again or gone; a warp before would stay at the centre.
+func TestWinWarpAfterClip(t *testing.T) {
+	var log []string
+	p := &winPointer{
+		win: func() *mygo.Window { return nil },
+		clip: func(r *winRect) {
+			if r == nil {
+				log = append(log, "unclip")
+			} else {
+				log = append(log, "clip")
+			}
+		},
+		setPos: func(x, y int32) { log = append(log, "warp") },
+	}
+	at := spot{x: 10, y: 10, set: true}
+	p.hold(pointerConfined, rect{W: 100, H: 100}, at)
+	p.free(at)
+	p.hold(pointerConfined, rect{W: 100, H: 100}, spot{})
+	if want := []string{"clip", "warp", "unclip", "warp", "clip"}; !slices.Equal(log, want) {
+		t.Fatalf("called %v, want %v", log, want)
 	}
 }

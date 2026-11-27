@@ -62,10 +62,15 @@ func newSystemPointer(win func() *mygo.Window, motion func(dx, dy float64)) poin
 func (p *macPointer) hide() { cgDisplayHideCursor(cgMainDisplayID()) }
 func (p *macPointer) show() { cgDisplayShowCursor(cgMainDisplayID()) }
 
-func (p *macPointer) hold(m pointerMode, area rect) {
+// hold warps before the cursor dissociates, and free after it associates
+// again, so that the warp associates it outside relative mode.
+func (p *macPointer) hold(m pointerMode, area rect, at spot) {
 	p.watch()
 	x, y := p.origin()
 	p.area = rect{X: x + area.X, Y: y + area.Y, W: area.W, H: area.H}
+	if at.set {
+		p.warpGlobal(float64(x+at.x), float64(y+at.y))
+	}
 	p.mode = m
 	connected := uint32(1)
 	if m == pointerRelative {
@@ -75,10 +80,14 @@ func (p *macPointer) hold(m pointerMode, area rect) {
 	p.allMoves(true)
 }
 
-func (p *macPointer) free() {
+func (p *macPointer) free(at spot) {
 	p.mode = pointerFree
 	cgAssociateMouseAndPosition(1)
 	p.allMoves(false)
+	if at.set {
+		ox, oy := p.origin()
+		p.warpGlobal(float64(ox+at.x), float64(oy+at.y))
+	}
 }
 
 // allMoves has the window take the mouse's moves off its view too, or
@@ -87,11 +96,6 @@ func (p *macPointer) allMoves(on bool) {
 	if w := p.win(); w != nil {
 		objc.ID(w.NativeHandle()).Send(objc.RegisterName("setAcceptsMouseMovedEvents:"), on)
 	}
-}
-
-func (p *macPointer) warp(x, y float32) {
-	ox, oy := p.origin()
-	p.warpGlobal(float64(ox+x), float64(oy+y))
 }
 
 func (p *macPointer) warpGlobal(x, y float64) {

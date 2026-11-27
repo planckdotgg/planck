@@ -47,16 +47,25 @@ type winRect struct{ Left, Top, Right, Bottom int32 }
 type winPointer struct {
 	win func() *mygo.Window
 	raw rawMouse
+	// clip and setPos are ClipCursor, nil clearing it, and SetCursorPos.
+	clip   func(r *winRect)
+	setPos func(x, y int32)
 }
 
 func newSystemPointer(win func() *mygo.Window, motion func(dx, dy float64)) pointerSys {
-	return &winPointer{win: win, raw: rawMouse{motion: motion}}
+	return &winPointer{
+		win: win, raw: rawMouse{motion: motion},
+		clip:   func(r *winRect) { procClipCursor.Call(uintptr(unsafe.Pointer(r))) },
+		setPos: func(x, y int32) { procSetCursorPos.Call(uintptr(x), uintptr(y)) },
+	}
 }
 
 func (p *winPointer) hide() { procShowCursor.Call(0) }
 func (p *winPointer) show() { procShowCursor.Call(1) }
 
-func (p *winPointer) hold(m pointerMode, area rect) {
+// hold and free warp after the clip changes: SetCursorPos clamps to the
+// clip in place, the relative one a pixel wide.
+func (p *winPointer) hold(m pointerMode, area rect, at spot) {
 	r := p.screen(area)
 	if m == pointerRelative {
 		cx, cy := (r.Left+r.Right)/2, (r.Top+r.Bottom)/2
@@ -64,17 +73,22 @@ func (p *winPointer) hold(m pointerMode, area rect) {
 		p.raw.start()
 	}
 	p.raw.on.Store(m == pointerRelative)
-	procClipCursor.Call(uintptr(unsafe.Pointer(&r)))
+	p.clip(&r)
+	p.warp(at)
 }
 
-func (p *winPointer) free() {
+func (p *winPointer) free(at spot) {
 	p.raw.on.Store(false)
-	procClipCursor.Call(0)
+	p.clip(nil)
+	p.warp(at)
 }
 
-func (p *winPointer) warp(x, y float32) {
-	r := p.screen(rect{X: x, Y: y})
-	procSetCursorPos.Call(uintptr(r.Left), uintptr(r.Top))
+func (p *winPointer) warp(at spot) {
+	if !at.set {
+		return
+	}
+	r := p.screen(rect{X: at.x, Y: at.y})
+	p.setPos(r.Left, r.Top)
 }
 
 // screen is a rectangle of the window's content in the screen's pixels.

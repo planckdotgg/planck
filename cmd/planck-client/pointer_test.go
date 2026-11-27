@@ -31,25 +31,28 @@ func (f *fakePointer) show() {
 	f.calls = append(f.calls, "show")
 }
 
-func (f *fakePointer) hold(m pointerMode, area rect) {
+func (f *fakePointer) hold(m pointerMode, area rect, at spot) {
 	if m == pointerFree {
 		f.t.Fatal("held free")
 	}
 	f.mode, f.area = m, area
-	f.calls = append(f.calls, fmt.Sprintf("hold %d", m))
+	f.calls = append(f.calls, fmt.Sprintf("hold %d", m)+f.at(at))
 }
 
-func (f *fakePointer) free() {
+func (f *fakePointer) free(at spot) {
 	if f.mode == pointerFree {
 		f.t.Fatal("freed a pointer not held")
 	}
 	f.mode = pointerFree
-	f.calls = append(f.calls, "free")
+	f.calls = append(f.calls, "free"+f.at(at))
 }
 
-func (f *fakePointer) warp(x, y float32) {
-	f.warped = [2]float32{x, y}
-	f.calls = append(f.calls, fmt.Sprintf("warp %g,%g", x, y))
+func (f *fakePointer) at(at spot) string {
+	if !at.set {
+		return ""
+	}
+	f.warped = [2]float32{at.x, at.y}
+	return fmt.Sprintf(" at %g,%g", at.x, at.y)
 }
 
 func (f *fakePointer) take() []string {
@@ -87,7 +90,7 @@ func TestGameCaptureLocksRelative(t *testing.T) {
 
 	l.setHost(wire.CursorState{Captured: true})
 	l.frame(true, testPicture)
-	wantCalls(t, sys, "warp 400,202.5", "hold 1", "hide")
+	wantCalls(t, sys, "hold 1 at 400,202.5", "hide")
 	if !l.locked() || l.held() != pointerRelative {
 		t.Fatalf("locked %v held %d", l.locked(), l.held())
 	}
@@ -132,7 +135,7 @@ func TestShortcutReleasesAndClickRelocks(t *testing.T) {
 	if !l.clickPicture() {
 		t.Fatal("a click on the picture did not take the lock again")
 	}
-	wantCalls(t, sys, "warp 400,202.5", "hold 1", "hide")
+	wantCalls(t, sys, "hold 1 at 400,202.5", "hide")
 	if l.clickPicture() {
 		t.Fatal("a click while locked was taken by the lock")
 	}
@@ -148,7 +151,7 @@ func TestShortcutReleasesAndClickRelocks(t *testing.T) {
 func TestManualLock(t *testing.T) {
 	l, sys, _ := newTestLock(t)
 	l.setLocked(true)
-	wantCalls(t, sys, "warp 400,202.5", "hold 1", "hide")
+	wantCalls(t, sys, "hold 1 at 400,202.5", "hide")
 	l.setLocked(false)
 	wantCalls(t, sys, "free", "show")
 	if l.clickPicture() {
@@ -180,7 +183,7 @@ func TestFocusLossReleasesUntilClick(t *testing.T) {
 	if !l.clickPicture() {
 		t.Fatal("a click did not take the lock back")
 	}
-	wantCalls(t, sys, "warp 400,202.5", "hold 1", "hide")
+	wantCalls(t, sys, "hold 1 at 400,202.5", "hide")
 }
 
 // TestMenuHoldsLockOff: the stream's menu frees the cursor while it is
@@ -200,7 +203,7 @@ func TestMenuHoldsLockOff(t *testing.T) {
 		t.Fatal("a click took the lock with the menu open")
 	}
 	l.setMenuOpen(false)
-	wantCalls(t, sys, "warp 400,202.5", "hold 1", "hide")
+	wantCalls(t, sys, "hold 1 at 400,202.5", "hide")
 }
 
 // TestGameReleaseWarpsToHostCursor: as the game lets go, the cursor shows
@@ -213,7 +216,7 @@ func TestGameReleaseWarpsToHostCursor(t *testing.T) {
 	sys.take()
 	l.setHost(wire.CursorState{Visible: true, HasPos: true, X: 0, Y: 65535})
 	l.frame(true, testPicture)
-	wantCalls(t, sys, "free", "show", "warp 40,405")
+	wantCalls(t, sys, "free at 40,405", "show")
 
 	l.setHost(wire.CursorState{Captured: true})
 	l.frame(true, testPicture)
@@ -222,12 +225,12 @@ func TestGameReleaseWarpsToHostCursor(t *testing.T) {
 	l.setHost(wire.CursorState{Captured: true})
 	sys.take()
 	l.frame(true, testPicture)
-	wantCalls(t, sys, "warp 400,202.5", "hold 1", "hide")
+	wantCalls(t, sys, "hold 1 at 400,202.5", "hide")
 
 	// Visible but confined: the cursor shows, kept on the picture.
 	l.setHost(wire.CursorState{Visible: true, Captured: true, HasPos: true, X: 32768, Y: 32768})
 	l.frame(true, testPicture)
-	wantCalls(t, sys, "warp 400.0055,202.50308", "hold 2", "show")
+	wantCalls(t, sys, "hold 2 at 400.0055,202.50308", "show")
 }
 
 // TestResizeHoldsTheNewPicture: a held pointer follows the picture.
@@ -237,7 +240,7 @@ func TestResizeHoldsTheNewPicture(t *testing.T) {
 	sys.take()
 	bigger := rect{W: 1280, H: 720}
 	l.frame(true, bigger)
-	wantCalls(t, sys, "warp 640,360", "hold 1")
+	wantCalls(t, sys, "hold 1 at 640,360")
 	if sys.area != bigger {
 		t.Fatalf("held %+v", sys.area)
 	}
