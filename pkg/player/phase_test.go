@@ -1,7 +1,11 @@
 package player
 
 import (
+	"bufio"
 	"math/rand/v2"
+	"os"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -49,6 +53,69 @@ func TestPhaseFromScreenTimes(t *testing.T) {
 		if r.Newest != 199 || r.Oldest != 168 {
 			t.Fatalf("%s: frames %d..%d, want 168..199", c.name, r.Oldest, r.Newest)
 		}
+	}
+}
+
+// TestPhaseRecorded60On120: a 60 fps stream recorded in a window, then
+// full screen direct, on a 120 Hz display. In full screen macOS kept each
+// picture up two refreshes or more, and pictures queued behind one another
+// for seconds at a time; the scan-out must still read direct at every
+// report, with at most a quarter of the pictures late, and the window
+// composited.
+func TestPhaseRecorded60On120(t *testing.T) {
+	f, err := os.Open("testdata/glass_60fps_120hz.csv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var clock atomic.Int64
+	p := startWith(&fakeDecoder{out: map[uintptr]bool{}}, 0, func(decode.Frame) error { return nil }, func(int, int) error { return nil }, clock.Load)
+	defer p.Close()
+	p.phase.SetNominalPeriod(int64(time.Second / 120))
+	path, next, pts := "window", int64(0), int64(0)
+	modes := map[string]map[phaselock.Mode]int{"window": {}, "direct": {}}
+	directLate := 0.0
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := sc.Text()
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		var at [3]int64
+		v := strings.Split(line, ",")
+		for i := range at {
+			us, err := strconv.ParseInt(v[i+1], 10, 64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			at[i] = us * 1000
+		}
+		if v[0] != path {
+			path, next = v[0], at[2]
+			clock.Store(at[0])
+			p.ResetPhase()
+		}
+		for ; next <= at[2]; next += int64(250 * time.Millisecond) {
+			if next > 0 {
+				r := p.Phase()
+				modes[path][r.Mode]++
+				if path == "direct" {
+					directLate = max(directLate, r.CompositedPct)
+				}
+			}
+		}
+		p.onScreenGPU(pts, at[0], at[1], at[2])
+		pts++
+	}
+	t.Logf("reports by mode: window %v, direct %v; direct at most %.0f%% late", modes["window"], modes["direct"], directLate)
+	if w := modes["window"]; w[phaselock.ModeComposited] < 50 || w[phaselock.ModeDirect] > 0 {
+		t.Errorf("window: reports by mode %v, want composited", w)
+	}
+	if d := modes["direct"]; d[phaselock.ModeDirect] < 150 || d[phaselock.ModeComposited] > 0 {
+		t.Errorf("full screen direct: reports by mode %v, want direct at every report", d)
+	}
+	if directLate > 25 {
+		t.Errorf("full screen direct: up to %.0f%% of pictures late, want at most 25%%", directLate)
 	}
 }
 

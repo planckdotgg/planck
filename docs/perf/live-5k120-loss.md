@@ -243,13 +243,38 @@ macOS has no public flag for it. The player reads the GPU's end time of
 every picture (`gpusurface.OnPresentedGPU`) and `pkg/phaselock` calls the
 stream composited when more than 12% of the last 120 pictures reached the
 screen more than half a refresh after the quickest tenth did, direct under
-6%, three reports in a row to switch. Over the run above it read 0-5%
+6%. Over the run above it read 0-5%
 full screen, 12-30% with the Metrics overlay and 30-70% in a window; one
 120-picture window reached 29% as CuaDriver restarted. On a display whose
 pictures land on refreshes it compares each picture with the first refresh
 after its GPU end instead. The client logs `scan-out direct` or
 `scan-out composited`, and `ClientStats.Phase` and the Statistics page
 carry it.
+
+A 60 fps stream full screen on this display (bigboi's 1080p60 desktop,
+AMF HEVC, VDD off) read composited 21-42% while the Metal HUD said
+Direct. In direct mode macOS kept each picture up at least two refreshes
+(16.67 ms; glass intervals never shorter), and after one late picture
+every later one queued behind the one before for seconds: glass exactly
+2 or 3 refreshes after the last, present start to GPU end 4.2 to 17 ms,
+GPU end to glass 1.7 to 13-24 ms. Up to 52% of a 120-picture window were
+queued so, and with the queue locking the refresh grid, both the spread
+and the grid reading called it composited. `pkg/phaselock` now leaves
+out a picture shown exactly two or more refreshes after the one before,
+following another such gap (one among pictures a refresh apart is a
+missed refresh), when it was done half a refresh before it showed and
+before the one before had been up two refreshes; and pictures more than
+3 refreshes from GPU end to glass. Where more than 75% of a full window
+look held, they count, as a compositor that delays every picture alike
+does. Direct turns composited after 12 reports in a row past 12% (3 s),
+composited turns direct after 3 under 6%: the queue bursts stayed past
+12% for up to 8 reports. Replayed through the player, the recorded stream
+(`pkg/player/testdata/glass_60fps_120hz.csv`) reads composited in the
+window and direct at all 172 reports in full screen, at most 20% late;
+before, composited at 153 of them.
+
+The queue costs a refresh or two of latency while it lasts (present to
+glass p50 6.34 ms in QA against 4.3 ms at 119 fps) and is not fixed here.
 
 ### Phase lock
 

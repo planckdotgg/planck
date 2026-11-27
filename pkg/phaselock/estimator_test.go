@@ -273,3 +273,148 @@ func TestEstimatorResetStartsANewPath(t *testing.T) {
 		t.Fatalf("gridded full screen: mode %v at %.0f%%, want direct", r.Mode, r.CompositedPct)
 	}
 }
+
+// holdDisplay stands for a 120 Hz display showing a 60 fps stream direct:
+// a picture reaches the screen 1.8 ms after its GPU end, except in a queue,
+// where the display keeps each picture up two refreshes or more and the
+// next waits for the refresh that lets it go. A queue starts with a picture
+// a hiccup shows 10 ms late.
+type holdDisplay struct {
+	at, glass int64
+	queued    bool
+	rng       *rand.Rand
+}
+
+func (d *holdDisplay) next(queue bool) Sample {
+	ms := int64(time.Millisecond)
+	d.at += 2*p120 + d.rng.Int64N(600_000) - 300_000
+	done := d.at + 4*ms
+	glass := done + 1800*int64(time.Microsecond) + d.rng.Int64N(600_000)
+	switch {
+	case queue && !d.queued:
+		glass = done + 10*ms + d.rng.Int64N(ms)
+	case queue:
+		k := int64(2)
+		for d.glass+k*p120 < done+1800*int64(time.Microsecond) {
+			k++
+		}
+		glass = d.glass + k*p120
+	}
+	d.queued, d.glass = queue, glass
+	return Sample{Ready: d.at, GPUDone: done, Glass: glass}
+}
+
+// TestEstimatorHeldQueueStaysDirect: on a direct surface, pictures queued
+// behind one the display keeps up are late by a refresh or two without a
+// compositor; the mode stays direct at every report, also where the queue
+// lasts long enough for the refresh grid to lock on it. Queues held up to
+// 52% of a window's pictures in the stream measured.
+func TestEstimatorHeldQueueStaysDirect(t *testing.T) {
+	for _, c := range []struct {
+		name         string
+		queue, every int
+		grid         bool
+	}{{"off the grid", 60, 180, false}, {"grid locked in queues", 66, 150, true}} {
+		var e Estimator
+		e.SetNominalPeriod(p120)
+		d := &holdDisplay{at: int64(time.Second), rng: rand.New(rand.NewPCG(11, 12))}
+		modes := map[Mode]int{}
+		for i := range 3600 {
+			queue := i%c.every >= c.every-c.queue
+			s := d.next(queue)
+			s.Frame = uint32(i)
+			var g Grid
+			if c.grid && queue {
+				g = Grid{Period: p120, Anchor: s.Glass}
+			}
+			e.Observe(s, g)
+			if i%15 == 14 {
+				modes[e.Report().Mode]++
+			}
+		}
+		if modes[ModeComposited] > 0 || modes[ModeDirect] < 200 {
+			t.Errorf("%s: reports by mode %v, want direct at every report", c.name, modes)
+		}
+	}
+}
+
+// TestEstimatorSteadyCompositor: a compositor that shows every picture of a
+// 60 fps stream a refresh late, two refreshes apart on the locked grid, as
+// pictures paced to the refresh come in a window, looks held picture by
+// picture; with nearly all of them so, it is read as composited.
+func TestEstimatorSteadyCompositor(t *testing.T) {
+	var e Estimator
+	e.SetNominalPeriod(p120)
+	g := Grid{Period: p120, Anchor: int64(time.Second)}
+	for i := range int64(4 * modeWindow) {
+		v := int64(time.Second) + i*2*p120
+		done := v - p120 + 2*int64(time.Millisecond)
+		e.Observe(Sample{Frame: uint32(i), Ready: done - 3*int64(time.Millisecond), GPUDone: done, Glass: v + p120}, g)
+		if i%15 == 14 {
+			e.Report()
+		}
+	}
+	if r := e.Report(); r.Mode != ModeComposited {
+		t.Fatalf("report %+v: want composited", r)
+	}
+}
+
+// TestEstimatorBurstKeepsDirect: two seconds of late pictures on a direct
+// surface do not turn the mode composited; a compositor that stays does.
+func TestEstimatorBurstKeepsDirect(t *testing.T) {
+	rng := rand.New(rand.NewPCG(13, 14))
+	ms := int64(time.Millisecond)
+	var e Estimator
+	e.SetNominalPeriod(p120)
+	feedFree(&e, modeWindow, 2*ms, ms, rng)
+	if r := e.Report(); r.Mode != ModeDirect {
+		t.Fatalf("mode %v, want direct", r.Mode)
+	}
+	for range 8 {
+		feedFree(&e, 15, 2*ms, 2*p120, rng)
+		if r := e.Report(); r.Mode != ModeDirect {
+			t.Fatalf("mode %v at %.0f%% late during a 2 s burst, want direct", r.Mode, r.CompositedPct)
+		}
+	}
+	feedFree(&e, modeWindow, 2*ms, ms, rng)
+	e.Report()
+	// A window's worth of reports fills it, then spreadReports in a row.
+	var r Report
+	for range modeWindow/15 + spreadReports {
+		feedFree(&e, 15, 2*ms, 2*p120, rng)
+		r = e.Report()
+	}
+	if r.Mode != ModeComposited {
+		t.Fatalf("mode %v at %.0f%% late, want composited", r.Mode, r.CompositedPct)
+	}
+}
+
+// TestEstimatorQueueStartIsHeld: the first picture of a queue comes a
+// whole number of refreshes after the one before like the rest of it; it
+// waited for the display too, which only the next picture shows.
+func TestEstimatorQueueStartIsHeld(t *testing.T) {
+	ms := int64(time.Millisecond)
+	var e Estimator
+	e.SetNominalPeriod(p120)
+	at, glass := int64(time.Second), int64(time.Second)
+	for i := range 960 {
+		// Off the refresh grid between queues.
+		at += 2*p120 + ms + int64(i%3)*200_000
+		done := at + 4*ms
+		switch i % 8 {
+		case 6, 7:
+			// Done 5 ms after the one before reached the screen, shown two
+			// refreshes after it.
+			done = glass + 5*ms
+			glass += 2 * p120
+		default:
+			glass = max(done, glass+ms) + 1800*int64(time.Microsecond)
+		}
+		e.Observe(Sample{Frame: uint32(i), Ready: done - 4*ms, GPUDone: done, Glass: glass}, Grid{})
+		if i%15 == 14 {
+			if r := e.Report(); r.Mode != ModeDirect && i >= minModeSet {
+				t.Fatalf("picture %d: mode %v at %.0f%% late, want direct", i, r.Mode, r.CompositedPct)
+			}
+		}
+	}
+}

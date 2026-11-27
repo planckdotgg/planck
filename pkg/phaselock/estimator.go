@@ -139,10 +139,31 @@ const (
 	// that reached the screen more than half a refresh after the quickest
 	// tenth did. Measured at 5120x1440 on an M5 Pro: 0-5% direct, 12-30%
 	// with an overlay composited, 30-70% in a window. spreadReports in a
-	// row past a bound switch the mode.
+	// row past spreadCompositedAbove turn direct composited, and
+	// spreadDirectReports below spreadDirectBelow turn it back. Direct
+	// surfaces have bursts of late pictures that a compositor did not
+	// cause: streaming a 60 fps desktop full screen at 120 Hz, the Metal
+	// HUD reading Direct throughout, they stayed past the bound for up to 8
+	// reports (2 s at the client's 4 a second); compositing lasted longer.
 	spreadCompositedAbove = 0.12
 	spreadDirectBelow     = 0.06
-	spreadReports         = 3
+	spreadReports         = 12
+	spreadDirectReports   = 3
+	// A picture shown exactly two or more refreshes after the one before
+	// it, though ready at least half a refresh earlier and before that one
+	// had been up two refreshes, waited for the display to let the one
+	// before go, not for a compositor. Measured streaming a 60 fps desktop
+	// full screen on a 120 Hz display at 5120x1440 on an M5 Pro, the
+	// Metal HUD reading Direct throughout: macOS kept each picture up at
+	// least two refreshes, and once one came early every later one queued
+	// behind it for seconds, 13-24 ms from GPU end to screen, up to 52% of
+	// a window's pictures. Such pictures, and stalls past stallRefreshes,
+	// say nothing of the mode, unless past heldMost of the window are held:
+	// a compositor that delays every picture by the same refreshes looks
+	// held too.
+	onRefreshTolerance = int64(350 * time.Microsecond)
+	stallRefreshes     = 3
+	heldMost           = 0.75
 )
 
 // Estimator measures the phase of pictures against the display's
@@ -158,11 +179,19 @@ type Estimator struct {
 	extra  [modeWindow]int8 // refreshes after the one direct scan-out makes; -1 unknown
 	nm, im int
 	// toGlass is each picture's time from the GPU finishing it to the
-	// screen, -1 unknown; gridded whether the refresh grid was locked.
+	// screen, -1 unknown; gridded whether the refresh grid was locked;
+	// held whether it waited for the display to let the one before go.
 	toGlass [modeWindow]int64
 	gridded [modeWindow]bool
+	held    [modeWindow]bool
 	nominal int64
 	streak  int
+	// lastGlass is when the picture before reached the screen; holding
+	// whether it came a whole number of refreshes, two or more, after the
+	// one before it, and pending its slot plus one if it was early, 0 if not.
+	lastGlass int64
+	holding   bool
+	pending   int
 
 	period int64
 	margin int64
@@ -186,8 +215,27 @@ func (e *Estimator) Reset() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.n, e.i, e.nm, e.im = 0, 0, 0, 0
-	e.streak, e.period, e.margin = 0, 0, 0
-	e.mode, e.locked = ModeUnknown, false
+	e.streak, e.period, e.margin, e.lastGlass = 0, 0, 0, 0
+	e.mode, e.locked, e.holding, e.pending = ModeUnknown, false, false, 0
+}
+
+// holdGap reports whether a picture shown at glass came a whole number of
+// refreshes p, two or more, after the one before it, and whether it was
+// done at gpuDone half a refresh before it showed and before the one before
+// had been up two refreshes: then it may have waited for the display to
+// let that one go (see onRefreshTolerance). It keeps glass for the next.
+func (e *Estimator) holdGap(gpuDone, glass, p int64) (gap, early bool) {
+	prev := e.lastGlass
+	e.lastGlass = glass
+	if p <= 0 || prev <= 0 || glass <= prev {
+		return false, false
+	}
+	d := glass - prev
+	k := (d + p/2) / p
+	if k < 2 || abs(d-k*p) > onRefreshTolerance {
+		return false, false
+	}
+	return true, gpuDone > 0 && gpuDone < prev+min(2*k-1, 4)*p/2
 }
 
 // Observe takes a picture that reached the screen and the display's
@@ -198,20 +246,38 @@ func (e *Estimator) Observe(s Sample, g Grid) {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	p := g.Period
+	if p <= 0 {
+		p = e.period
+	}
+	if p <= 0 {
+		p = e.nominal
+	}
+	gap, early := e.holdGap(s.GPUDone, s.Glass, p)
+	if g.Period > 0 && e.period != 0 && abs(g.Period-e.period)*100 > e.period {
+		// The display changed: what was measured is of another one.
+		e.n, e.i, e.nm, e.im, e.pending = 0, 0, 0, 0, 0
+	}
+	// A hold shows as two such gaps in a row; one among pictures a
+	// refresh apart is a missed refresh.
+	held := gap && early && e.holding
+	if k := e.pending - 1; gap && k >= 0 {
+		e.held[k] = true
+	}
+	e.holding, e.pending = gap, 0
+	if gap && early && !held {
+		e.pending = e.im + 1
+	}
 	e.toGlass[e.im] = -1
 	if s.GPUDone > 0 && s.Glass >= s.GPUDone {
 		e.toGlass[e.im] = s.Glass - s.GPUDone
 	}
-	e.gridded[e.im] = g.Period > 0
+	e.gridded[e.im], e.held[e.im] = g.Period > 0, held
 	if g.Period <= 0 {
 		e.extra[e.im] = -1
 		e.im = (e.im + 1) % modeWindow
 		e.nm = min(e.nm+1, modeWindow)
 		return
-	}
-	if e.period != 0 && abs(g.Period-e.period)*100 > e.period {
-		// The display changed: what was measured is of another one.
-		e.n, e.i, e.nm, e.im = 0, 0, 0, 0
 	}
 	e.period = g.Period
 	e.slack[e.i] = g.Next(s.Ready) - s.Ready
@@ -317,9 +383,10 @@ func (e *Estimator) updateMode(r *Report) bool {
 		return false
 	}
 	e.streak = 0
+	skip := e.skipHeld()
 	var known, comp int
 	for k := 0; k < e.nm; k++ {
-		if x := e.extra[k]; x >= 0 {
+		if x := e.extra[k]; x >= 0 && !(skip && e.held[k]) {
 			known++
 			if x >= 1 {
 				comp++
@@ -343,7 +410,7 @@ func (e *Estimator) updateMode(r *Report) bool {
 	}
 	late := 0
 	for k := 0; k < e.nm; k++ {
-		if e.extra[k] > base {
+		if e.extra[k] > base && !(skip && e.held[k]) {
 			late++
 		}
 	}
@@ -357,14 +424,20 @@ func (e *Estimator) updateModeBySpread(r *Report) {
 		p = e.nominal
 	}
 	var vals [modeWindow]int64
-	n := 0
+	n, timed := 0, 0
+	skip := e.skipHeld()
 	for k := 0; k < e.nm; k++ {
-		if v := e.toGlass[k]; v >= 0 {
+		v := e.toGlass[k]
+		if v < 0 {
+			continue
+		}
+		timed++
+		if v <= stallRefreshes*p && !(skip && e.held[k]) {
 			vals[n] = v
 			n++
 		}
 	}
-	if p <= 0 || n < minModeSet {
+	if p <= 0 || timed < minModeSet || n < minModeSet/2 {
 		return
 	}
 	v := vals[:n]
@@ -389,12 +462,28 @@ func (e *Estimator) updateModeBySpread(r *Report) {
 	case e.mode == ModeUnknown:
 		e.mode, e.streak = want, 0
 	case want != e.mode:
-		if e.streak++; e.streak >= spreadReports {
+		need := spreadReports
+		if want == ModeDirect {
+			need = spreadDirectReports
+		}
+		if e.streak++; e.streak >= need {
 			e.mode, e.streak = want, 0
 		}
 	default:
 		e.streak = 0
 	}
+}
+
+// skipHeld reports whether to leave the held pictures out of the mode: in
+// a window not yet full, or where they are few enough (see heldMost).
+func (e *Estimator) skipHeld() bool {
+	held := 0
+	for k := 0; k < e.nm; k++ {
+		if e.held[k] {
+			held++
+		}
+	}
+	return e.nm < modeWindow || float64(held) <= heldMost*float64(e.nm)
 }
 
 func abs(v int64) int64 {
