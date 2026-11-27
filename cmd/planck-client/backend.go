@@ -99,6 +99,9 @@ type backend struct {
 	last    *ui.SessionStats
 	client  *session.Client
 	target  session.Target
+	// dialing counts the streams being dialed: they hold the stream's
+	// slot against a calibration before b.client is set.
+	dialing int
 	pinned  map[string]config.PinnedHost
 	tel     ui.Telemetry
 	pair    ui.PairState
@@ -635,6 +638,16 @@ func (b *backend) sameUser(t session.Target) bool {
 // until it ends.
 func (b *backend) dial(ctx context.Context, t session.Target, pin string) error {
 	b.mu.Lock()
+	if b.cal.done != nil {
+		b.mu.Unlock()
+		return ui.ErrCalibrating
+	}
+	b.dialing++
+	defer func() {
+		b.mu.Lock()
+		b.dialing--
+		b.mu.Unlock()
+	}()
 	s, name := b.settings, b.name
 	old := b.client
 	b.client = nil

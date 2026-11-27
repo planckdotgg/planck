@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/planckdotgg/planck/internal/session"
 	"github.com/planckdotgg/planck/internal/ui"
+	"github.com/planckdotgg/planck/pkg/decode"
 	"github.com/planckdotgg/planck/pkg/discovery"
 )
 
@@ -129,4 +132,56 @@ func TestBackendCalibrationRefusesWhileStreaming(t *testing.T) {
 	if err := b.StartCalibration(b.Hosts()[0].ID); !errors.Is(err, ui.ErrStreaming) {
 		t.Fatalf("calibrate while streaming: %v", err)
 	}
+}
+
+// TestBackendCalibrationRefusesWhileConnecting: a stream holds its slot
+// from the moment it dials, so a calibration started while it opens its
+// sink is refused, and the stream still starts.
+func TestBackendCalibrationRefusesWhileConnecting(t *testing.T) {
+	h := calibrationFakeHost(t)
+	b := pairedBackend(t, h)
+	open := b.openSink
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	b.openSink = func(c decode.Config) (session.Sink, error) {
+		once.Do(func() {
+			close(entered)
+			<-release
+		})
+		return open(c)
+	}
+	connected := make(chan error, 1)
+	go func() { connected <- b.Connect(context.Background(), h.Addr().String()) }()
+	<-entered
+	err := b.StartCalibration(b.Hosts()[0].ID)
+	close(release)
+	if !errors.Is(err, ui.ErrStreaming) {
+		t.Errorf("calibrate while connecting: %v", err)
+	}
+	if err := <-connected; err != nil {
+		t.Fatal(err)
+	}
+	if b.Calibration().Running {
+		t.Fatal("a calibration runs beside the stream")
+	}
+}
+
+// TestBackendPairingRefusesWhileCalibrating: a PIN entered while a
+// calibration runs does not start a stream beside it.
+func TestBackendPairingRefusesWhileCalibrating(t *testing.T) {
+	h := calibrationFakeHost(t)
+	b := pairedBackend(t, h)
+	slow := cliTiming
+	slow.Measure = time.Hour
+	b.calibrationTiming = &slow
+	if err := b.StartCalibration(b.Hosts()[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.SubmitPIN(context.Background(), "246810"); !errors.Is(err, ui.ErrCalibrating) {
+		t.Errorf("pair while calibrating: %v", err)
+	}
+	if b.current() != nil {
+		t.Error("a stream started beside the calibration")
+	}
+	b.cancelCalibration()
 }

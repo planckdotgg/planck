@@ -10,11 +10,11 @@ import (
 )
 
 var (
-	// ErrCalibrating is StartCalibration's and Connect's answer while a
-	// calibration runs.
+	// ErrCalibrating is StartCalibration's, Connect's and SubmitPIN's
+	// answer while a calibration runs.
 	ErrCalibrating = errors.New("a calibration is running")
-	// ErrStreaming is StartCalibration's answer while a stream runs: the
-	// host serves one client at a time.
+	// ErrStreaming is StartCalibration's answer while a stream runs or
+	// connects: the host serves one client at a time.
 	ErrStreaming = errors.New("end the stream before calibrating")
 	// ErrNoCalibration is ApplyCalibration's answer for a host with no
 	// finished calibration this run.
@@ -166,7 +166,8 @@ type CalibrationSummary struct {
 	QueueBytes, DrainMbps int
 	RTTMs                 float64
 	BandwidthMbps         int
-	// GlassMs is the pick's AfterMs.
+	// GlassMs is the pick's AfterMs when the display phase measured the
+	// time to glass, 0 when it did not.
 	GlassMs  float64
 	Warnings []string
 }

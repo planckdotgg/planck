@@ -802,7 +802,8 @@ type Backend interface {
 	// seconds; Calibration reports it as it goes, and onChange hears each
 	// step. Its display phase shows the stream in the stream window, which
 	// it opens. It refuses with ErrCalibrating while a calibration runs and
-	// ErrStreaming while a stream does; Connect refuses while it runs.
+	// ErrStreaming while a stream runs or connects; Connect and SubmitPIN
+	// refuse while it runs.
 	StartCalibration(hostID string) error
 	// CancelCalibration ends the running calibration at once; its state
 	// then says Cancelled.

@@ -34,7 +34,7 @@ func (b *backend) StartCalibration(hostID string) error {
 	case b.cal.done != nil:
 		b.mu.Unlock()
 		return ui.ErrCalibrating
-	case b.client != nil:
+	case b.client != nil || b.dialing > 0:
 		b.mu.Unlock()
 		return ui.ErrStreaming
 	}
