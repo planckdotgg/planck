@@ -37,6 +37,16 @@ func appHostConfig(dir string, logf func(string, ...any)) func(ui.Settings) sess
 	}
 }
 
+// tracedHostConfig has the app's host trace every session when trace is
+// set, as -input-trace asks.
+func tracedHostConfig(hc func(ui.Settings) session.HostConfig, trace bool) func(ui.Settings) session.HostConfig {
+	return func(s ui.Settings) session.HostConfig {
+		c := hc(s)
+		c.InputTrace = trace
+		return c
+	}
+}
+
 func loadHostConfig(dir string) (config.HostConfig, error) {
 	if dir == "" {
 		d, err := config.Dir()

@@ -24,6 +24,7 @@ import (
 	"github.com/planckdotgg/planck/pkg/defaults"
 	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/encode"
+	"github.com/planckdotgg/planck/pkg/inputtrace"
 )
 
 // defaultControlPort is planck-host's QUIC port, used when an address
@@ -76,6 +77,9 @@ type options struct {
 	// discoveryPort is where hosts answer discovery, on the LAN and the
 	// tailnet.
 	discoveryPort uint16
+	// inputTrace traces input and the cursor this run, and asks hosts to
+	// trace theirs.
+	inputTrace bool
 }
 
 func main() {
@@ -146,6 +150,7 @@ func parseOptions(args []string, out io.Writer) (options, error) {
 	fs.BoolVar(&o.micTone, "mic-tone", false, "headless: unmute the microphone and send a 440 Hz tone in place of it, into the host's virtual mic")
 	fs.DurationVar(&o.inputEvery, "input-probe-every", time.Second, "headless: how often -input-probe sends")
 	fs.BoolVar(&o.json, "json", false, "headless: print the summary as JSON")
+	fs.BoolVar(&o.inputTrace, "input-trace", false, "trace input and the cursor to the config directory's logs/input-trace-client-*.jsonl this run, and have each host trace its own (also "+inputtrace.Env+"=1; Settings › General › Diagnostics keeps it on)")
 	fs.StringVar(&mode, "path-mode", string(pathAuto), "auto, lan or tailscale; headless, lan and tailscale race only those paths and fail on another")
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); err != nil {
@@ -157,6 +162,7 @@ func parseOptions(args []string, out io.Writer) (options, error) {
 	if fs.NArg() > 0 {
 		return o, fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
+	o.inputTrace = o.inputTrace || inputtrace.EnvOn()
 	var err error
 	if codec != "" && codec != "auto" {
 		if o.codec, err = session.ParseCodec(codec); err != nil {

@@ -195,6 +195,9 @@ type ClientConfig struct {
 	// TelemetryEnabled is anonymous usage telemetry, for the app and for
 	// planck-host on this machine; nil is on (TelemetryOn).
 	TelemetryEnabled *bool `json:"telemetryEnabled,omitempty"`
+	// InputTrace traces input and the cursor (pkg/inputtrace) on this
+	// device, and asks each host to trace its own.
+	InputTrace bool `json:"inputTrace,omitempty"`
 }
 
 // TelemetryOn reports whether anonymous usage telemetry may send: on

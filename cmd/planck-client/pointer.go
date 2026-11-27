@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/planckdotgg/planck/pkg/input"
+	"github.com/planckdotgg/planck/pkg/inputtrace"
 	"github.com/planckdotgg/planck/pkg/wire"
 )
 
@@ -119,6 +120,12 @@ type pointerLock struct {
 	warps        uint32
 	warpX, warpY float32
 	relMoves     uint32
+	// hostSeq counts the host's cursor states, and why is what the next
+	// apply that changes the hold does it for, for the input trace.
+	hostSeq uint32
+	why     string
+	// lastWarped is what the system said of the last hold or free.
+	lastWarped bool
 }
 
 func newPointerLock(sys pointerSys, send func(input.Event)) *pointerLock {
@@ -147,6 +154,15 @@ func (l *pointerLock) setHost(s wire.CursorState) {
 	l.host, l.hostKnown, l.fresh = s, true, true
 	if !l.wanted() {
 		l.paused = false
+	}
+	l.hostSeq++
+	l.why = "host_state"
+	if itrace.On() {
+		r := hostCursorRec{Seq: l.hostSeq, Visible: s.Visible, Captured: s.Captured, HasPos: s.HasPos, X: s.X, Y: s.Y}
+		if l.shape != nil {
+			r.ShapeID = l.shape.ID
+		}
+		inputtrace.Emit(itrace, "host_cursor_state", r)
 	}
 	changed := l.changed
 	l.mu.Unlock()
@@ -234,9 +250,11 @@ func (l *pointerLock) setLocked(on bool) {
 	if on {
 		l.paused = false
 		l.manual = l.manual || !l.host.Captured
+		l.why = "user_lock"
 	} else {
 		l.manual = false
 		l.paused = l.wanted()
+		l.why = "user_release"
 	}
 	l.apply()
 }
@@ -247,6 +265,10 @@ func (l *pointerLock) setMenuOpen(open bool) {
 	defer l.mu.Unlock()
 	if l.menuOpen != open {
 		l.menuOpen = open
+		l.why = "menu_open"
+		if !open {
+			l.why = "menu_closed"
+		}
 		l.apply()
 	}
 }
@@ -258,6 +280,14 @@ func (l *pointerLock) frame(active bool, picture rect) {
 	defer l.mu.Unlock()
 	if l.active && !active && l.wanted() {
 		l.paused = true
+	}
+	switch {
+	case l.active && !active:
+		l.why = "focus_lost"
+	case !l.active && active:
+		l.why = "focus_gained"
+	case l.why == "":
+		l.why = "frame"
 	}
 	l.active, l.area = active, picture
 	l.apply()
@@ -272,6 +302,7 @@ func (l *pointerLock) clickPicture() bool {
 		return false
 	}
 	l.paused = false
+	l.why = "click_picture"
 	l.apply()
 	return true
 }
@@ -288,6 +319,7 @@ func (l *pointerLock) reset() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.host, l.hostKnown, l.manual, l.paused, l.shape = wire.CursorState{}, false, false, false, nil
+	l.why = "stream_end"
 	l.apply()
 	l.unsetCursor()
 }
@@ -312,29 +344,46 @@ func (l *pointerLock) unsetCursor() {
 	}
 }
 
-func (l *pointerLock) release(at spot) {
+// release frees the pointer and shows it, and reports whether it warped
+// to at.
+func (l *pointerLock) release(at spot) bool {
+	warped := false
 	if l.mode != pointerFree {
-		l.counted(l.sys.free(at), at)
+		warped = l.sys.free(at)
+		if itrace.On() {
+			w := warped
+			traceSys(pointerSysRec{Call: "free", At: spotOf(at), Warped: &w})
+		}
+		l.counted(warped, at)
 		l.mode = pointerFree
 	}
 	if l.hidden {
 		l.sys.show()
+		if itrace.On() {
+			traceSys(pointerSysRec{Call: "show"})
+		}
 		l.hidden = false
 	}
+	return warped
 }
 
 // apply brings the system's pointer to target. Called with mu held.
 func (l *pointerLock) apply() {
+	reason := l.why
+	l.why = ""
 	want := l.target()
 	if want == l.mode && (want == pointerFree || l.area == l.heldArea) {
 		return
 	}
-	from := l.mode
+	from, fresh := l.mode, l.fresh
 	// Free or confined, the local cursor is what places the host's, whose
 	// reported place lags it by a round trip, so only coming back from
 	// relative, with a place sampled since, does the cursor go there.
 	back := from == pointerRelative && l.fresh && l.host.HasPos && l.area.valid()
 	var at spot
+	if itrace.On() {
+		defer func() { l.traceMode(from, want, reason, fresh, at) }()
+	}
 	switch {
 	case want == pointerRelative:
 		l.dx, l.dy = 0, 0
@@ -347,19 +396,40 @@ func (l *pointerLock) apply() {
 		at.set = true
 	}
 	if want == pointerFree {
-		l.release(at)
+		l.lastWarped = l.release(at)
 		return
 	}
-	l.counted(l.sys.hold(want, l.area, at), at)
+	l.lastWarped = l.sys.hold(want, l.area, at)
+	if itrace.On() {
+		area := areaOf(l.area)
+		warped := l.lastWarped
+		traceSys(pointerSysRec{Call: "hold", Mode: want.String(), Area: &area, At: spotOf(at), Warped: &warped})
+	}
+	l.counted(l.lastWarped, at)
 	l.mode, l.heldArea = want, l.area
 	if hide := want == pointerRelative; hide != l.hidden {
+		call := "show"
 		if hide {
 			l.sys.hide()
+			call = "hide"
 		} else {
 			l.sys.show()
 		}
+		if itrace.On() {
+			traceSys(pointerSysRec{Call: call})
+		}
 		l.hidden = hide
 	}
+}
+
+// traceMode writes the change apply made. Called with mu held.
+func (l *pointerLock) traceMode(from, to pointerMode, reason string, fresh bool, at spot) {
+	inputtrace.Emit(itrace, "pointer_mode", pointerModeRec{
+		From: from.String(), To: to.String(), Reason: reason, Want: l.wanted(), Area: areaOf(l.area),
+		HostX: l.host.X, HostY: l.host.Y, HostHasPos: l.host.HasPos, HostVisible: l.host.Visible, HostCapt: l.host.Captured,
+		WarpTarget: spotOf(at), WarpConfirm: l.lastWarped && at.set, WarpSeq: l.warps, FreshHost: fresh,
+		Manual: l.manual, ManualRel: l.paused, Focused: l.active, MenuOpen: l.menuOpen,
+	})
 }
 
 // counted counts the warp to at the system reports it made.
@@ -398,19 +468,34 @@ func (l *pointerLock) motion(dx, dy float64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.mode != pointerRelative {
+		if itrace.On() {
+			inputtrace.Emit(itrace, "client_input", clientInputRec{Event: "motion", RawDX: dx, RawDY: dy, WarpSeq: l.warps,
+				Mode: l.mode.String(), SentKind: "suppressed", Suppress: "not_relative"})
+		}
 		return
 	}
 	l.dx += dx
 	l.dy += dy
+	var sx, sy int32
+	n := 0
 	for {
 		x, y := whole(l.dx), whole(l.dy)
 		if x == 0 && y == 0 {
-			return
+			break
 		}
 		l.dx -= float64(x)
 		l.dy -= float64(y)
 		l.relMoves++
 		l.send(input.Event{Type: input.TypeMouseMoveRel, MouseRel: input.MouseMoveRel{DX: x, DY: y}})
+		sx, sy, n = sx+int32(x), sy+int32(y), n+1
+	}
+	if itrace.On() {
+		r := clientInputRec{Event: "motion", RawDX: dx, RawDY: dy, WarpSeq: l.warps, Mode: l.mode.String(), SentKind: "rel",
+			SentDX: sx, SentDY: sy, SentCount: n}
+		if n == 0 {
+			r.SentKind, r.Suppress = "suppressed", "under_one_unit"
+		}
+		inputtrace.Emit(itrace, "client_input", r)
 	}
 }
 

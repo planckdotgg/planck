@@ -495,6 +495,16 @@ type Settings struct {
 	// UsageTelemetry sends anonymous usage counts (internal/telemetry);
 	// a change applies at once.
 	UsageTelemetry bool
+	// InputTrace traces input and the cursor here and on the host, at
+	// once (InputTraceStatus).
+	InputTrace bool
+}
+
+// InputTraceStatus is where the input trace writes: Dir holds every trace
+// file, File the one written now ("" while off), Err why it could not
+// start.
+type InputTraceStatus struct {
+	Dir, File, Err string
 }
 
 // DockEdge is the stream view's edge the overlay button is docked to.
@@ -706,6 +716,8 @@ type Backend interface {
 	SetClientName(name string) error
 
 	Tailnet() TailnetStatus
+	// InputTrace is where Settings.InputTrace writes.
+	InputTrace() InputTraceStatus
 	Encoders() []EncoderInfo
 	Settings() Settings
 	SaveSettings(s Settings) error

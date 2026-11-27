@@ -197,6 +197,7 @@ func headless(ctx context.Context, o options, d headlessDeps) (Summary, error) {
 		Quality:          session.Quality{Codec: o.codec, Chroma: o.chroma, FPS: o.fps, BitrateKbps: o.bitrateKbps, Slices: o.slices},
 		Overrides:        o.overrides,
 		Capabilities:     headlessCapabilities,
+		InputTrace:       o.inputTrace,
 		OpenSink: func(c decode.Config) (session.Sink, error) {
 			inner, err := open(c)
 			if err != nil {

@@ -49,8 +49,8 @@ func runGUI(o options) error {
 	var b *backend
 	var app *ui.App
 	b, err := newBackend(backendConfig{
-		dir: o.configDir, name: o.name, finder: f, tailscale: ts, openSink: video.open,
-		hostConfig: appHostConfig(o.configDir, logf),
+		dir: o.configDir, name: o.name, finder: f, tailscale: ts, openSink: video.open, inputTrace: o.inputTrace,
+		hostConfig: tracedHostConfig(appHostConfig(o.configDir, logf), o.inputTrace),
 		encoders:   localEncoders(), logf: logf, overrides: o.overrides, viewSize: video.liveSize, display: video.display, onCursor: ptr.setHost, onCursorShape: ptr.setShape,
 		onSystemKeys: sys.setEnabled, globals: desktopShortcuts{}, openGamepads: session.OpenGamepads,
 		calibrationHints: func() calibrate.DisplayHints {
@@ -84,7 +84,8 @@ func runGUI(o options) error {
 	local := &localKeys{}
 	local.update(b.Hotkeys(), b.NeverSend())
 	sys.local, b.onKeys = local, local.update
-	fwd := &inputForwarder{send: b.SendInput, video: video.videoSize, picture: video.picture, lock: ptr, sys: sys, local: local, notify: app.Notify}
+	fwd := &inputForwarder{send: b.SendInput, video: video.videoSize, picture: video.picture, lock: ptr, sys: sys, local: local, notify: app.Notify,
+		meta: func() windowMeta { return traceWindow(video.win.Load()) }}
 	fwd.btnSys = newButtonSys(ptr.sys, fwd.sideButton)
 	// The UI asks for Ctrl+Alt+Del on the main thread, which fwd runs on.
 	b.heldMods = func() uint8 { return fwd.mods | sys.held.Modifiers() }
@@ -251,6 +252,27 @@ func (h cursorHook) SetMenuOpen(open bool) {
 func (h cursorHook) StreamEnded() {
 	h.sys.streamEnded()
 	h.l.reset()
+}
+
+// traceWindow is the stream window as the input trace tells of it. Main
+// thread.
+func traceWindow(w *mygo.Window) windowMeta {
+	m := windowMeta{Platform: platformName()}
+	if w == nil || w.IsDestroyed() {
+		return m
+	}
+	b, cb := w.Bounds(), w.ContentBounds()
+	m.Window = traceBox{b.X, b.Y, b.Width, b.Height}
+	m.Content = traceBox{cb.X, cb.Y, cb.Width, cb.Height}
+	m.PixelW, m.PixelH = windowPixels(w)
+	if cw, _ := w.ContentSize(); cw > 0 {
+		m.Scale = float64(m.PixelW) / float64(cw)
+	}
+	d := mygo.Screen.DisplayMatching(b)
+	m.Display = traceBox{d.Bounds.X, d.Bounds.Y, d.Bounds.Width, d.Bounds.Height}
+	m.DisplayScl = d.ScaleFactor
+	m.Fullscreen = w.IsFullScreen()
+	return m
 }
 
 // fullScreenHook is the stream's window for the overlay's Fullscreen

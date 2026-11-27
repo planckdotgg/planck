@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"cmp"
 	"fmt"
 	"strings"
 
@@ -17,6 +18,7 @@ func (a *App) generalPage(c *mui.Context, f *settingsFrame) {
 	}, func() {
 		setPanel(c, "Shared clipboard", nil, func() { a.entries(c, f, "general.clipSend", "general.clipRecv") })
 		setPanel(c, "Privacy", nil, func() { a.entries(c, f, "general.telemetry") })
+		setPanel(c, "Diagnostics", nil, func() { a.entries(c, f, "general.inputTrace") })
 	})
 }
 
@@ -120,6 +122,32 @@ const (
 	telemetryHelp  = "Counts installs, launches and streams, with the codec and route type. Never names, addresses, screen content, audio, input or PINs."
 )
 
+const (
+	inputTraceTitle = "Trace input and the cursor"
+	inputTraceHelp  = "Writes every mouse move, click and cursor change here and on the host to JSON lines, for a bug report. The host follows this switch while it streams to this device."
+)
+
+// inputTraceRow is the input trace's switch, and where it writes, with a
+// copy of the path.
+func (a *App) inputTraceRow(c *mui.Context, f *settingsFrame) {
+	f.switchRow(c, inputTraceTitle, inputTraceHelp, &f.s.InputTrace)
+	st := a.backend.InputTrace()
+	path := cmp.Or(st.File, st.Dir)
+	if path == "" {
+		return
+	}
+	mui.Row(c).FillWidth().MinHeight(36).AlignItems(mui.Center).Gap(theme.Space3).Children(func() {
+		mono(c, path).FontSize(theme.TextCaption).TextColor(theme.RoleText3).Shrink(1)
+		mui.Spacer(c)
+		if button(c, buttonGhost, "Copy path", false).Height(28).Clicked() {
+			c.WriteClipboard(path)
+		}
+	})
+	if st.Err != "" {
+		caption(c, st.Err).TextColor(theme.RoleFault)
+	}
+}
+
 // settingEntries are every searchable setting, in each category's order.
 var settingEntries = []settingEntry{
 	{id: "general.name", cat: catGeneral, title: "Device name", help: "What hosts list this device as when it pairs.", aliases: "client name rename",
@@ -142,6 +170,8 @@ var settingEntries = []settingEntry{
 		build: func(a *App, c *mui.Context, f *settingsFrame) {
 			f.switchRow(c, telemetryTitle, telemetryHelp, &f.s.UsageTelemetry)
 		}},
+	{id: "general.inputTrace", cat: catGeneral, title: inputTraceTitle, help: inputTraceHelp, aliases: "debug diagnostics trace log logs cursor mouse pointer bug report jsonl",
+		build: (*App).inputTraceRow},
 
 	{id: "host.name", cat: catHost, title: "Host name", help: "What other devices see this machine as.", aliases: "hostname rename",
 		build: (*App).hostNameRow},

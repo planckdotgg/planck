@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strconv"
 	"sync"
 
 	"github.com/ebitengine/purego/objc"
@@ -59,8 +60,27 @@ func newSystemPointer(win func() *mygo.Window, motion func(dx, dy float64)) poin
 	return &macPointer{win: win, motion: motion}
 }
 
-func (p *macPointer) hide() { cgDisplayHideCursor(cgMainDisplayID()) }
-func (p *macPointer) show() { cgDisplayShowCursor(cgMainDisplayID()) }
+func (p *macPointer) hide() {
+	traceCG(pointerSysRec{Call: "hide_cursor"}, cgDisplayHideCursor(cgMainDisplayID()))
+}
+func (p *macPointer) show() {
+	traceCG(pointerSysRec{Call: "show_cursor"}, cgDisplayShowCursor(cgMainDisplayID()))
+}
+
+// traceCG traces a CoreGraphics call with the CGError it returned.
+func traceCG(rec pointerSysRec, cgErr int32) {
+	if itrace.On() {
+		rec.Ret = int64(cgErr)
+		if cgErr != 0 {
+			rec.Err = "CGError " + strconv.Itoa(int(cgErr))
+		}
+		traceSys(rec)
+	}
+}
+
+func associate(connected uint32) {
+	traceCG(pointerSysRec{Call: "associate", Mode: [...]string{"dissociate", "associate"}[connected]}, cgAssociateMouseAndPosition(connected))
+}
 
 // hold warps before the cursor dissociates, and free after it associates
 // again, so that the warp associates it outside relative mode.
@@ -76,14 +96,14 @@ func (p *macPointer) hold(m pointerMode, area rect, at spot) bool {
 	if m == pointerRelative {
 		connected = 0
 	}
-	cgAssociateMouseAndPosition(connected)
+	associate(connected)
 	p.allMoves(true)
 	return at.set
 }
 
 func (p *macPointer) free(at spot) bool {
 	p.mode = pointerFree
-	cgAssociateMouseAndPosition(1)
+	associate(1)
 	p.allMoves(false)
 	if at.set {
 		ox, oy := p.origin()
@@ -101,9 +121,12 @@ func (p *macPointer) allMoves(on bool) {
 }
 
 func (p *macPointer) warpGlobal(x, y float64) {
-	cgWarpMouseCursorPosition(cgPoint{x, y})
+	ret := cgWarpMouseCursorPosition(cgPoint{x, y})
+	if itrace.On() {
+		traceCG(pointerSysRec{Call: "warp", ScreenX: f64p(x), ScreenY: f64p(y)}, ret)
+	}
 	if p.mode != pointerRelative {
-		cgAssociateMouseAndPosition(1)
+		associate(1)
 	}
 }
 

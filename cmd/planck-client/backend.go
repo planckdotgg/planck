@@ -28,6 +28,7 @@ import (
 	"github.com/planckdotgg/planck/pkg/encode"
 	"github.com/planckdotgg/planck/pkg/gamepad"
 	"github.com/planckdotgg/planck/pkg/input"
+	"github.com/planckdotgg/planck/pkg/inputtrace"
 	"github.com/planckdotgg/planck/pkg/transport"
 	"github.com/planckdotgg/planck/pkg/wire"
 )
@@ -132,6 +133,8 @@ type backend struct {
 	// what it counted of the stream now, nil without one.
 	usageTel    *usage.Client
 	usageStream *usage.Session
+	// traceErr is why the input trace could not start, "" when it did.
+	traceErr string
 	// cal is the calibration running or last run. calibrationHints
 	// describe the stream window to it, nil knowing nothing, and
 	// calibrationTiming replaces calibrate.DefaultTiming for tests, and
@@ -181,6 +184,9 @@ type backendConfig struct {
 	virtualPads  func() ui.VirtualPadStatus
 	// calibrationHints describe the stream window to a calibration.
 	calibrationHints func() calibrate.DisplayHints
+	// inputTrace turns the input trace on for this run, whatever the
+	// setting kept (-input-trace, PLANCK_INPUT_TRACE).
+	inputTrace bool
 }
 
 func newBackend(c backendConfig) (*backend, error) {
@@ -247,6 +253,10 @@ func newBackend(c backendConfig) (*backend, error) {
 		b.syncPins()
 		b.changed()
 	})
+	b.settings.InputTrace = stored.InputTrace || c.inputTrace
+	if b.settings.InputTrace {
+		b.applyInputTrace(true)
+	}
 	return b, nil
 }
 
@@ -683,6 +693,7 @@ func (b *backend) dialNew(ctx context.Context, t session.Target, pin string, s u
 		ConfigDir: b.dir, Name: name, PIN: pin, NoAudio: !s.AudioEnabled, Quality: legacyQuality(ov), Overrides: ov,
 		OpenSink: b.openSink, Tailscale: b.ts, Logf: b.logf, Route: b.route(ov), ViewSize: b.viewSize, Clipboard: clipboardOf(s),
 		OnCursor: b.onCursor, OnCursorShape: b.onCursorShape, Capabilities: b.capabilities, Gamepads: b.pads,
+		InputTrace: itrace.On(),
 	}
 	if id := s.OutputDevice; id != "" {
 		cfg.OpenAudioPlayer = func() (audio.Player, error) { return audio.NewOutputPlayer(id) }
@@ -717,6 +728,8 @@ func (b *backend) dialNew(ctx context.Context, t session.Target, pin string, s u
 	b.usageStream = &usage.Session{Mode: usage.ModeClient, Codec: st.Codec, Transport: st.Path}
 	b.usageTel.SessionStarted(*b.usageStream)
 	b.mu.Unlock()
+	// The switch may have flipped while the stream started.
+	c.SetInputTrace(itrace.On())
 	b.changed()
 	if b.viewSize != nil {
 		b.resizeStream(b.viewSize())
@@ -1151,6 +1164,11 @@ func (b *backend) SaveSettings(s ui.Settings) error {
 			off := false
 			stored.TelemetryEnabled = &off
 		}
+		// A run traced by -input-trace keeps the setting it had unless the
+		// switch flips.
+		if s.InputTrace != before.InputTrace {
+			stored.InputTrace = s.InputTrace
+		}
 		return nil
 	})
 	if err != nil {
@@ -1163,6 +1181,9 @@ func (b *backend) SaveSettings(s ui.Settings) error {
 	b.mu.Unlock()
 	b.swap.Store(s.SwapCmdCtrl)
 	b.usageTel.SetEnabled(s.UsageTelemetry)
+	if before.InputTrace != s.InputTrace {
+		b.applyInputTrace(s.InputTrace)
+	}
 	if clipboardOf(before) != clipboardOf(s) && c != nil {
 		c.SetClipboard(clipboardOf(s))
 	}
@@ -1338,4 +1359,41 @@ func (b *backend) close() {
 		h.Stop()
 	}
 	b.pads.Close()
+	if err := itrace.Disable(); err != nil {
+		b.logf("planck: input trace: %v", err)
+	}
+}
+
+// applyInputTrace starts or stops the client's input trace and tells the
+// host of a live stream.
+func (b *backend) applyInputTrace(on bool) {
+	var err error
+	if on {
+		var path string
+		if path, err = itrace.Enable(inputtrace.Dir(b.dir)); err == nil {
+			b.logf("planck: input trace in %s", path)
+		}
+	} else {
+		err = itrace.Disable()
+	}
+	if err != nil {
+		b.logf("planck: input trace: %v", err)
+	}
+	b.mu.Lock()
+	b.traceErr = ""
+	if err != nil {
+		b.traceErr = err.Error()
+	}
+	c := b.client
+	b.mu.Unlock()
+	if c != nil {
+		c.SetInputTrace(itrace.On())
+	}
+	b.changed()
+}
+
+func (b *backend) InputTrace() ui.InputTraceStatus {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return ui.InputTraceStatus{Dir: inputtrace.Dir(b.dir), File: itrace.Path(), Err: b.traceErr}
 }

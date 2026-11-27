@@ -74,6 +74,7 @@ type fakeBackend struct {
 	privacyProblem string
 	gamepad        fakeGamepad
 	cal            fakeCalibration
+	trace          InputTraceStatus
 }
 
 func newFake() *fakeBackend {
@@ -157,6 +158,15 @@ func (f *fakeBackend) SaveSettings(s Settings) error {
 	f.saved = append(f.saved, s)
 	f.settings = s
 	return nil
+}
+
+func (f *fakeBackend) InputTrace() InputTraceStatus {
+	defer f.lock()()
+	t := f.trace
+	if !f.settings.InputTrace {
+		t.File = ""
+	}
+	return t
 }
 
 func (f *fakeBackend) Overrides(hostID string) defaults.UserOverrides {

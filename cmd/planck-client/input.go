@@ -10,6 +10,7 @@ import (
 	mui "github.com/egoist/mygo/ui"
 	"github.com/planckdotgg/planck/internal/ui"
 	"github.com/planckdotgg/planck/pkg/input"
+	"github.com/planckdotgg/planck/pkg/inputtrace"
 )
 
 // inputForwarder turns what the stream view sees, the keys held and the
@@ -66,6 +67,14 @@ type inputForwarder struct {
 	// bw and bh are the view's size; wx and wy the scrolling not sent
 	// yet, under a wheel unit.
 	bw, bh, wx, wy float32
+
+	// meta is the stream window for the input trace's session_meta; nil
+	// tells nothing of it. lastMeta and lastFrame are what the trace
+	// last wrote of them.
+	meta      func() windowMeta
+	lastMeta  sessionMeta
+	metaEpoch uint32
+	lastFrame frameKey
 }
 
 // buttonSys is what the system tells of the mouse's buttons that MyGo does
@@ -130,6 +139,7 @@ func (f *inputForwarder) view(c *mui.Context) {
 	active := c.WindowActive()
 	f.keysFrame(c.KeysDown(), c.Modifiers(), active)
 	x, y, over := el.PointerPosition()
+	rawX, rawY, rawOver := x, y, over
 	hovered := el.Hovered()
 	b := el.Bounds()
 	f.bw, f.bh = b.W, b.H
@@ -162,8 +172,13 @@ func (f *inputForwarder) view(c *mui.Context) {
 	f.live.Store(true)
 	held := f.buttons
 	f.buttonsFrame(active, active && (relative || in && reaches), !relative, at)
+	sent := false
 	if at.ok && (in || held|f.buttons != 0) {
-		f.moveAbs(at.x, at.y)
+		sent = f.moveAbs(at.x, at.y)
+	}
+	if itrace.On() {
+		f.traceMeta(traceArea{b.X, b.Y, b.W, b.H}, fw, fh, dw, dh, active, relative)
+		f.traceFrame(rawX, rawY, rawOver, relative, b.W > 0 && b.H > 0, at, in || held|f.buttons != 0, sent)
 	}
 	f.over = in || (over && held|f.buttons != 0)
 	if f.picture != nil {
@@ -188,12 +203,15 @@ func (f *inputForwarder) warped(x, y float32, over bool, bx, by float32) (float3
 	return f.warp.x, f.warp.y, true
 }
 
-// moveAbs puts the host's pointer at x, y, unless it is there.
-func (f *inputForwarder) moveAbs(x, y uint16) {
-	if !f.over || x != f.x || y != f.y {
+// moveAbs puts the host's pointer at x, y, unless it is there, and
+// reports whether it sent the move.
+func (f *inputForwarder) moveAbs(x, y uint16) bool {
+	sent := !f.over || x != f.x || y != f.y
+	if sent {
 		f.send(input.Event{Type: input.TypeMouseMoveAbs, MouseAbs: input.MouseMoveAbs{X: x, Y: y}})
 	}
 	f.x, f.y, f.over = x, y, true
+	return sent
 }
 
 // handle takes the wheel, and sees the releases MyGo gives the view as the
@@ -289,6 +307,7 @@ func (f *inputForwarder) buttonsFrame(active, sideIn, abs bool, at framePointer)
 			f.releaseButtons(func(input.Button) bool { return true })
 		case e.down && active && f.buttons&bit == 0 && e.in && (!e.side || sideIn):
 			if f.lock != nil && f.lock.clickPicture() {
+				f.traceDroppedButton(e, "engaged_lock")
 				continue
 			}
 			f.edgeAt(e, abs, at)
@@ -299,6 +318,8 @@ func (f *inputForwarder) buttonsFrame(active, sideIn, abs bool, at framePointer)
 			f.edgeAt(e, abs, at)
 			f.buttons &^= bit
 			f.sendButton(e.b, false)
+		case itrace.On():
+			f.traceDroppedButton(e, droppedEdge(e, active, f.buttons&bit != 0, sideIn))
 		}
 	}
 	f.sideIn.Store(sideIn)
@@ -340,6 +361,7 @@ func (f *inputForwarder) streamEnded() {
 	f.edgeMu.Unlock()
 	f.buttons = 0
 	f.over, f.relative = false, false
+	f.lastMeta, f.metaEpoch, f.lastFrame = sessionMeta{}, 0, frameKey{}
 	f.warp = warpPin{}
 	if f.lock != nil {
 		f.warp.n, _, _ = f.lock.lastWarp()
@@ -373,6 +395,10 @@ func (f *inputForwarder) scroll(ev mui.InputEvent) bool {
 	if f.lock == nil || f.lock.held() != pointerRelative {
 		fw, fh, dw, dh := f.videoSize()
 		if f.bw <= 0 || f.bh <= 0 || !onPicture(ev.X, ev.Y, f.bw, f.bh, fw, fh, dw, dh) {
+			if itrace.On() {
+				inputtrace.Emit(itrace, "client_input", clientInputRec{Event: "wheel", RawDX: float64(ev.DX), RawDY: float64(ev.DY),
+					Mode: f.mode().String(), SentKind: "suppressed", Suppress: "off_picture"})
+			}
 			return false
 		}
 	}
@@ -384,6 +410,14 @@ func (f *inputForwarder) scroll(ev mui.InputEvent) bool {
 		f.wx -= float32(x)
 		f.wy -= float32(y)
 		f.send(input.Event{Type: input.TypeMouseWheel, Wheel: input.MouseWheel{DX: x, DY: y}})
+	}
+	if itrace.On() {
+		r := clientInputRec{Event: "wheel", RawDX: float64(ev.DX), RawDY: float64(ev.DY), Mode: f.mode().String(), SentKind: "wheel",
+			SentDX: int32(x), SentDY: int32(y)}
+		if x == 0 && y == 0 {
+			r.SentKind, r.Suppress = "suppressed", "under_one_unit"
+		}
+		inputtrace.Emit(itrace, "client_input", r)
 	}
 	return true
 }
@@ -441,6 +475,11 @@ func normalize(v, n float32) uint16 {
 
 func (f *inputForwarder) sendButton(b input.Button, pressed bool) {
 	f.send(input.Event{Type: input.TypeMouseButton, Button: input.MouseButton{Button: b, Pressed: pressed}})
+	if itrace.On() {
+		down := pressed
+		inputtrace.Emit(itrace, "client_input", clientInputRec{Event: "button", Mode: f.mode().String(), SentKind: "button",
+			Button: buttonName(b), Pressed: &down, SentX: f.x, SentY: f.y})
+	}
 }
 
 // localKey reports whether k with m stays on this device: a hotkey or a

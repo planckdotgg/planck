@@ -55,13 +55,44 @@ type winPointer struct {
 func newSystemPointer(win func() *mygo.Window, motion func(dx, dy float64)) pointerSys {
 	return &winPointer{
 		win: win, raw: rawMouse{motion: motion},
-		clip:   func(r *winRect) { procClipCursor.Call(uintptr(unsafe.Pointer(r))) },
-		setPos: func(x, y int32) { procSetCursorPos.Call(uintptr(x), uintptr(y)) },
+		clip: func(r *winRect) {
+			ret, _, err := procClipCursor.Call(uintptr(unsafe.Pointer(r)))
+			if itrace.On() {
+				rec := pointerSysRec{Call: "clip", Ret: int64(ret)}
+				if r != nil {
+					rec.Rect = &traceBox{int(r.Left), int(r.Top), int(r.Right - r.Left), int(r.Bottom - r.Top)}
+				}
+				traceSys(winSysErr(rec, ret, err))
+			}
+		},
+		setPos: func(x, y int32) {
+			ret, _, err := procSetCursorPos.Call(uintptr(x), uintptr(y))
+			if itrace.On() {
+				traceSys(winSysErr(pointerSysRec{Call: "warp", ScreenX: f64p(float64(x)), ScreenY: f64p(float64(y)), Ret: int64(ret)}, ret, err))
+			}
+		},
 	}
 }
 
-func (p *winPointer) hide() { procShowCursor.Call(0) }
-func (p *winPointer) show() { procShowCursor.Call(1) }
+// winSysErr adds a failed call's error: a BOOL call failed when it
+// returned 0.
+func winSysErr(rec pointerSysRec, ret uintptr, err error) pointerSysRec {
+	if ret == 0 && err != nil {
+		rec.Err = err.Error()
+	}
+	return rec
+}
+
+func (p *winPointer) hide() { showCursor(0) }
+func (p *winPointer) show() { showCursor(1) }
+
+// showCursor is ShowCursor, which returns the display count.
+func showCursor(on uintptr) {
+	ret, _, _ := procShowCursor.Call(on)
+	if itrace.On() {
+		traceSys(pointerSysRec{Call: "show_cursor", Mode: [...]string{"hide", "show"}[on], Ret: int64(int32(ret))})
+	}
+}
 
 // hold and free warp after the clip changes: SetCursorPos clamps to the
 // clip in place, the relative one a pixel wide.
