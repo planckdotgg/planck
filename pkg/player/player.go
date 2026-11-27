@@ -102,6 +102,9 @@ type Player struct {
 	// and phase measures them against the display's refreshes.
 	ready [readyRing]struct{ pts, at int64 }
 	phase phaselock.Estimator
+	// phaseFrom is phaseSettle after ResetPhase last ran: pictures
+	// presented before it went the old way to the screen.
+	phaseFrom atomic.Int64
 
 	hud hud
 }
@@ -170,13 +173,15 @@ func (p *Player) onScreenGPU(pts, submitted, gpuDone, presented int64) {
 	if period, anchor, ok := p.vsync.grid(); ok {
 		g = phaselock.Grid{Period: period, Anchor: anchor}
 	}
-	ready := submitted
-	p.mu.Lock()
-	if r := p.ready[uint64(pts)%readyRing]; r.pts == pts && r.at != 0 && r.at <= submitted {
-		ready = r.at
+	if submitted >= p.phaseFrom.Load() {
+		ready := submitted
+		p.mu.Lock()
+		if r := p.ready[uint64(pts)%readyRing]; r.pts == pts && r.at != 0 && r.at <= submitted {
+			ready = r.at
+		}
+		p.mu.Unlock()
+		p.phase.Observe(phaselock.Sample{Frame: uint32(pts), Ready: ready, GPUDone: gpuDone, Glass: presented}, g)
 	}
-	p.mu.Unlock()
-	p.phase.Observe(phaselock.Sample{Frame: uint32(pts), Ready: ready, GPUDone: gpuDone, Glass: presented}, g)
 	if o := p.glassObs.Load(); o != nil {
 		(*o).Glass(pts, time.Duration(presented-submitted), time.Duration(p.now()-presented))
 		if g, ok := (*o).(GPUObserver); ok && gpuDone != 0 {
@@ -196,6 +201,22 @@ type GPUObserver interface {
 // with its refreshes, and whether it showed them directly: see
 // phaselock.Estimator. Call it at a steady rate, as a few times a second.
 func (p *Player) Phase() phaselock.Report { return p.phase.Report() }
+
+// phaseSettle is how long after a change of present path its pictures are
+// not measured. Going direct at 5120x1440 on an M5 Pro, WindowServer still
+// composited about half of the first 60 pictures, and next to none after.
+const phaseSettle = int64(500 * time.Millisecond)
+
+// ResetPhase starts the phase and the scan-out mode afresh, from the
+// pictures presented phaseSettle after it. Call it when the surface
+// changes how it reaches the screen, as gpusurface.Surface.SetDirect does.
+func (p *Player) ResetPhase() {
+	p.phaseFrom.Store(p.now() + phaseSettle)
+	if p.surf != nil {
+		p.phase.SetNominalPeriod(nominalPeriod(p.surf))
+	}
+	p.phase.Reset()
+}
 
 // smooth reports whether pictures wait for their refresh now.
 func (p *Player) smooth() bool {

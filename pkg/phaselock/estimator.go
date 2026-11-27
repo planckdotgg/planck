@@ -178,6 +178,18 @@ func (e *Estimator) SetNominalPeriod(ns int64) {
 	e.mu.Unlock()
 }
 
+// Reset forgets every picture measured and the mode, as when the
+// pictures start reaching the screen another way, such as a surface going
+// direct: those of the old path would hold its mode for a whole
+// modeWindow. The nominal period stays.
+func (e *Estimator) Reset() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.n, e.i, e.nm, e.im = 0, 0, 0, 0
+	e.streak, e.period, e.margin = 0, 0, 0
+	e.mode, e.locked = ModeUnknown, false
+}
+
 // Observe takes a picture that reached the screen and the display's
 // refreshes as known then: a zero Grid where they are not.
 func (e *Estimator) Observe(s Sample, g Grid) {

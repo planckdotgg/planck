@@ -232,3 +232,44 @@ func TestEstimatorModeWithoutGridNeedsAPeriod(t *testing.T) {
 		t.Fatalf("mode %v with no refresh period known, want unknown", r.Mode)
 	}
 }
+
+// TestEstimatorResetStartsANewPath: pictures of the present path before
+// a Reset do not hold the mode of the one after it. Measured going full
+// screen on an M5 Pro at 5120x1440, without Reset the composited window's
+// pictures held the verdict for two seconds, and a burst of composited
+// pictures after the switch kept it there.
+func TestEstimatorResetStartsANewPath(t *testing.T) {
+	rng := rand.New(rand.NewPCG(9, 10))
+	ms := int64(time.Millisecond)
+	var e Estimator
+	e.SetNominalPeriod(p120)
+	feedFree(&e, modeWindow, 6*ms, 2*p120, rng)
+	if r := e.Report(); r.Mode != ModeComposited {
+		t.Fatalf("window: mode %v, want composited", r.Mode)
+	}
+	e.Reset()
+	if r := e.Report(); r.Mode != ModeUnknown || r.Valid {
+		t.Fatalf("after reset: report %+v, want unknown", r)
+	}
+	feedFree(&e, minModeSet, 2*ms, ms, rng)
+	if r := e.Report(); r.Mode != ModeDirect {
+		t.Fatalf("full screen: mode %v at %.0f%% late, want direct from the first report", r.Mode, r.CompositedPct)
+	}
+	e.Reset()
+	feedFree(&e, minModeSet, 6*ms, 2*p120, rng)
+	if r := e.Report(); r.Mode != ModeComposited {
+		t.Fatalf("back in a window: mode %v, want composited", r.Mode)
+	}
+
+	g := Grid{Period: p120, Anchor: 1e9}
+	var gr Estimator
+	feed(&gr, g, modeWindow, 4*ms, 0, 0, 1, nil)
+	if r := gr.Report(); r.Mode != ModeComposited {
+		t.Fatalf("gridded window: mode %v", r.Mode)
+	}
+	gr.Reset()
+	feed(&gr, g, minModeSet, 4*ms, 0, 0, 0, nil)
+	if r := gr.Report(); r.Mode != ModeDirect {
+		t.Fatalf("gridded full screen: mode %v at %.0f%%, want direct", r.Mode, r.CompositedPct)
+	}
+}

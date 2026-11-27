@@ -103,6 +103,7 @@ func (v *videoView) applyDirect() {
 		v.mode.allowed.Store(false)
 		return
 	}
+	s.p.ResetPhase()
 	v.mode.mu.Lock()
 	v.mode.last = time.Now()
 	v.mode.mu.Unlock()

@@ -1,6 +1,7 @@
 package player
 
 import (
+	"math/rand/v2"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -48,5 +49,50 @@ func TestPhaseFromScreenTimes(t *testing.T) {
 		if r.Newest != 199 || r.Oldest != 168 {
 			t.Fatalf("%s: frames %d..%d, want 168..199", c.name, r.Oldest, r.Newest)
 		}
+	}
+}
+
+// TestPhaseResetOnPathChange: after ResetPhase the phase reads only the
+// pictures presented on the new path once it settled; ones presented
+// before it that reach the screen after it, and the compositor's while it
+// hands the surface over, do not count.
+func TestPhaseResetOnPathChange(t *testing.T) {
+	ms := int64(time.Millisecond)
+	var clock atomic.Int64
+	p := startWith(&fakeDecoder{out: map[uintptr]bool{}}, 0, func(decode.Frame) error { return nil }, func(int, int) error { return nil }, clock.Load)
+	defer p.Close()
+	p.phase.SetNominalPeriod(int64(time.Second / 120))
+	at := int64(time.Second)
+	rng := rand.New(rand.NewPCG(3, 4))
+	present := func(pts, toGlass int64) {
+		// Off any refresh grid, as a direct surface presents.
+		at += 8*ms + rng.Int64N(4*ms)
+		clock.Store(at)
+		p.onScreenGPU(pts, at, at+ms, at+ms+toGlass)
+	}
+	pts := int64(0)
+	for ; pts < 120; pts++ {
+		present(pts, 2*ms+(pts%2)*12*ms)
+	}
+	if r := p.Phase(); r.Mode != phaselock.ModeComposited {
+		t.Fatalf("composited path: mode %v", r.Mode)
+	}
+	submitted := at
+	p.ResetPhase()
+	for i := range int64(10) {
+		// Presented on the old path, they reach the screen after the swap.
+		clock.Store(at + i)
+		p.onScreenGPU(pts, submitted-1, submitted, submitted+15*ms+i)
+		pts++
+	}
+	for start := at; at < start+400*ms; pts++ {
+		present(pts, 14*ms)
+	}
+	for range 60 {
+		present(pts, 2*ms)
+		pts++
+	}
+	if r := p.Phase(); r.Mode != phaselock.ModeDirect {
+		t.Fatalf("direct path: mode %v at %.0f%% late, want direct", r.Mode, r.CompositedPct)
 	}
 }
