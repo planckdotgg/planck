@@ -164,6 +164,13 @@ const (
 	onRefreshTolerance = int64(350 * time.Microsecond)
 	stallRefreshes     = 3
 	heldMost           = 0.75
+	// The refresh grid reads the mode only where it held for griddedMost of
+	// the window; the phase needs it for most. Streaming 60 fps in a window
+	// on a 120 Hz display, macOS showed about 60% of the composited pictures
+	// on the grid, which locked on and off; of the pictures from when it had
+	// held for half the window, 72% reached the screen at the first refresh
+	// after the GPU finished, which read direct.
+	griddedMost = 0.9
 )
 
 // Estimator measures the phase of pictures against the display's
@@ -199,8 +206,9 @@ type Estimator struct {
 	locked bool
 }
 
-// SetNominalPeriod gives the display's refresh period as the system
-// states it, which the mode reads by where no refresh grid locks.
+// SetNominalPeriod gives the display's shortest refresh period as the
+// system states it, which the mode reads by where no refresh grid locks; a
+// grid of a shorter period is not taken.
 func (e *Estimator) SetNominalPeriod(ns int64) {
 	e.mu.Lock()
 	e.nominal = ns
@@ -246,12 +254,17 @@ func (e *Estimator) Observe(s Sample, g Grid) {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.nominal > 0 && g.Period*100 < e.nominal*99 {
+		// No display refreshes faster than it says: a shorter period is a
+		// harmonic of the refresh, a grid locked on pictures shown off it.
+		g = Grid{}
+	}
 	p := g.Period
 	if p <= 0 {
-		p = e.period
+		p = e.nominal
 	}
 	if p <= 0 {
-		p = e.nominal
+		p = e.period
 	}
 	gap, early := e.holdGap(s.GPUDone, s.Glass, p)
 	if g.Period > 0 && e.period != 0 && abs(g.Period-e.period)*100 > e.period {
@@ -369,8 +382,9 @@ func (e *Estimator) Report() Report {
 }
 
 // updateMode reads the presentation mode and the late share from the
-// pictures whose GPU times are known: by the refresh grid where it is
-// locked, else by the spread of their time to the screen. It reports whether most of them came on a locked grid.
+// pictures whose GPU times are known: by the refresh grid where it held for
+// griddedMost of them, else by the spread of their time to the screen. It
+// reports whether most of them came on a locked grid.
 func (e *Estimator) updateMode(r *Report) bool {
 	gridded := 0
 	for k := 0; k < e.nm; k++ {
@@ -382,7 +396,12 @@ func (e *Estimator) updateMode(r *Report) bool {
 		e.updateModeBySpread(r)
 		return false
 	}
-	e.streak = 0
+	byGrid := float64(gridded) >= griddedMost*float64(e.nm)
+	if byGrid {
+		e.streak = 0
+	} else {
+		e.updateModeBySpread(r)
+	}
 	skip := e.skipHeld()
 	var known, comp int
 	for k := 0; k < e.nm; k++ {
@@ -396,14 +415,16 @@ func (e *Estimator) updateMode(r *Report) bool {
 	if known < minModeSet {
 		return true
 	}
-	frac := float64(comp) / float64(known)
-	switch {
-	case frac > compositedAbove:
-		e.mode = ModeComposited
-	case frac < directBelow:
-		e.mode = ModeDirect
+	if byGrid {
+		frac := float64(comp) / float64(known)
+		switch {
+		case frac > compositedAbove:
+			e.mode = ModeComposited
+		case frac < directBelow:
+			e.mode = ModeDirect
+		}
+		r.CompositedPct = 100 * frac
 	}
-	r.CompositedPct = 100 * frac
 	base := int8(0)
 	if e.mode == ModeComposited {
 		base = 1

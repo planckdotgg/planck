@@ -418,3 +418,63 @@ func TestEstimatorQueueStartIsHeld(t *testing.T) {
 		}
 	}
 }
+
+// TestEstimatorWindowWithGridOnAndOff: in a window at 60 fps on 120 Hz the
+// compositor shows some pictures off the refreshes, and the refresh grid
+// locks only while it shows them on: for about half of a mode window at a
+// time. Of the pictures on the grid most reach the screen at the first
+// refresh after the GPU finished and a quarter a refresh later, which on
+// its own reads direct; the spread of them all is a compositor's.
+func TestEstimatorWindowWithGridOnAndOff(t *testing.T) {
+	ms := int64(time.Millisecond)
+	rng := rand.New(rand.NewPCG(21, 22))
+	var e Estimator
+	e.SetNominalPeriod(p120)
+	origin := int64(time.Second)
+	modes := map[Mode]int{}
+	for i := range int64(3600) {
+		v := origin + (2*i+1)*p120
+		done := v - 3*ms + rng.Int64N(ms)
+		var g Grid
+		glass := done + 1500*int64(time.Microsecond) + rng.Int64N(p120)
+		if (i/60)%2 == 0 {
+			g = Grid{Period: p120, Anchor: origin}
+			glass = v
+			if rng.IntN(100) < 28 {
+				glass += p120
+			}
+		}
+		e.Observe(Sample{Frame: uint32(i), Ready: done - 2*ms, GPUDone: done, Glass: glass}, g)
+		if i%15 == 14 && i >= modeWindow {
+			modes[e.Report().Mode]++
+		}
+	}
+	if modes[ModeDirect] > 0 || modes[ModeComposited] < 200 {
+		t.Fatalf("reports by mode %v, want composited at every report", modes)
+	}
+}
+
+// TestEstimatorIgnoresHarmonicGrid: a grid a third of the display's
+// refresh, as a clock locked on pictures shown off its refreshes gives, is
+// no refresh grid: the report keeps the display's 120 Hz, not 360 Hz.
+func TestEstimatorIgnoresHarmonicGrid(t *testing.T) {
+	ms := int64(time.Millisecond)
+	rng := rand.New(rand.NewPCG(23, 24))
+	var e Estimator
+	e.SetNominalPeriod(p120)
+	origin := int64(time.Second)
+	g := Grid{Period: p120 / 3, Anchor: origin}
+	for i := range int64(4 * modeWindow) {
+		v := origin + (2*i+1)*p120
+		done := v - 3*ms + rng.Int64N(ms)
+		e.Observe(Sample{Frame: uint32(i), Ready: done - 2*ms, GPUDone: done, Glass: v}, g)
+		if i%15 == 14 {
+			if r := e.Report(); r.PeriodNs != p120 {
+				t.Fatalf("picture %d: %.3f Hz, want 120", i, r.RefreshHz())
+			}
+		}
+	}
+	if r := e.Report(); r.Mode != ModeDirect {
+		t.Fatalf("mode %v at %.0f%% late, want direct", r.Mode, r.CompositedPct)
+	}
+}

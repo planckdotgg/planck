@@ -48,8 +48,30 @@ type vsyncClock struct {
 	anchor int64
 	fits   int
 	lead   int64
+	// nominal is the display's refresh period as the system states it, 0
+	// where it does not: no refresh comes sooner.
+	nominal int64
 	// targets are the refreshes the last presents aimed at, by tag.
 	targets [8]struct{ tag, at int64 }
+}
+
+// setNominal gives the display's refresh period as the system states it.
+func (c *vsyncClock) setNominal(ns int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.nominal = ns
+	if c.period > 0 && c.period < c.shortest() {
+		c.period, c.fits = 0, 0
+	}
+}
+
+// shortest is the shortest time between refreshes. Two pictures a third of
+// a refresh apart, as a compositor shows them off its grid, would else make
+// the period a third of the refresh, and every later refresh time a whole
+// number of those apart would lock the clock on it: a 360 Hz grid on a 120
+// Hz display.
+func (c *vsyncClock) shortest() int64 {
+	return max(minRefresh, c.nominal-fitTolerance)
 }
 
 // observe takes the time a picture tagged tag reached the screen.
@@ -76,8 +98,9 @@ func (c *vsyncClock) observe(tag, t int64) {
 	}
 	d := t - c.anchor
 	c.anchor = t
+	lo := c.shortest()
 	if c.period == 0 {
-		if d >= minRefresh && d <= maxRefresh {
+		if d >= lo && d <= maxRefresh {
 			c.period = d
 		}
 		return
@@ -85,7 +108,7 @@ func (c *vsyncClock) observe(tag, t int64) {
 	k := (d + c.period/2) / c.period
 	if k < 1 {
 		// Faster than the period: it was a multiple of the refresh.
-		if d >= minRefresh {
+		if d >= lo {
 			c.period = d
 		}
 		c.fits = 0
@@ -94,7 +117,7 @@ func (c *vsyncClock) observe(tag, t int64) {
 	resid := d - k*c.period
 	if resid > fitTolerance || resid < -fitTolerance {
 		c.fits = 0
-		if k == 1 && d >= minRefresh && d <= maxRefresh {
+		if k == 1 && d >= lo && d <= maxRefresh {
 			c.period = d
 		}
 		return

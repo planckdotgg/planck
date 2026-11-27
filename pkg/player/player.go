@@ -116,7 +116,7 @@ func New(surf *gpusurface.Surface, dec decode.Decoder, keep int) *Player {
 	p := startWith(dec, keep, func(f decode.Frame) error { return present(surf, f) }, surf.Resize, screenNow)
 	p.surf = surf
 	p.hud.sink = surf
-	p.phase.SetNominalPeriod(nominalPeriod(surf))
+	p.setNominalPeriod(nominalPeriod(surf))
 	watchPresents(surf, p.onScreenGPU)
 	return p
 }
@@ -213,9 +213,14 @@ const phaseSettle = int64(500 * time.Millisecond)
 func (p *Player) ResetPhase() {
 	p.phaseFrom.Store(p.now() + phaseSettle)
 	if p.surf != nil {
-		p.phase.SetNominalPeriod(nominalPeriod(p.surf))
+		p.setNominalPeriod(nominalPeriod(p.surf))
 	}
 	p.phase.Reset()
+}
+
+func (p *Player) setNominalPeriod(ns int64) {
+	p.vsync.setNominal(ns)
+	p.phase.SetNominalPeriod(ns)
 }
 
 // smooth reports whether pictures wait for their refresh now.

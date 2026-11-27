@@ -273,6 +273,21 @@ composited turns direct after 3 under 6%: the queue bursts stayed past
 window and direct at all 172 reports in full screen, at most 20% late;
 before, composited at 153 of them.
 
+In QA the window then read direct for about 5 s, and composited at
+"360.003 Hz". Two faults. The player's refresh clock took any glass
+interval under its period as the new period: two composited pictures a
+third of a refresh apart made it 2.78 ms, every later 120 Hz refresh time
+was a whole number of those apart, and the clock locked at 360 Hz
+(replaying the saved traces, it sat at 208-400 Hz in windows and full
+screen alike). It now takes no period under the screen's
+`minimumRefreshInterval`, and the estimator takes no grid under it. And
+the mode was read by the grid wherever it held for half the mode window:
+in a window the grid locks on and off, and of the pictures on it 72% were
+on time, which read direct, and the spread path's 12-report bound then
+held that for 3 s. The grid now reads the mode only where it held for
+90% of the window (the phase still needs half); the recorded window and
+full screen never reach it, both read by the spread, unchanged.
+
 The queue costs a refresh or two of latency while it lasts (present to
 glass p50 6.34 ms in QA against 4.3 ms at 119 fps) and is not fixed here.
 

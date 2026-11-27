@@ -71,7 +71,7 @@ func TestPhaseRecorded60On120(t *testing.T) {
 	var clock atomic.Int64
 	p := startWith(&fakeDecoder{out: map[uintptr]bool{}}, 0, func(decode.Frame) error { return nil }, func(int, int) error { return nil }, clock.Load)
 	defer p.Close()
-	p.phase.SetNominalPeriod(int64(time.Second / 120))
+	p.setNominalPeriod(int64(time.Second / 120))
 	path, next, pts := "window", int64(0), int64(0)
 	modes := map[string]map[phaselock.Mode]int{"window": {}, "direct": {}}
 	directLate := 0.0
@@ -128,7 +128,7 @@ func TestPhaseResetOnPathChange(t *testing.T) {
 	var clock atomic.Int64
 	p := startWith(&fakeDecoder{out: map[uintptr]bool{}}, 0, func(decode.Frame) error { return nil }, func(int, int) error { return nil }, clock.Load)
 	defer p.Close()
-	p.phase.SetNominalPeriod(int64(time.Second / 120))
+	p.setNominalPeriod(int64(time.Second / 120))
 	at := int64(time.Second)
 	rng := rand.New(rand.NewPCG(3, 4))
 	present := func(pts, toGlass int64) {

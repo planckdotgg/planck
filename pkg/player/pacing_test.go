@@ -71,3 +71,24 @@ func TestVsyncClockLeadFollowsMisses(t *testing.T) {
 		t.Fatalf("made refresh: lead %d, want %d", c.lead, lead+leadStep-leadDrift)
 	}
 }
+
+// TestVsyncClockNoFasterThanTheDisplay: a compositor shows a picture now
+// and then a third of a refresh after the one before, off the display's
+// refreshes. Taken as a refresh, the period would be a third of the real
+// one, every later refresh time a whole number of those apart, and the
+// clock locked at 360 Hz on a 120 Hz display.
+func TestVsyncClockNoFasterThanTheDisplay(t *testing.T) {
+	var c vsyncClock
+	c.setNominal(refresh120)
+	at := int64(5_000_000)
+	for i := range 600 {
+		c.observe(int64(i), at)
+		if i%50 == 10 {
+			c.observe(int64(i)+10_000, at+refresh120/3)
+		}
+		at += 2 * refresh120
+		if p, _, ok := c.grid(); p != 0 && p < refresh120-fitTolerance {
+			t.Fatalf("refresh %d: period %d ns (locked %v), want no shorter than %d", i, p, ok, refresh120)
+		}
+	}
+}
