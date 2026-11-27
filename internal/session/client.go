@@ -110,7 +110,11 @@ type ClientConfig struct {
 	// stream on a route the host was calibrated on asks for what that
 	// calibration picked wherever Overrides leave a knob auto.
 	Calibrate CalibrationMode
-	Logf      func(format string, args ...any)
+	// InputTrace asks a host with wire.FeatureInputTrace to trace its input
+	// and cursor while this client traces its own; SetInputTrace changes
+	// it.
+	InputTrace bool
+	Logf       func(format string, args ...any)
 }
 
 // RouteConfig tunes the route monitor that runs beside each stream. A
@@ -261,6 +265,8 @@ type Client struct {
 	clip   *clipSync
 	// gain is the playback volume, a float64's bits.
 	gain atomic.Uint64
+	// inputTrace is what the host is asked of its input trace.
+	inputTrace atomic.Bool
 	// beforeLive, for tests, runs as connect is about to make its route live.
 	beforeLive func(*conn, *route)
 }
@@ -278,6 +284,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	c := &Client{cfg: cfg, dir: dir, logf: cfg.Logf,
 		activity: func(s *transport.Session) uint64 { return s.Stats().PacketsReceived }}
 	c.gain.Store(math.Float64bits(1))
+	c.inputTrace.Store(cfg.InputTrace)
 	if c.logf == nil {
 		c.logf = log.Printf
 	}
@@ -746,6 +753,9 @@ func (c *Client) dialRoute(ctx context.Context, cc *conn, r resolved) (*route, e
 	}
 	rt.sess = sess
 	c.sendPeerState(sess)
+	if cfg.Calibrate == "" {
+		c.sendInputTrace(sess)
+	}
 	if cfg.PIN != "" {
 		// A PIN pairs once; the host rotates it, and reconnects use the pin.
 		c.mu.Lock()
@@ -1781,6 +1791,26 @@ func (c *Client) sendPeerState(sess *transport.Session) {
 	}
 	c.mu.Unlock()
 	_ = sess.SendControl(&wire.PeerState{ClipboardSend: cfg.Send, ClipboardRecv: cfg.Receive})
+}
+
+// sendInputTrace tells a host that reads it whether to trace its input:
+// every session, so that a host a client before this one asked stops.
+func (c *Client) sendInputTrace(sess *transport.Session) {
+	if sess.PeerFeatures()&wire.FeatureInputTrace == 0 {
+		return
+	}
+	_ = sess.SendControl(&wire.InputTrace{On: c.inputTrace.Load()})
+}
+
+// SetInputTrace asks the host to trace its input, or to stop, at once and
+// on every route and stream after.
+func (c *Client) SetInputTrace(on bool) {
+	if c.inputTrace.Swap(on) == on {
+		return
+	}
+	if sess := c.liveSession(); sess != nil {
+		c.sendInputTrace(sess)
+	}
 }
 
 // SetClipboard changes what this client shares, at once.

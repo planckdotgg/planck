@@ -13,6 +13,23 @@ type Injector interface {
 	Close() error
 }
 
+// SentMouse is one mouse event an injector posted, as the system call
+// took it: SendInput's MOUSEINPUT on Windows.
+type SentMouse struct {
+	Flags     uint32 `json:"flags"`
+	DX        int32  `json:"dx"`
+	DY        int32  `json:"dy"`
+	MouseData uint32 `json:"mouse_data"`
+	Err       string `json:"err,omitempty"`
+}
+
+// SendTracer is an injector that reports each mouse event it posts to f,
+// on the goroutine that injects, for input traces. Set it before the
+// first Inject.
+type SendTracer interface {
+	TraceSends(f func(SentMouse))
+}
+
 // InjectMarker tags the keys a host injects (dwExtraInfo on Windows, the
 // event source's user data on macOS), so that a client capturing the
 // system's keys on the same machine leaves them alone rather than sending

@@ -156,6 +156,13 @@ type harness struct {
 
 func startHost(t *testing.T, dir, listen string, whois WhoIser, discoveryAddr string) *harness {
 	t.Helper()
+	return startHostWith(t, dir, listen, whois, discoveryAddr, nil)
+}
+
+// startHostWith is startHost with prepare, where set, run on the host
+// before it starts.
+func startHostWith(t *testing.T, dir, listen string, whois WhoIser, discoveryAddr string, prepare func(*Host)) *harness {
+	t.Helper()
 	hs := &harness{}
 	h, err := NewHost(HostConfig{
 		ConfigDir: dir, Name: "test-host", ListenAddr: listen, DiscoveryAddr: discoveryAddr,
@@ -173,6 +180,9 @@ func startHost(t *testing.T, dir, listen string, whois WhoIser, discoveryAddr st
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if prepare != nil {
+		prepare(h)
 	}
 	if h.cfg.InjectInput || h.inject != nil {
 		t.Fatal("tests must never inject real input")

@@ -35,6 +35,7 @@ func (st *stream) cursorLoop() {
 	defer t.Stop()
 	var report cursorReport
 	var warp warpCapture
+	var trace cursorTrace
 	for {
 		s, err := read()
 		if errors.Is(err, cursor.ErrUnsupported) {
@@ -54,9 +55,18 @@ func (st *stream) cursorLoop() {
 			m := cursorMessage(s, cursor.Rect{X: d.X, Y: d.Y, W: d.W, H: d.H})
 			moves := st.h.absMoves.Load()
 			target := st.h.absTarget.Load()
-			m.Captured = warp.observe(m, moves, uint16(target>>16), uint16(target)) || m.Captured
-			if report.due(m) && st.sess.SendControl(&m) == nil {
-				report.sent(m)
+			warped := warp.observe(m, moves, uint16(target>>16), uint16(target))
+			m.Captured = warped || m.Captured
+			act := report.decide(m)
+			if act == reportEmit {
+				if st.sess.SendControl(&m) == nil {
+					report.sent(m)
+				} else {
+					act = reportSendFailed
+				}
+			}
+			if st.h.itrace.on() {
+				trace.poll(st.h, s, m, warped, act)
 			}
 		}
 		select {
@@ -76,16 +86,37 @@ type cursorReport struct {
 	started, held bool
 }
 
-func (r *cursorReport) due(m wire.CursorState) bool {
+func (r *cursorReport) due(m wire.CursorState) bool { return r.decide(m) == reportEmit }
+
+// reportAction is what cursorReport made of a poll.
+type reportAction uint8
+
+const (
+	// reportSame changed nothing the client hears of.
+	reportSame reportAction = iota
+	reportEmit
+	// reportHoldHide waits a poll before telling of a hide.
+	reportHoldHide
+	// reportDropFlicker is the poll after a held hide, the cursor back.
+	reportDropFlicker
+	// reportSendFailed was due, and its message did not go.
+	reportSendFailed
+)
+
+func (r *cursorReport) decide(m wire.CursorState) reportAction {
 	if r.started && m.Visible == r.last.Visible && m.Captured == r.last.Captured {
+		held := r.held
 		r.held = false
-		return false
+		if held {
+			return reportDropFlicker
+		}
+		return reportSame
 	}
 	if r.started && r.last.Visible && !m.Visible && m.Captured == r.last.Captured && !r.held {
 		r.held = true
-		return false
+		return reportHoldHide
 	}
-	return true
+	return reportEmit
 }
 
 func (r *cursorReport) sent(m wire.CursorState) { r.last, r.started, r.held = m, true, false }

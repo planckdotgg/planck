@@ -62,7 +62,9 @@ func read() (State, error) {
 		return int(int32(r))
 	}
 	desktop := Rect{metric(smXVirtualScreen), metric(smYVirtualScreen), metric(smCXVirtualScreen), metric(smCYVirtualScreen)}
-	s := classify(showing(ci.flags, ci.hCursor), Rect{int(clip.Left), int(clip.Top), int(clip.Right - clip.Left), int(clip.Bottom - clip.Top)}, desktop)
+	clipRect := Rect{int(clip.Left), int(clip.Top), int(clip.Right - clip.Left), int(clip.Bottom - clip.Top)}
+	s := classify(showing(ci.flags, ci.hCursor), clipRect, desktop)
+	s.Clip, s.Desktop = clipRect, desktop
 	p := ci.pos
 	if r, _, _ := procGetPhysicalCursorPos.Call(uintptr(unsafe.Pointer(&p))); r == 0 {
 		p = ci.pos

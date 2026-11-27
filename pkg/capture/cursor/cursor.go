@@ -23,6 +23,9 @@ type State struct {
 	// Handle is the system's handle of the cursor's image, which changes
 	// as the cursor changes shape; 0 while none shows.
 	Handle uintptr
+	// Clip is the rectangle the cursor is confined to and Desktop the
+	// bounds of every display, where the platform says (Windows).
+	Clip, Desktop Rect
 }
 
 // Read reports the system cursor now.

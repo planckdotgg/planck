@@ -3,6 +3,7 @@
 package input
 
 import (
+	"errors"
 	"testing"
 	"unsafe"
 )
@@ -186,6 +187,44 @@ func TestInjectSystemKeys(t *testing.T) {
 	for i := range want {
 		if got[i] != want[i] {
 			t.Errorf("event %d: scan %#x flags %#x, want scan %#x flags %#x", i, got[i].scan, got[i].flags, want[i].scan, want[i].flags)
+		}
+	}
+}
+
+// TestTraceSends: each mouse event posted reaches the trace as SendInput
+// took it, with its error; keys do not.
+func TestTraceSends(t *testing.T) {
+	fail := errors.New("blocked")
+	s := &SendInputInjector{post: func(r *inputRecord) error {
+		if r.typ == inputMouse && r.mi.flags == mouseeventfLeftDown {
+			return fail
+		}
+		return nil
+	}}
+	var got []SentMouse
+	var tracer SendTracer = s
+	tracer.TraceSends(func(m SentMouse) { got = append(got, m) })
+	s.SetTarget(Rect{1920, 0, 2560, 1440}, Rect{0, 0, 4480, 1440})
+	for _, ev := range []Event{
+		{Type: TypeMouseMoveAbs, MouseAbs: MouseMoveAbs{X: 32768, Y: 0}},
+		{Type: TypeMouseMoveRel, MouseRel: MouseMoveRel{DX: -3, DY: 4}},
+		{Type: TypeKey, Key: KeyEvent{Usage: KeyA, Pressed: true}},
+		{Type: TypeMouseButton, Button: MouseButton{Button: ButtonLeft, Pressed: true}},
+	} {
+		s.Inject(ev)
+	}
+	dx, dy, flags := s.absMove(MouseMoveAbs{X: 32768, Y: 0})
+	want := []SentMouse{
+		{Flags: flags, DX: dx, DY: dy},
+		{Flags: mouseeventfMove, DX: -3, DY: 4},
+		{Flags: mouseeventfLeftDown, Err: fail.Error()},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("traced %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("send %d: %+v, want %+v", i, got[i], want[i])
 		}
 	}
 }

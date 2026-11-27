@@ -25,6 +25,7 @@ import (
 	"github.com/planckdotgg/planck/pkg/discovery"
 	"github.com/planckdotgg/planck/pkg/encode"
 	"github.com/planckdotgg/planck/pkg/input"
+	"github.com/planckdotgg/planck/pkg/inputtrace"
 	"github.com/planckdotgg/planck/pkg/ratectl"
 	"github.com/planckdotgg/planck/pkg/tailscale"
 	"github.com/planckdotgg/planck/pkg/transport"
@@ -91,6 +92,10 @@ type HostConfig struct {
 	InjectInput bool
 	// NoTailscale turns off trusting devices of the same tailnet user.
 	NoTailscale bool
+	// InputTrace traces input and the cursor (pkg/inputtrace) from Start
+	// to Stop, in the config directory's logs; without it the host traces
+	// while a client asks it to.
+	InputTrace bool
 
 	// OpenVideo replaces DefaultVideoOpener.
 	OpenVideo VideoOpener
@@ -312,6 +317,7 @@ type Host struct {
 	absTarget atomic.Uint32
 
 	inputTrace *tracer[inputTraceRow]
+	itrace     hostTrace
 
 	caps hostCapsCache
 	vdd  vddManager
@@ -369,7 +375,7 @@ func NewHost(cfg HostConfig) (*Host, error) {
 	if cfg.FPS <= 0 && cfg.Synth {
 		cfg.FPS = 60
 	}
-	h := &Host{inputTrace: newTracer[inputTraceRow](traceInputEnv), cfg: cfg, dir: dir, hostID: stored.HostID, cert: cert, fp: transport.CertFingerprint(cert), pairs: pairs,
+	h := &Host{inputTrace: newTracer[inputTraceRow](traceInputEnv), itrace: hostTrace{t: inputtrace.Host}, cfg: cfg, dir: dir, hostID: stored.HostID, cert: cert, fp: transport.CertFingerprint(cert), pairs: pairs,
 		whois: cfg.WhoIs, open: cfg.OpenVideo, logf: cfg.Logf, pin: cfg.PIN, requireLANPIN: stored.RequirePINForLAN,
 		listen: transport.Listen, done: make(chan struct{}), stopWait: defaultStopWait}
 	if h.logf == nil {
@@ -569,6 +575,7 @@ func (h *Host) Start(ctx context.Context) error {
 		RefInvalidation: true,
 		// The video loop steers its frames by the client's display phase.
 		DisplayPhase: true,
+		InputTrace:   true,
 		Handlers: transport.Handlers{
 			Input:   h.onInput,
 			Control: h.onControl,
@@ -577,6 +584,7 @@ func (h *Host) Start(ctx context.Context) error {
 	if !h.cfg.NoMic {
 		scfg.Handlers.Mic = h.onMic
 	}
+	h.startTrace()
 	h.openInput()
 	if h.cfg.Clipboard.any() {
 		h.clip = openClipSync(h.cfg.OpenClipboard, h.cfg.Clipboard, h.liveSession, h.peerReceivesClipboard, h.logf)
@@ -629,6 +637,9 @@ func (h *Host) openInput() {
 	h.injMu.Lock()
 	defer h.injMu.Unlock()
 	h.inject, h.injClosed = inj, false
+	if t, ok := inj.(input.SendTracer); ok {
+		t.TraceSends(h.traceSent)
+	}
 	if pi, ok := inj.(PadInjector); ok {
 		pi.SetGamepadType(h.GamepadSettings().Type)
 	}
@@ -734,6 +745,9 @@ func (h *Host) acceptLoop(ctx context.Context) {
 			}
 			replaced := h.cur != nil
 			h.mu.Unlock()
+			if !replaced && !calibration {
+				h.askTrace(false)
+			}
 			h.endInput(st)
 			if !replaced {
 				h.releasePads()
@@ -1014,8 +1028,18 @@ func (h *Host) onInput(from *transport.Session, in wire.Input) {
 	if h.cfg.OnInput != nil {
 		h.cfg.OnInput(ev)
 	}
+	var traced *hostInput
+	if h.itrace.on() {
+		traced = h.traceInputStart(in, ev)
+	}
+	if h.inject == nil && traced != nil {
+		h.traceInputEnd(traced, false, nil)
+	}
 	if h.inject != nil {
 		injected, err := h.injectHeld(from, ev)
+		if traced != nil {
+			h.traceInputEnd(traced, injected, err)
+		}
 		if err != nil {
 			h.inputErr.Add(1)
 			return
@@ -1199,6 +1223,8 @@ func (h *Host) onControl(m wire.Message) {
 		if st := h.current(); st != nil {
 			st.phaseReport(m)
 		}
+	case *wire.InputTrace:
+		h.askTrace(m.On)
 	}
 }
 
@@ -1314,6 +1340,7 @@ func (h *Host) Stop() {
 		if !h.within(h.closeInput, h.closeClipboard, h.closeDisplays) {
 			h.fail("the host's input, clipboard, or virtual displays took over %v to close; stopping without them", h.stopWait)
 		}
+		h.stopTrace()
 		h.setStarted(false)
 		close(h.done)
 	})

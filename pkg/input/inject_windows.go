@@ -70,6 +70,8 @@ type SendInputInjector struct {
 	in inputRecord
 	// post replaces SendInput in tests, which must never move the cursor.
 	post func(*inputRecord) error
+	// sent hears each mouse event posted.
+	sent func(SentMouse)
 
 	mu               sync.Mutex
 	display, desktop Rect
@@ -157,8 +159,19 @@ func (s *SendInputInjector) send() error {
 
 func (s *SendInputInjector) mouse(dx, dy int32, data, flags uint32) error {
 	s.in = inputRecord{typ: inputMouse, mi: mouseInput{dx: dx, dy: dy, mouseData: data, flags: flags}}
-	return s.send()
+	err := s.send()
+	if s.sent != nil {
+		m := SentMouse{Flags: flags, DX: dx, DY: dy, MouseData: data}
+		if err != nil {
+			m.Err = err.Error()
+		}
+		s.sent(m)
+	}
+	return err
 }
+
+// TraceSends has f hear each mouse event posted.
+func (s *SendInputInjector) TraceSends(f func(SentMouse)) { s.sent = f }
 
 func (s *SendInputInjector) key(k KeyEvent) error {
 	scan, ext, vk, ok := windowsScan(k.Usage)
@@ -250,6 +263,7 @@ func (s *SendInputInjector) Close() error {
 }
 
 var (
-	_ Injector = (*SendInputInjector)(nil)
-	_ Targeter = (*SendInputInjector)(nil)
+	_ Injector   = (*SendInputInjector)(nil)
+	_ Targeter   = (*SendInputInjector)(nil)
+	_ SendTracer = (*SendInputInjector)(nil)
 )
