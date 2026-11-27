@@ -588,6 +588,10 @@ func (a *App) cardBody(c *mui.Context, h HostInfo, st cardState, hover, pairing 
 			cardMeta(c, s, theme.RoleText2)
 		}
 		mui.Spacer(c)
+		if !pairing && h.Paired {
+			a.calStatusLine(c, h, st)
+			mui.Box(c).Height(theme.Space2).Shrink(0)
+		}
 		if pairing {
 			waitingRow(c)
 			return

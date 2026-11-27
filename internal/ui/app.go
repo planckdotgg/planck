@@ -85,6 +85,8 @@ type App struct {
 	drafts  drafts
 	// set is the Settings page's own state: its category and search.
 	set settingsState
+	// cal is the Auto-tune window.
+	cal calibrateUI
 	// stats keeps the Statistics page's charts, a sample a second.
 	stats statsHistory
 
@@ -227,6 +229,7 @@ func (a *App) View(c *mui.Context) {
 		a.rail(c)
 		if a.screen == ScreenSettings {
 			a.settingsScreen(c)
+			a.calibrationModal(c)
 			return
 		}
 		// Ports left open elsewhere are tested again when Settings returns.
@@ -241,6 +244,7 @@ func (a *App) View(c *mui.Context) {
 				}
 			})
 		})
+		a.calibrationModal(c)
 	})
 }
 

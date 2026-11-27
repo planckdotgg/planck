@@ -19,6 +19,7 @@ func (a *App) videoPage(c *mui.Context, f *settingsFrame) {
 	a.scopeBar(c, f.e)
 	e := f.e
 	columns(c, 1, 1, func() {
+		a.autoTunePanel(c, e)
 		setPanel(c, "Codec", overriddenTag(c, e, false, knobCodec), func() { a.entries(c, f, "video.codec") })
 		setPanel(c, "Colour", overriddenTag(c, e, false, knobChroma, knobBitDepth), func() {
 			a.entries(c, f, "video.chroma", "video.bitDepth")
