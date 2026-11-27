@@ -33,9 +33,8 @@ func (st *stream) cursorLoop() {
 	var shape uint64
 	t := time.NewTicker(cursorPoll)
 	defer t.Stop()
-	var last wire.CursorState
+	var report cursorReport
 	var warp warpCapture
-	sent := false
 	for {
 		s, err := read()
 		if errors.Is(err, cursor.ErrUnsupported) {
@@ -56,10 +55,8 @@ func (st *stream) cursorLoop() {
 			moves := st.h.absMoves.Load()
 			target := st.h.absTarget.Load()
 			m.Captured = warp.observe(m, moves, uint16(target>>16), uint16(target)) || m.Captured
-			if !sent || m.Visible != last.Visible || m.Captured != last.Captured {
-				if st.sess.SendControl(&m) == nil {
-					last, sent = m, true
-				}
+			if report.due(m) && st.sess.SendControl(&m) == nil {
+				report.sent(m)
 			}
 		}
 		select {
@@ -69,6 +66,29 @@ func (st *stream) cursorLoop() {
 		}
 	}
 }
+
+// cursorReport decides which polls the client hears of: the first, and
+// each that shows, hides, captures or frees the cursor. A cursor hiding
+// alone waits a poll: an app changing its cursor's shape can show none for
+// an instant, and each hide takes the client's pointer relative and back.
+type cursorReport struct {
+	last          wire.CursorState
+	started, held bool
+}
+
+func (r *cursorReport) due(m wire.CursorState) bool {
+	if r.started && m.Visible == r.last.Visible && m.Captured == r.last.Captured {
+		r.held = false
+		return false
+	}
+	if r.started && r.last.Visible && !m.Visible && m.Captured == r.last.Captured && !r.held {
+		r.held = true
+		return false
+	}
+	return true
+}
+
+func (r *cursorReport) sent(m wire.CursorState) { r.last, r.started, r.held = m, true, false }
 
 // shapeCache is the last wire.CursorCacheSize cursor shapes of a session,
 // the most recent first. The client's takes each message the host's makes
