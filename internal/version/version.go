@@ -3,7 +3,7 @@
 // to be v<Version>. Release builds set Commit and BuildDate with -ldflags -X.
 package version
 
-var Version = "0.1.0"
+var Version = "0.2.0"
 
 var Commit = "dev"
 

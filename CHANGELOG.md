@@ -4,9 +4,15 @@ Each release has a section `## [X.Y.Z]`. The Release workflow publishes that sec
 
 ## [Unreleased]
 
-- Breaking: the default ports are now UDP 41000 (discovery), 41001 (control) and 41002 (media). The old 47700-47702 fall in the range WSL's mirrored networking reserves on Windows, where the host could not start. A host.json that still holds the old defaults moves to the new ones; ports you chose stay. Update the host and the client together: an older client listens for hosts on 47700.
-- A host on a discovery port of its own also announces itself on the default one, so clients on the default list it as online.
-- A lost frame reported while the host waits for the display now recovers on the next picture, instead of falling back to a keyframe one frame later.
+## [0.2.0]
+
+- Breaking: default ports are now UDP 41000 (discovery), 41001 (QUIC control) and 41002 (media). The old 47700-47702 fall in the range WSL's mirrored networking reserves on Windows, where the host could not start. A `host.json` that still holds the old defaults moves to the new ones; custom ports stay. Update host and client together: older clients listen for hosts on 47700.
+- Linux desktop client and host (beta): full desktop `planck-client` GUI and standalone `planck-host` with X11 MIT-SHM and Wayland ScreenCast/PipeWire capture, NVIDIA NVENC and VA-API HEVC encode, audio, input, `.desktop` entry, `planck-host.service`, and `install.sh` (x86_64 and aarch64 tarballs). Newly shipped and CI-tested — Linux hardware feedback is welcome.
+- Auto-tune: in-app auto-configurator that benchmarks codec, slice count, VSync and bitrate for each host.
+- VSync phase-locking (`-phase-lock`) to align frame presentation with the display's scan-out grid and cut pacing jitter.
+- Windows UDP GSO send batching and macOS receive-queue pacing for smoother high-bitrate bursts on LAN.
+- Discovery and recovery fixes: a host on a custom discovery port also announces on the default port, and a lost frame reported while waiting for the display recovers on the next picture via reference invalidation instead of falling back to a keyframe a frame later.
+- Single desktop download per platform runs both client and built-in host (via the in-app Hosting toggle), with standalone `planck-host` included for headless or background-service hosting.
 
 ## [0.1.0]
 
