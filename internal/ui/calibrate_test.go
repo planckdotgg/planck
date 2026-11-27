@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -355,5 +356,49 @@ func TestCalibrateEscapeClosesOnlyWhenIdle(t *testing.T) {
 	a.closeCalibration()
 	if a.cal.open {
 		t.Fatal("did not close when finished")
+	}
+}
+
+// TestCalibrateLatencyLabels: the result and the kept calibration say
+// "to glass" only when the display phase measured it; otherwise the
+// times end at the decoded picture and say so.
+func TestCalibrateLatencyLabels(t *testing.T) {
+	f := newFake()
+	_, tt := startFromCard(t, f)
+	finishCal(f)
+	tt.Frame()
+	if _, ok := tt.Access("After 6.5 milliseconds to glass"); !ok || !tt.HasText("p50 to glass: from the host’s capture to the picture on this screen.") {
+		t.Errorf("measured result not labelled to glass: %q", tt.Texts())
+	}
+	for _, st := range []CalibrationDisplayStatus{CalibrationDisplaySkipped, CalibrationDisplayUnavailable} {
+		res := calResultFixture()
+		res.Display = CalibrationDisplay{Status: st}
+		f.setCal(func(s *CalibrationState) { s.Result = res })
+		tt.Frame()
+		if _, ok := tt.Access("After 6.5 milliseconds capture to decode"); !ok || tt.HasText("p50 to glass: from the host’s capture to the picture on this screen.") ||
+			!tt.HasText("p50 capture to decode: from the host’s capture to the decoded picture. The display phase did not measure the time to glass.") {
+			t.Errorf("display %s: result not labelled capture to decode: %q", st, tt.Texts())
+		}
+	}
+}
+
+func TestCalibrateKeptWithoutGlass(t *testing.T) {
+	f := newFake()
+	f.hosts = calHosts()
+	kept := calKept()
+	kept.GlassMs = 0
+	f.cal.status = map[string][]CalibrationSummary{"h-bigboi": {kept}}
+	_, tt := newTester(t, f)
+	if !tt.HasText("Tuned · LAN") {
+		t.Errorf("card without a time to glass: %q", tt.Texts())
+	}
+	click(t, tt, "Stream settings for bigboi")
+	for _, s := range tt.Texts() {
+		if strings.Contains(s, "to glass") {
+			t.Errorf("settings panel shows %q with no time to glass", s)
+		}
+	}
+	if !tt.HasText("round trip 0.4 ms") {
+		t.Errorf("settings panel: %q", tt.Texts())
 	}
 }

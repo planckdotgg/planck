@@ -22,7 +22,7 @@ type CalibratedRoute struct {
 	ReceiveQueue defaults.ReceiveQueue `json:"receiveQueue"`
 	Link         CalibratedLink        `json:"link"`
 	// GlassMs is the capture-to-glass p50 calibration measured for its
-	// pick, or capture to decode when it showed nothing; 0 is unknown.
+	// pick; 0 is unknown, as when its display phase did not run.
 	GlassMs  float64  `json:"glassMs,omitempty"`
 	Warnings []string `json:"warnings,omitempty"`
 }

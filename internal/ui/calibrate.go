@@ -406,7 +406,7 @@ func (a *App) calBody(c *mui.Context, st CalibrationState, running bool) {
 		infoWell(c, "Calibration cancelled. Nothing was kept; the settings you had are unchanged.")
 	}
 	if r := st.Result; r != nil {
-		calOutcome(c, r.BeforeMs, r.AfterMs, r.Recommended)
+		calOutcome(c, r.BeforeMs, r.AfterMs, r.Display.Status == CalibrationDisplayMeasured, r.Recommended)
 		for _, w := range r.Warnings {
 			calCallout(c, w)
 		}
@@ -463,17 +463,23 @@ func calSection(c *mui.Context, title string, tag string, body func()) {
 
 // calOutcome is the finished run's headline: the default's latency, the
 // pick's, and the settings that make the difference.
-func calOutcome(c *mui.Context, before, after float64, rec defaults.UserOverrides) {
+// calOutcome shows the before and after p50s: to glass when the display
+// phase measured it, otherwise to the decoded picture.
+func calOutcome(c *mui.Context, before, after float64, toGlass bool, rec defaults.UserOverrides) {
 	ms := func(v float64) string {
 		if v <= 0 {
 			return "—"
 		}
 		return formatMs(v)
 	}
+	span, note := "capture to decode", "p50 capture to decode: from the host’s capture to the decoded picture. The display phase did not measure the time to glass."
+	if toGlass {
+		span, note = "to glass", "p50 to glass: from the host’s capture to the picture on this screen."
+	}
 	mui.Column(c).FillWidth().Gap(theme.Space3).Padding(theme.Space4, calPad).Radius(theme.RadiusMd).
 		Background(theme.RoleWell).Border(1, theme.RoleBorder.Mix(theme.RoleAccent, 0.35)).Children(func() {
 		mui.Row(c).FillWidth().Gap(theme.Space5).AlignItems(mui.End).Wrap().Children(func() {
-			mui.Column(c).Gap(2).Label("Before " + ms(before) + " milliseconds").Children(func() {
+			mui.Column(c).Gap(2).Label("Before " + ms(before) + " milliseconds " + span).Children(func() {
 				caption(c, "BEFORE · DEFAULTS")
 				mui.Row(c).Gap(6).AlignItems(mui.Baseline).Children(func() {
 					mono(c, ms(before)).FontSize(theme.TextDisplay).TextColor(theme.RoleText2)
@@ -481,7 +487,7 @@ func calOutcome(c *mui.Context, before, after float64, rec defaults.UserOverride
 				})
 			})
 			mui.Icon(c, theme.IconChevronRight).Size(20, 20).TextColor(theme.RoleText3).Margin(0, 0, 6)
-			mui.Column(c).Gap(2).Label("After " + ms(after) + " milliseconds").Children(func() {
+			mui.Column(c).Gap(2).Label("After " + ms(after) + " milliseconds " + span).Children(func() {
 				caption(c, "AFTER · AUTO-TUNED").TextColor(theme.RoleAccent)
 				mui.Row(c).Gap(6).AlignItems(mui.Baseline).Children(func() {
 					mono(c, ms(after)).FontSize(theme.TextReadout).TextColor(theme.RoleAccent)
@@ -498,7 +504,7 @@ func calOutcome(c *mui.Context, before, after float64, rec defaults.UserOverride
 				mono(c, text).FontSize(theme.TextBody).TextColor(col).Margin(0, 0, 6)
 			}
 		})
-		caption(c, "p50, from the host’s capture to the picture on this screen when the display phase measured it.").FillWidth()
+		caption(c, note).FillWidth()
 		divider(c)
 		chips := recommendedChips(rec)
 		mui.Row(c).FillWidth().Gap(theme.Space2).AlignItems(mui.Center).Wrap().Children(func() {

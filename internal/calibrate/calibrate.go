@@ -192,10 +192,16 @@ func (r Result) HostKey() string {
 	return "addr:" + r.Addr
 }
 
-// Stored is r as client.json keeps it for its route.
+// Stored is r as client.json keeps it for its route. Its GlassMs is 0
+// unless Phase 3 measured the time to glass: AfterMs alone ends at the
+// decoded picture.
 func (r Result) Stored() config.CalibratedRoute {
+	glass := 0.0
+	if r.Display.Status == DisplayMeasured {
+		glass = r.AfterMs
+	}
 	return config.CalibratedRoute{
-		At: r.At, Overrides: r.Recommended, ReceiveQueue: r.Link.ReceiveQueue, GlassMs: r.AfterMs, Warnings: r.Warnings,
+		At: r.At, Overrides: r.Recommended, ReceiveQueue: r.Link.ReceiveQueue, GlassMs: glass, Warnings: r.Warnings,
 		Link: config.CalibratedLink{
 			RTTP50Micros: int(r.Link.RTT.P50 * 1000), RTTP99Micros: int(r.Link.RTT.P99 * 1000), JitterMicros: int(r.Link.JitterMs * 1000),
 			BandwidthMbps: int(r.Link.BandwidthMbps), DatagramBytes: r.Link.DatagramBytes,

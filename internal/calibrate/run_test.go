@@ -391,3 +391,33 @@ func TestRunCancel(t *testing.T) {
 		})
 	}
 }
+
+// TestStoredGlassOnlyWhenMeasured: client.json keeps a time to glass only
+// from a run whose display phase measured one; AfterMs without it ends
+// at the decoded picture.
+func TestStoredGlassOnlyWhenMeasured(t *testing.T) {
+	for _, st := range []DisplayStatus{DisplaySkipped, DisplayUnavailable} {
+		r := Result{AfterMs: 5.66, Best: 0, Display: DisplayProbe{Status: st, Best: -1}}
+		if g := r.Stored().GlassMs; g != 0 {
+			t.Errorf("display %s: stored glassMs %v", st, g)
+		}
+	}
+	r := Result{AfterMs: 13.5, Best: 0, Display: DisplayProbe{Status: DisplayMeasured, Best: 0}}
+	if g := r.Stored().GlassMs; g != 13.5 {
+		t.Errorf("display measured: stored glassMs %v, want 13.5", g)
+	}
+}
+
+func TestRunHeadlessStoresNoGlass(t *testing.T) {
+	d := &fakeDialer{sim: &queueSim{depth: 1 << 20, drainMbps: 10_000, lineMbps: 10_000}, perfOf: scripted}
+	res, err := Run(context.Background(), d, Options{Client: clientCaps(), Timing: &fastTiming}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.AfterMs <= 0 || res.Display.Status != DisplaySkipped {
+		t.Fatalf("after %v ms, display %+v", res.AfterMs, res.Display)
+	}
+	if g := res.Stored().GlassMs; g != 0 {
+		t.Fatalf("headless run stored glassMs %v", g)
+	}
+}
