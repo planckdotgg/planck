@@ -2,7 +2,9 @@ package session
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -390,5 +392,64 @@ func TestInputTraceToggledDuringConnect(t *testing.T) {
 				t.Fatalf("host traces %v, client asked %v", tr.On(), final)
 			}
 		})
+	}
+}
+
+// TestInputTraceEndsWithFailedStart: a forced trace that Start opened
+// closes when Start fails.
+func TestInputTraceEndsWithFailedStart(t *testing.T) {
+	tr := inputtrace.New(inputtrace.SideHost)
+	h, err := NewHost(HostConfig{
+		ConfigDir: t.TempDir(), Name: "test-host", ListenAddr: "127.0.0.1:0", DiscoveryAddr: "off", NoTailscale: true,
+		OpenVideo:  func(VideoParams) (VideoPipe, error) { return &fakePipe{}, nil },
+		InputTrace: true, Logf: t.Logf,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.itrace.t = tr
+	bindErr := errors.New("bind: address in use")
+	h.listen = func(string, transport.ServerConfig) (*transport.Server, error) {
+		if !tr.On() {
+			t.Error("the trace was not on as Start listened")
+		}
+		return nil, bindErr
+	}
+	if err := h.Start(context.Background()); !errors.Is(err, bindErr) {
+		t.Fatalf("Start: %v", err)
+	}
+	if tr.On() || tr.Path() != "" {
+		t.Fatalf("trace still open after a failed Start: %s", tr.Path())
+	}
+}
+
+// TestRetraceForgetsTheCursor: a cursor moved while the trace was off is
+// no jump in the next trace, from the next input or the next poll; one
+// moved during it still is.
+func TestRetraceForgetsTheCursor(t *testing.T) {
+	h, tr, inj := tracedHost(t)
+	rel := input.Event{Type: input.TypeMouseMoveRel, MouseRel: input.MouseMoveRel{DX: 1, DY: 1}}
+	var ct cursorTrace
+	poll := func() {
+		s, _ := inj.read()
+		ct.poll(h, s, cursorMessage(s, cursor.Rect{W: 1920, H: 1080}), false, reportSame)
+	}
+	h.askTrace(true)
+	sendTo(t, h, 1, rel)
+	poll()
+	h.askTrace(false)
+	inj.warp(960, 540)
+	sendTo(t, h, 2, rel)
+	h.askTrace(true)
+	path := tr.Path()
+	poll()
+	sendTo(t, h, 3, rel)
+	inj.warp(200, 200)
+	sendTo(t, h, 4, rel)
+	h.askTrace(false)
+
+	jumps := ofKind(traceRecords(t, path), "cursor_jump")
+	if len(jumps) != 1 || jumps[0]["source"] != "input_gap" || jumps[0]["to"].(map[string]any)["x"] != float64(200) {
+		t.Fatalf("jumps %v, want only the warp to 200, 200 while tracing", jumps)
 	}
 }

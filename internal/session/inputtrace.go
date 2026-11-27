@@ -27,12 +27,15 @@ type hostTrace struct {
 	asked  bool
 
 	// call keeps one traced injection at a time; sent are the mouse events
-	// the injector posted during it, and prev the cursor after the last.
-	call    sync.Mutex
-	sentMu  sync.Mutex
-	sent    []input.SentMouse
-	prev    tracePoint
-	prevSet bool
+	// the injector posted during it, and prev the cursor after the last,
+	// in the trace of epoch prevEpoch: a cursor the host moved while off is
+	// no jump.
+	call      sync.Mutex
+	sentMu    sync.Mutex
+	sent      []input.SentMouse
+	prev      tracePoint
+	prevSet   bool
+	prevEpoch uint32
 	// injects counts the traced injections and after holds the cursor
 	// after the last, x in the high half, for cursorLoop's jump check.
 	injects atomic.Uint32
@@ -272,6 +275,9 @@ func (h *Host) traceInputEnd(rec *hostInput, injected bool, err error) {
 		rec.After = &tracePoint{s.X, s.Y}
 		ht.after.Store(packPoint(s.X, s.Y))
 	}
+	if e := ht.t.Epoch(); e != ht.prevEpoch {
+		ht.prevSet, ht.prevEpoch = false, e
+	}
 	if rec.Before != nil && ht.prevSet && moved(ht.prev, *rec.Before) {
 		inputtrace.Emit(ht.t, "cursor_jump", cursorJump{Source: "input_gap", From: ht.prev, To: *rec.Before,
 			DX: rec.Before.X - ht.prev.X, DY: rec.Before.Y - ht.prev.Y})
@@ -322,7 +328,8 @@ var reportActionNames = [...]string{reportSame: "same", reportEmit: "emit", repo
 func (ct *cursorTrace) poll(h *Host, s cursor.State, m wire.CursorState, warped bool, act reportAction) {
 	t := h.itrace.t
 	if e := t.Epoch(); e != ct.epoch {
-		*ct = cursorTrace{epoch: e}
+		// An injection of an earlier trace leaves no base.
+		*ct = cursorTrace{epoch: e, injects: h.itrace.injects.Load()}
 	}
 	if !ct.started || s != ct.last || act != reportSame {
 		rec := cursorPollRec{Visible: s.Visible, Captured: s.Captured, CursorX: s.X, CursorY: s.Y, HCursor: uint64(s.Handle),

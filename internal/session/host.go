@@ -650,6 +650,7 @@ func (h *Host) abortStart() {
 	h.closeInput()
 	h.closeClipboard()
 	h.clip = nil
+	h.stopTrace()
 }
 
 func (h *Host) startDiscovery(ctx context.Context) error {
