@@ -23,11 +23,12 @@ type SentMouse struct {
 	Err       string `json:"err,omitempty"`
 }
 
-// SendTracer is an injector that reports each mouse event it posts to f,
-// on the goroutine that injects, for input traces. Set it before the
-// first Inject.
+// SendTracer is an injector that reports each mouse event it posts to f
+// while on reports true, on the goroutine that injects, for input traces.
+// on is called for each event, so it should be an atomic load. Set it
+// before the first Inject.
 type SendTracer interface {
-	TraceSends(f func(SentMouse))
+	TraceSends(on func() bool, f func(SentMouse))
 }
 
 // InjectMarker tags the keys a host injects (dwExtraInfo on Windows, the

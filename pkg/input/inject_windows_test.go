@@ -203,7 +203,7 @@ func TestTraceSends(t *testing.T) {
 	}}
 	var got []SentMouse
 	var tracer SendTracer = s
-	tracer.TraceSends(func(m SentMouse) { got = append(got, m) })
+	tracer.TraceSends(func() bool { return true }, func(m SentMouse) { got = append(got, m) })
 	s.SetTarget(Rect{1920, 0, 2560, 1440}, Rect{0, 0, 4480, 1440})
 	for _, ev := range []Event{
 		{Type: TypeMouseMoveAbs, MouseAbs: MouseMoveAbs{X: 32768, Y: 0}},
@@ -226,5 +226,19 @@ func TestTraceSends(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("send %d: %+v, want %+v", i, got[i], want[i])
 		}
+	}
+}
+
+// TestTraceSendsOff: with the trace off, posting goes on and nothing is
+// built for it, a failure's message included.
+func TestTraceSendsOff(t *testing.T) {
+	posted := 0
+	s := &SendInputInjector{post: func(*inputRecord) error { posted++; return errors.New("blocked") }}
+	checks := 0
+	s.TraceSends(func() bool { checks++; return false }, func(SentMouse) { t.Error("traced with the trace off") })
+	s.Inject(Event{Type: TypeMouseMoveRel, MouseRel: MouseMoveRel{DX: 1}})
+	s.Inject(Event{Type: TypeMouseButton, Button: MouseButton{Button: ButtonLeft, Pressed: true}})
+	if posted != 2 || checks != 2 {
+		t.Fatalf("%d posted, %d checks, want 2 and 2", posted, checks)
 	}
 }

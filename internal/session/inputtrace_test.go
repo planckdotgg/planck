@@ -179,6 +179,7 @@ func TestInputTraceOlderHost(t *testing.T) {
 type fakeCursorInjector struct {
 	mu   sync.Mutex
 	x, y int
+	on   func() bool
 	sent func(input.SentMouse)
 }
 
@@ -200,14 +201,16 @@ func (f *fakeCursorInjector) Inject(ev input.Event) error {
 		return nil
 	}
 	f.mu.Unlock()
-	if f.sent != nil {
+	if f.sent != nil && f.on() {
 		f.sent(m)
 	}
 	return nil
 }
 
-func (f *fakeCursorInjector) Close() error                       { return nil }
-func (f *fakeCursorInjector) TraceSends(s func(input.SentMouse)) { f.sent = s }
+func (f *fakeCursorInjector) Close() error { return nil }
+func (f *fakeCursorInjector) TraceSends(on func() bool, s func(input.SentMouse)) {
+	f.on, f.sent = on, s
+}
 
 func (f *fakeCursorInjector) read() (cursor.State, error) {
 	f.mu.Lock()

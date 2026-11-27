@@ -638,7 +638,7 @@ func (h *Host) openInput() {
 	defer h.injMu.Unlock()
 	h.inject, h.injClosed = inj, false
 	if t, ok := inj.(input.SendTracer); ok {
-		t.TraceSends(h.traceSent)
+		t.TraceSends(h.itrace.on, h.traceSent)
 	}
 	if pi, ok := inj.(PadInjector); ok {
 		pi.SetGamepadType(h.GamepadSettings().Type)

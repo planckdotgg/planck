@@ -476,6 +476,7 @@ func (l *pointerLock) motion(dx, dy float64) {
 	}
 	l.dx += dx
 	l.dy += dy
+	traced := itrace.On()
 	var sx, sy int32
 	n := 0
 	for {
@@ -487,9 +488,11 @@ func (l *pointerLock) motion(dx, dy float64) {
 		l.dy -= float64(y)
 		l.relMoves++
 		l.send(input.Event{Type: input.TypeMouseMoveRel, MouseRel: input.MouseMoveRel{DX: x, DY: y}})
-		sx, sy, n = sx+int32(x), sy+int32(y), n+1
+		if traced {
+			sx, sy, n = sx+int32(x), sy+int32(y), n+1
+		}
 	}
-	if itrace.On() {
+	if traced {
 		r := clientInputRec{Event: "motion", RawDX: dx, RawDY: dy, WarpSeq: l.warps, Mode: l.mode.String(), SentKind: "rel",
 			SentDX: sx, SentDY: sy, SentCount: n}
 		if n == 0 {
