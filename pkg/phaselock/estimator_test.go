@@ -36,18 +36,36 @@ func TestGridNext(t *testing.T) {
 	}
 }
 
+// scanOut is how long after the GPU finished it a picture a direct surface
+// flipped reached the screen, and wsDeadline how long before a refresh the
+// GPU had to finish one for WindowServer to show it composited at that
+// refresh, as measured at 60 fps on a 120 Hz display on an M5 Pro.
+const (
+	scanOut    = int64(1800 * time.Microsecond)
+	wsDeadline = int64(1200 * time.Microsecond)
+)
+
 // feed gives e pictures ready slack before a refresh, give or take
-// jitter, drawn in render, shown extra refreshes after direct scan-out.
+// jitter, drawn in render, and shown direct, scanOut after the GPU finished
+// them, or extra refreshes after the one direct scan-out would have made.
 func feed(e *Estimator, g Grid, n int, slack, jitter, render int64, extra int, rng *rand.Rand) {
+	first := int64(10)
+	if e.lastGlass > g.Anchor {
+		first = (e.lastGlass-g.Anchor)/g.Period + 2
+	}
 	for i := range n {
-		v := g.Anchor + int64(i+10)*g.Period
+		v := g.Anchor + (int64(i)+first)*g.Period
 		s := slack
 		if jitter > 0 {
 			s += rng.Int64N(2*jitter) - jitter
 		}
 		ready := v - s
 		done := ready + render
-		e.Observe(Sample{Frame: uint32(i), Ready: ready, GPUDone: done, Glass: g.Next(done) + int64(extra)*g.Period}, g)
+		glass := done + scanOut
+		if extra > 0 {
+			glass = g.Next(done) + int64(extra)*g.Period
+		}
+		e.Observe(Sample{Frame: uint32(i), Ready: ready, GPUDone: done, Glass: glass}, g)
 	}
 }
 
@@ -120,12 +138,12 @@ func TestEstimatorMode(t *testing.T) {
 	if r.Mode != ModeComposited || r.CompositedPct != 100 || r.LatePct != 0 {
 		t.Fatalf("report %+v: want composited, 100%% a refresh later, none late", r)
 	}
-	// Half the pictures direct is inside the hysteresis: still composited.
+	// A third of the pictures direct: still composited.
 	feed(&e, g, modeWindow/2, 4*int64(time.Millisecond), 0, 0, 0, nil)
 	if r := e.Report(); r.Mode != ModeComposited {
 		t.Fatalf("mode %v at %.0f%%, want composited kept", r.Mode, r.CompositedPct)
 	}
-	feed(&e, g, modeWindow, 4*int64(time.Millisecond), 0, 0, 0, nil)
+	feed(&e, g, int(modeSpan/p120), 4*int64(time.Millisecond), 0, 0, 0, nil)
 	if r := e.Report(); r.Mode != ModeDirect || r.CompositedPct != 0 {
 		t.Fatalf("report %+v: want direct", r)
 	}
@@ -178,11 +196,13 @@ func TestEstimatorDisplayChangeResets(t *testing.T) {
 	}
 }
 
-// feedFree gives e n pictures that reach the screen off any refresh grid,
-// toGlass after the GPU finished them, give or take spread.
+// feedFree gives e n pictures 10 ms apart, after the last it took, that
+// reach the screen off any refresh grid, toGlass after the GPU finished
+// them, give or take spread.
 func feedFree(e *Estimator, n int, toGlass, spread int64, rng *rand.Rand) {
+	start := max(e.lastGlass, int64(time.Second))
 	for i := range n {
-		ready := 1e9 + int64(i)*10_000_000
+		ready := start + int64(i+1)*10_000_000
 		done := ready + int64(time.Millisecond)
 		d := toGlass
 		if spread > 0 {
@@ -199,25 +219,26 @@ func TestEstimatorModeWithoutGrid(t *testing.T) {
 	rng := rand.New(rand.NewPCG(5, 6))
 	var e Estimator
 	e.SetNominalPeriod(p120)
-	feedFree(&e, modeWindow, 3*int64(time.Millisecond), 500*int64(time.Microsecond), rng)
+	feedFree(&e, modeWindow, scanOut, 500*int64(time.Microsecond), rng)
 	r := e.Report()
 	if r.Mode != ModeDirect || r.Valid || r.PeriodNs != p120 {
 		t.Fatalf("report %+v: want direct at the stated refresh, no phase", r)
 	}
-	// One report's worth of a compositor: the mode holds.
-	feedFree(&e, modeWindow, 3*int64(time.Millisecond), p120, rng)
+	// A second of a compositor: the mode holds.
+	feedFree(&e, 100, scanOut, p120, rng)
 	if r := e.Report(); r.Mode != ModeDirect {
-		t.Fatalf("mode %v after one composited report, want direct kept", r.Mode)
+		t.Fatalf("mode %v after a second composited, want direct kept", r.Mode)
 	}
-	for range spreadReports {
-		feedFree(&e, 30, 3*int64(time.Millisecond), p120, rng)
+	// A compositor through most of the span turns it.
+	for range modeSpan / int64(300*time.Millisecond) {
+		feedFree(&e, 30, scanOut, p120, rng)
 		r = e.Report()
 	}
-	if r.Mode != ModeComposited || r.CompositedPct < 20 {
+	if r.Mode != ModeComposited || r.CompositedPct < 50 {
 		t.Fatalf("report %+v: want composited", r)
 	}
-	for range spreadReports + 1 {
-		feedFree(&e, modeWindow, 3*int64(time.Millisecond), 500*int64(time.Microsecond), rng)
+	for range modeSpan / int64(300*time.Millisecond) {
+		feedFree(&e, 30, scanOut, 500*int64(time.Microsecond), rng)
 		r = e.Report()
 	}
 	if r.Mode != ModeDirect {
@@ -378,9 +399,8 @@ func TestEstimatorBurstKeepsDirect(t *testing.T) {
 	}
 	feedFree(&e, modeWindow, 2*ms, ms, rng)
 	e.Report()
-	// A window's worth of reports fills it, then spreadReports in a row.
 	var r Report
-	for range modeWindow/15 + spreadReports {
+	for range modeSpan / int64(150*time.Millisecond) {
 		feedFree(&e, 15, 2*ms, 2*p120, rng)
 		r = e.Report()
 	}
@@ -424,7 +444,9 @@ func TestEstimatorQueueStartIsHeld(t *testing.T) {
 // locks only while it shows them on: for about half of a mode window at a
 // time. Of the pictures on the grid most reach the screen at the first
 // refresh after the GPU finished and a quarter a refresh later, which on
-// its own reads direct; the spread of them all is a compositor's.
+// its own reads direct; the spread of them all is a compositor's. The host
+// does not steer the phase, so the GPU finishes them anywhere in the
+// refresh before, as long as the compositor still takes them for it.
 func TestEstimatorWindowWithGridOnAndOff(t *testing.T) {
 	ms := int64(time.Millisecond)
 	rng := rand.New(rand.NewPCG(21, 22))
@@ -434,7 +456,7 @@ func TestEstimatorWindowWithGridOnAndOff(t *testing.T) {
 	modes := map[Mode]int{}
 	for i := range int64(3600) {
 		v := origin + (2*i+1)*p120
-		done := v - 3*ms + rng.Int64N(ms)
+		done := v - wsDeadline - rng.Int64N(p120-wsDeadline)
 		var g Grid
 		glass := done + 1500*int64(time.Microsecond) + rng.Int64N(p120)
 		if (i/60)%2 == 0 {
@@ -476,5 +498,82 @@ func TestEstimatorIgnoresHarmonicGrid(t *testing.T) {
 	}
 	if r := e.Report(); r.Mode != ModeDirect {
 		t.Fatalf("mode %v at %.0f%% late, want direct", r.Mode, r.CompositedPct)
+	}
+}
+
+// TestEstimatorFoldsSlowerHarmonic: a window at 60 fps on 120 Hz whose
+// compositor shows each picture a refresh after the GPU finished it, with
+// the refresh grid locked on every other refresh, as a clock locked on a
+// stream at half the refresh gives. On that grid every picture reaches the
+// screen at the first refresh after its GPU end, which read direct at
+// 60 Hz; the report keeps the display's 120 Hz and reads composited.
+func TestEstimatorFoldsSlowerHarmonic(t *testing.T) {
+	ms := int64(time.Millisecond)
+	rng := rand.New(rand.NewPCG(25, 26))
+	var e Estimator
+	e.SetNominalPeriod(p120)
+	origin := int64(time.Second)
+	g := Grid{Period: 2 * p120, Anchor: origin}
+	for i := range int64(4 * modeWindow) {
+		v := origin + (2*i+1)*p120
+		done := v - wsDeadline - rng.Int64N(p120-wsDeadline)
+		e.Observe(Sample{Frame: uint32(i), Ready: done - 2*ms, GPUDone: done, Glass: v + p120}, g)
+		if i%15 == 14 && i >= modeWindow {
+			r := e.Report()
+			if r.PeriodNs != p120 || r.Mode != ModeComposited {
+				t.Fatalf("picture %d: %.3f Hz, %v at %.0f%%; want 120 Hz, composited", i, r.RefreshHz(), r.Mode, r.CompositedPct)
+			}
+		}
+	}
+}
+
+// TestEstimatorGridRelockKeepsMode: on a direct surface the refresh clock
+// locks now and then on pictures flipped off the refreshes, at a period a
+// few percent off the display's, measured 115-121 Hz on a 120 Hz display.
+// That is not another display: the mode keeps the pictures before it, and
+// a second of late pictures after the relock does not turn it.
+func TestEstimatorGridRelockKeepsMode(t *testing.T) {
+	rng := rand.New(rand.NewPCG(27, 28))
+	var e Estimator
+	e.SetNominalPeriod(p120)
+	feedFree(&e, 300, scanOut, 600_000, rng)
+	if r := e.Report(); r.Mode != ModeDirect {
+		t.Fatalf("mode %v, want direct", r.Mode)
+	}
+	at := e.lastGlass
+	for i, period := range []int64{p120, p120 * 104 / 100} {
+		g := Grid{Period: period, Anchor: at}
+		for j := range 50 {
+			done := at + int64(j+1)*2*p120
+			e.Observe(Sample{Frame: uint32(1000*i + j), Ready: done - 2*int64(time.Millisecond), GPUDone: done, Glass: done + p120 + rng.Int64N(p120)}, g)
+		}
+		at = e.lastGlass
+	}
+	if r := e.Report(); r.Mode != ModeDirect {
+		t.Fatalf("mode %v at %.0f%% after a relock, want direct kept", r.Mode, r.CompositedPct)
+	}
+}
+
+// TestEstimatorSteeredCompositor: with the host steering the GPU to finish
+// pictures just before a refresh, a direct surface still shows each one
+// scanOut later, while a compositor over it, as an overlay makes, cannot
+// take a picture finished under wsDeadline before the refresh for that one
+// and shows it a refresh later.
+func TestEstimatorSteeredCompositor(t *testing.T) {
+	rng := rand.New(rand.NewPCG(29, 30))
+	g := Grid{Period: p120, Anchor: int64(time.Second)}
+	for _, c := range []struct {
+		name  string
+		extra int
+		want  Mode
+	}{{"direct", 0, ModeDirect}, {"overlay", 1, ModeComposited}} {
+		var e Estimator
+		e.SetNominalPeriod(p120)
+		for range 20 {
+			feed(&e, g, 30, wsDeadline, 300_000, 400_000, c.extra, rng)
+			if r := e.Report(); r.Mode != c.want {
+				t.Fatalf("%s: mode %v at %.0f%%, want %v", c.name, r.Mode, r.CompositedPct, c.want)
+			}
+		}
 	}
 }

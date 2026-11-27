@@ -147,7 +147,7 @@ type DisplayVariant struct {
 	Glass Stage `json:"glassMs"`
 	Total Stage `json:"totalMs"`
 	// ScanOut is "direct" or "composited", "" while unknown; CompositedPct
-	// is the share of pictures a compositor showed a refresh late.
+	// is the share of pictures slower to the screen than direct scan-out.
 	ScanOut       string  `json:"scanOut,omitempty"`
 	CompositedPct float64 `json:"compositedPct"`
 	RefreshHz     float64 `json:"refreshHz,omitempty"`

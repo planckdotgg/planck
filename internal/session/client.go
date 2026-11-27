@@ -589,7 +589,7 @@ func (cc *conn) reportPhase(logf func(string, ...any)) {
 	cc.phase, cc.phaseSent = r, send
 	cc.mu.Unlock()
 	if r.Mode != last.Mode && r.Mode != phaselock.ModeUnknown {
-		logf("planck: scan-out %s (%.0f%% of pictures a refresh late), display %.3f Hz", r.Mode, r.CompositedPct, r.RefreshHz())
+		logf("planck: scan-out %s (%.0f%% of pictures slower than direct scan-out), display %.3f Hz", r.Mode, r.CompositedPct, r.RefreshHz())
 	}
 	if r.Valid && r.Locked != last.Locked {
 		logf("planck: display phase locked %v: slack %.2f ms, target %.2f ms, jitter %.2f ms, sent to host %v",

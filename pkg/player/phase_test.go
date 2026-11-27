@@ -56,14 +56,21 @@ func TestPhaseFromScreenTimes(t *testing.T) {
 	}
 }
 
-// TestPhaseRecorded60On120: a 60 fps stream recorded in a window, then
+// TestPhaseRecorded60On120: 60 fps streams recorded in a window, then
 // full screen direct, on a 120 Hz display. In full screen macOS kept each
 // picture up two refreshes or more, and pictures queued behind one another
 // for seconds at a time; the scan-out must still read direct at every
 // report, with at most a quarter of the pictures late, and the window
-// composited.
+// composited. The second recording is of the setup the window read direct
+// in, at 60 Hz once, and full screen composited for over a minute.
 func TestPhaseRecorded60On120(t *testing.T) {
-	f, err := os.Open("testdata/glass_60fps_120hz.csv")
+	for _, name := range []string{"glass_60fps_120hz.csv", "glass_60fps_120hz_b.csv"} {
+		t.Run(name, func(t *testing.T) { phaseRecorded(t, "testdata/"+name) })
+	}
+}
+
+func phaseRecorded(t *testing.T, name string) {
+	f, err := os.Open(name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,6 +106,9 @@ func TestPhaseRecorded60On120(t *testing.T) {
 			if next > 0 {
 				r := p.Phase()
 				modes[path][r.Mode]++
+				if hz := r.RefreshHz(); hz != 0 && (hz < 100 || hz > 140) {
+					t.Errorf("%s: a harmonic, %.3f Hz, of a 120 Hz display", path, hz)
+				}
 				if path == "direct" {
 					directLate = max(directLate, r.CompositedPct)
 				}

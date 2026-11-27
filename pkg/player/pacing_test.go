@@ -92,3 +92,28 @@ func TestVsyncClockNoFasterThanTheDisplay(t *testing.T) {
 		}
 	}
 }
+
+// TestVsyncClockNoSlowerHarmonic: a 60 fps stream on a 120 Hz display
+// reaches the screen every other refresh. Taken as the refresh, those
+// 16.7 ms would lock the clock at 60 Hz, and the scan-out read on that grid
+// would take a picture a refresh late for one on time.
+func TestVsyncClockNoSlowerHarmonic(t *testing.T) {
+	var c vsyncClock
+	c.setNominal(refresh120)
+	rng := rand.New(rand.NewPCG(3, 4))
+	at := int64(5_000_000)
+	for i := range 600 {
+		c.observe(int64(i), at+rng.Int64N(200_000)-100_000)
+		at += 2 * refresh120
+		if i%7 == 6 {
+			at += refresh120
+		}
+	}
+	p, anchor, ok := c.grid()
+	if !ok || p < refresh120-fitTolerance/8 || p > refresh120+fitTolerance/8 {
+		t.Fatalf("period %d ns (locked %v), want %d", p, ok, refresh120)
+	}
+	if off := (anchor - 5_000_000) % refresh120; off > 200_000 && off < refresh120-200_000 {
+		t.Fatalf("anchor %d ns off the refresh grid", off)
+	}
+}

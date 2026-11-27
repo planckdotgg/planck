@@ -3,6 +3,8 @@ package player
 import (
 	"sync"
 	"time"
+
+	"github.com/planckdotgg/planck/pkg/phaselock"
 )
 
 // Pacing is when the present thread shows each decoded picture.
@@ -60,9 +62,21 @@ func (c *vsyncClock) setNominal(ns int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.nominal = ns
-	if c.period > 0 && c.period < c.shortest() {
+	if p := c.fold(c.period); c.period > 0 && p != c.period {
 		c.period, c.fits = 0, 0
 	}
+}
+
+// fold is a refresh period measured as d, brought to the display's stated
+// one (see phaselock.Harmonic): a 60 fps stream on a 120 Hz display reaches
+// it every other refresh, and taking those 16.7 ms for the refresh would
+// lock the clock at 60 Hz. 0 for a period shorter than the stated one.
+func (c *vsyncClock) fold(d int64) int64 {
+	p, ok := phaselock.Harmonic(d, c.nominal, fitTolerance)
+	if !ok {
+		return 0
+	}
+	return p
 }
 
 // shortest is the shortest time between refreshes. Two pictures a third of
@@ -101,7 +115,7 @@ func (c *vsyncClock) observe(tag, t int64) {
 	lo := c.shortest()
 	if c.period == 0 {
 		if d >= lo && d <= maxRefresh {
-			c.period = d
+			c.period = c.fold(d)
 		}
 		return
 	}
@@ -109,7 +123,7 @@ func (c *vsyncClock) observe(tag, t int64) {
 	if k < 1 {
 		// Faster than the period: it was a multiple of the refresh.
 		if d >= lo {
-			c.period = d
+			c.period = c.fold(d)
 		}
 		c.fits = 0
 		return
@@ -118,7 +132,7 @@ func (c *vsyncClock) observe(tag, t int64) {
 	if resid > fitTolerance || resid < -fitTolerance {
 		c.fits = 0
 		if k == 1 && d >= lo && d <= maxRefresh {
-			c.period = d
+			c.period = c.fold(d)
 		}
 		return
 	}

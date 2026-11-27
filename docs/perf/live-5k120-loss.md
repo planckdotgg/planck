@@ -240,16 +240,18 @@ not shown over a full-screen Space.
 ### Telling direct from composited
 
 macOS has no public flag for it. The player reads the GPU's end time of
-every picture (`gpusurface.OnPresentedGPU`) and `pkg/phaselock` calls the
-stream composited when more than 12% of the last 120 pictures reached the
-screen more than half a refresh after the quickest tenth did, direct under
-6%. Over the run above it read 0-5%
-full screen, 12-30% with the Metrics overlay and 30-70% in a window; one
-120-picture window reached 29% as CuaDriver restarted. On a display whose
-pictures land on refreshes it compares each picture with the first refresh
-after its GPU end instead. The client logs `scan-out direct` or
-`scan-out composited`, and `ClientStats.Phase` and the Statistics page
-carry it.
+every picture (`gpusurface.OnPresentedGPU`). The surface presents with
+display sync off, so a direct picture flips as soon as the GPU is done and
+reaches the screen a fixed ~1.8 ms (0.22 of a 120 Hz refresh) later; a
+compositor takes it at a refresh and shows it there or a refresh later.
+`pkg/phaselock` calls the stream direct when the median GPU-end-to-glass
+time of the last 4 s, held pictures and stalls left out (below), is under
+38% of the stated refresh, composited over 44%. The client logs
+`scan-out direct` or `scan-out composited`, and `ClientStats.Phase` and the
+Statistics page carry it. Until the QA rounds below it read the spread
+instead: the share of the last 120 pictures more than half a refresh after
+the quickest tenth, 0-5% full screen, 12-30% with the Metrics overlay and
+30-70% in a window.
 
 A 60 fps stream full screen on this display (bigboi's 1080p60 desktop,
 AMF HEVC, VDD off) read composited 21-42% while the Metal HUD said
@@ -287,6 +289,41 @@ on time, which read direct, and the spread path's 12-report bound then
 held that for 3 s. The grid now reads the mode only where it held for
 90% of the window (the phase still needs half); the recorded window and
 full screen never reach it, both read by the spread, unchanged.
+
+In QA round 4 the window read direct at "60.001 Hz" and at 120 Hz, and
+full screen read composited for 72 s. Recorded again with the Metal HUD
+read by OCR (`pkg/player/testdata/glass_60fps_120hz_b.csv`):
+
+- The refresh clock locked at 60 Hz on a 60 fps stream: every glass
+  interval was two refreshes, and the clock took the first for the period.
+  On that grid a picture a refresh late reads on time. The clock and the
+  estimator now bring a period that is a whole number of times the stated
+  refresh (`phaselock.Harmonic`) down to it.
+- No single 2 s window separates the two by any one figure: the median
+  GPU-end-to-glass time of the pictures not held was 0.43-0.94 of a refresh
+  in windows and 0.21-0.42 full screen, the spread 21-53% and 0-29%. Over
+  4 s they part: 0.48-0.80 against 0.21-0.34. In a window the median
+  varies by run (p50 of all pictures 0.75 refresh in one, 1.2-1.76 in the
+  other), so a bound of about a refresh on the median of all pictures
+  reads the first window direct.
+- The estimator cleared the mode's pictures whenever the refresh grid
+  locked afresh at a period over 1% off the last. Off the grid, as direct
+  pictures land, the clock relocks at 115-121 Hz every few seconds, so
+  each relock left the mode a handful of pictures. With a stated refresh,
+  a relock now clears only the phase.
+- Of the 72 s composited in QA: a second run with the virtual display on (5120x1440@120) had the Metal HUD reading
+  Composited for the whole 100 s of full screen, so composited there may
+  well be true. With it off the HUD read Composited for moments (3 of 18
+  readings), and the new classifier, replayed, read direct throughout
+  after its first report.
+
+The host on bigboi predates `wire.DisplayPhase`, so none of these runs had
+the phase steered. WindowServer took a picture for the refresh it was
+finished before as late as 1.0-1.3 ms before it (5th percentile 1.7-1.9 ms);
+a host that steers the GPU to finish 2-4 ms before each refresh in a window
+could bring the composited median under the bound. Steered to the 1.2-1.7 ms
+target of a direct surface, an overlay's pictures miss that refresh and
+read composited.
 
 The queue costs a refresh or two of latency while it lasts (present to
 glass p50 6.34 ms in QA against 4.3 ms at 119 fps) and is not fixed here.

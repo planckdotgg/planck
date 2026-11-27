@@ -97,8 +97,8 @@ type Report struct {
 	// percentiles.
 	JitterNs int64
 	// LatePct is the share of pictures that missed the refresh they were
-	// ready for, CompositedPct the share shown a refresh or more after the
-	// one direct scan-out would have made, in percent.
+	// ready for, CompositedPct the share that took longer from the GPU
+	// finishing them to the screen than direct scan-out does, in percent.
 	LatePct, CompositedPct float64
 	// Oldest and Newest are the frames the slack was measured over.
 	Oldest, Newest uint32
@@ -114,10 +114,13 @@ func (r Report) RefreshHz() float64 {
 }
 
 const (
-	// window pictures make the phase estimate, modeWindow the
-	// presentation mode and late share.
+	// window pictures make the phase estimate, modeWindow the late share;
+	// the presentation mode reads the pictures of the last modeSpan, at most
+	// modeRing of them.
 	window     = 32
 	modeWindow = 120
+	modeRing   = 512
+	modeSpan   = int64(4 * time.Second)
 	minSamples = 16
 	minModeSet = 30
 	// The target is the GPU's draw time plus twice the jitter plus a
@@ -129,26 +132,25 @@ const (
 	marginDecay   = int64(10 * time.Microsecond)
 	LockTolerance = int64(500 * time.Microsecond)
 	unlockAt      = int64(time.Millisecond)
-	// compositedAbove and directBelow are the shares of late-by-a-refresh
-	// pictures that switch the mode: between them it stays.
-	compositedAbove = 0.6
-	directBelow     = 0.3
-	lateAbove       = 0.02
-	// Where pictures reach the screen as soon as they are drawn, off any
-	// refresh grid, a compositor shows as spread: the share of pictures
-	// that reached the screen more than half a refresh after the quickest
-	// tenth did. Measured at 5120x1440 on an M5 Pro: 0-5% direct, 12-30%
-	// with an overlay composited, 30-70% in a window. spreadReports in a
-	// row past spreadCompositedAbove turn direct composited, and
-	// spreadDirectReports below spreadDirectBelow turn it back. Direct
-	// surfaces have bursts of late pictures that a compositor did not
-	// cause: streaming a 60 fps desktop full screen at 120 Hz, the Metal
-	// HUD reading Direct throughout, they stayed past the bound for up to 8
-	// reports (2 s at the client's 4 a second); compositing lasted longer.
-	spreadCompositedAbove = 0.12
-	spreadDirectBelow     = 0.06
-	spreadReports         = 12
-	spreadDirectReports   = 3
+	lateAbove     = 0.02
+	// The only platform that tells GPU end times, macOS, presents with
+	// display sync off: a direct surface flips as soon as the GPU is done,
+	// and the picture reaches the screen a fixed scan-out time later, about
+	// a fifth of a refresh. A compositor takes it at its next refresh and
+	// shows it at that one or the one after, which spreads the time over a
+	// refresh or two. The mode is the median of that time, in percent of
+	// the refresh: direct below directBelow, composited above
+	// compositedAbove, kept between them. CompositedPct counts the pictures
+	// past compositedFrom. Streaming a 60 fps desktop to a 120 Hz display on
+	// an M5 Pro, in two runs, the median of the last 4 s was 21-36% full
+	// screen with the Metal HUD reading Direct and 46-183% in a window; over
+	// 2 s the two overlapped, as the display held pictures for seconds (see
+	// below). A host steering the GPU to finish pictures within about 4 ms
+	// of the refresh would bring a compositor's median down too; it was not
+	// measured.
+	directBelow     = 38
+	compositedFrom  = 41
+	compositedAbove = 44
 	// A picture shown exactly two or more refreshes after the one before
 	// it, though ready at least half a refresh earlier and before that one
 	// had been up two refreshes, waited for the display to let the one
@@ -156,21 +158,14 @@ const (
 	// full screen on a 120 Hz display at 5120x1440 on an M5 Pro, the
 	// Metal HUD reading Direct throughout: macOS kept each picture up at
 	// least two refreshes, and once one came early every later one queued
-	// behind it for seconds, 13-24 ms from GPU end to screen, up to 52% of
-	// a window's pictures. Such pictures, and stalls past stallRefreshes,
-	// say nothing of the mode, unless past heldMost of the window are held:
-	// a compositor that delays every picture by the same refreshes looks
-	// held too.
+	// behind it for seconds, 13-24 ms from GPU end to screen, up to 69% of
+	// two seconds' pictures. Such pictures, and stalls past stallRefreshes,
+	// say nothing of the mode, unless past heldMost of them are held: a
+	// compositor that delays every picture by the same refreshes looks held
+	// too.
 	onRefreshTolerance = int64(350 * time.Microsecond)
 	stallRefreshes     = 3
 	heldMost           = 0.75
-	// The refresh grid reads the mode only where it held for griddedMost of
-	// the window; the phase needs it for most. Streaming 60 fps in a window
-	// on a 120 Hz display, macOS showed about 60% of the composited pictures
-	// on the grid, which locked on and off; of the pictures from when it had
-	// held for half the window, 72% reached the screen at the first refresh
-	// after the GPU finished, which read direct.
-	griddedMost = 0.9
 )
 
 // Estimator measures the phase of pictures against the display's
@@ -183,16 +178,19 @@ type Estimator struct {
 	frames [window]uint32
 	n, i   int
 
-	extra  [modeWindow]int8 // refreshes after the one direct scan-out makes; -1 unknown
-	nm, im int
-	// toGlass is each picture's time from the GPU finishing it to the
-	// screen, -1 unknown; gridded whether the refresh grid was locked;
-	// held whether it waited for the display to let the one before go.
-	toGlass [modeWindow]int64
-	gridded [modeWindow]bool
-	held    [modeWindow]bool
+	// The last modeRing pictures, im the next slot and nm how many there
+	// are: extra is the refreshes after the one direct scan-out makes, -1
+	// unknown; toGlass the time from the GPU finishing it to the screen, -1
+	// unknown; glass when it reached the screen; gridded whether the
+	// refresh grid was locked; held whether it waited for the display to
+	// let the one before go.
+	extra   [modeRing]int8
+	toGlass [modeRing]int64
+	glass   [modeRing]int64
+	gridded [modeRing]bool
+	held    [modeRing]bool
+	nm, im  int
 	nominal int64
-	streak  int
 	// lastGlass is when the picture before reached the screen; holding
 	// whether it came a whole number of refreshes, two or more, after the
 	// one before it, and pending its slot plus one if it was early, 0 if not.
@@ -207,8 +205,9 @@ type Estimator struct {
 }
 
 // SetNominalPeriod gives the display's shortest refresh period as the
-// system states it, which the mode reads by where no refresh grid locks; a
-// grid of a shorter period is not taken.
+// system states it. The mode is read against it, and a grid of a shorter
+// period, or of a whole multiple of it, is taken for a harmonic of the
+// refresh.
 func (e *Estimator) SetNominalPeriod(ns int64) {
 	e.mu.Lock()
 	e.nominal = ns
@@ -218,12 +217,12 @@ func (e *Estimator) SetNominalPeriod(ns int64) {
 // Reset forgets every picture measured and the mode, as when the
 // pictures start reaching the screen another way, such as a surface going
 // direct: those of the old path would hold its mode for a whole
-// modeWindow. The nominal period stays.
+// modeSpan. The nominal period stays.
 func (e *Estimator) Reset() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.n, e.i, e.nm, e.im = 0, 0, 0, 0
-	e.streak, e.period, e.margin, e.lastGlass = 0, 0, 0, 0
+	e.period, e.margin, e.lastGlass = 0, 0, 0
 	e.mode, e.locked, e.holding, e.pending = ModeUnknown, false, false, 0
 }
 
@@ -246,6 +245,24 @@ func (e *Estimator) holdGap(gpuDone, glass, p int64) (gap, early bool) {
 	return true, gpuDone > 0 && gpuDone < prev+min(2*k-1, 4)*p/2
 }
 
+// Harmonic brings a refresh period measured from screen times to the
+// display's stated one, nominal: a period a whole number of times nominal
+// is that many refreshes, as a 60 fps stream on a 120 Hz display shows
+// every other one. It reports false for a period shorter than nominal,
+// which no display refreshes at. With nominal 0 it keeps period.
+func Harmonic(period, nominal, tolerance int64) (int64, bool) {
+	if nominal <= 0 || period <= 0 {
+		return period, true
+	}
+	if period < nominal-tolerance {
+		return 0, false
+	}
+	if k := (period + nominal/2) / nominal; k >= 2 && abs(period-k*nominal) <= k*tolerance {
+		return period / k, true
+	}
+	return period, true
+}
+
 // Observe takes a picture that reached the screen and the display's
 // refreshes as known then: a zero Grid where they are not.
 func (e *Estimator) Observe(s Sample, g Grid) {
@@ -254,9 +271,9 @@ func (e *Estimator) Observe(s Sample, g Grid) {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.nominal > 0 && g.Period*100 < e.nominal*99 {
-		// No display refreshes faster than it says: a shorter period is a
-		// harmonic of the refresh, a grid locked on pictures shown off it.
+	if p, ok := Harmonic(g.Period, e.nominal, e.nominal/100); ok {
+		g.Period = p
+	} else {
 		g = Grid{}
 	}
 	p := g.Period
@@ -268,8 +285,14 @@ func (e *Estimator) Observe(s Sample, g Grid) {
 	}
 	gap, early := e.holdGap(s.GPUDone, s.Glass, p)
 	if g.Period > 0 && e.period != 0 && abs(g.Period-e.period)*100 > e.period {
-		// The display changed: what was measured is of another one.
-		e.n, e.i, e.nm, e.im, e.pending = 0, 0, 0, 0, 0
+		// The display changed, or the grid locked afresh off pictures shown
+		// off it: the phase measured is of another grid. The mode reads
+		// against the stated refresh where there is one, which a grid does
+		// not change.
+		e.n, e.i = 0, 0
+		if e.nominal <= 0 {
+			e.nm, e.im, e.pending = 0, 0, 0
+		}
 	}
 	// A hold shows as two such gaps in a row; one among pictures a
 	// refresh apart is a missed refresh.
@@ -285,28 +308,22 @@ func (e *Estimator) Observe(s Sample, g Grid) {
 	if s.GPUDone > 0 && s.Glass >= s.GPUDone {
 		e.toGlass[e.im] = s.Glass - s.GPUDone
 	}
-	e.gridded[e.im], e.held[e.im] = g.Period > 0, held
-	if g.Period <= 0 {
-		e.extra[e.im] = -1
-		e.im = (e.im + 1) % modeWindow
-		e.nm = min(e.nm+1, modeWindow)
-		return
+	e.glass[e.im], e.gridded[e.im], e.held[e.im], e.extra[e.im] = s.Glass, g.Period > 0, held, -1
+	if g.Period > 0 {
+		e.period = g.Period
+		e.slack[e.i] = g.Next(s.Ready) - s.Ready
+		e.render[e.i] = -1
+		e.frames[e.i] = s.Frame
+		if s.GPUDone >= s.Ready && s.GPUDone-s.Ready < g.Period*4 {
+			e.render[e.i] = s.GPUDone - s.Ready
+			k := (s.Glass - g.Next(s.GPUDone) + g.Period/2) / g.Period
+			e.extra[e.im] = int8(min(max(k, 0), 3))
+		}
+		e.i = (e.i + 1) % window
+		e.n = min(e.n+1, window)
 	}
-	e.period = g.Period
-	e.slack[e.i] = g.Next(s.Ready) - s.Ready
-	e.render[e.i] = -1
-	e.frames[e.i] = s.Frame
-	extra := int8(-1)
-	if s.GPUDone >= s.Ready && s.GPUDone-s.Ready < g.Period*4 {
-		e.render[e.i] = s.GPUDone - s.Ready
-		k := (s.Glass - g.Next(s.GPUDone) + g.Period/2) / g.Period
-		extra = int8(min(max(k, 0), 3))
-	}
-	e.i = (e.i + 1) % window
-	e.n = min(e.n+1, window)
-	e.extra[e.im] = extra
-	e.im = (e.im + 1) % modeWindow
-	e.nm = min(e.nm+1, modeWindow)
+	e.im = (e.im + 1) % modeRing
+	e.nm = min(e.nm+1, modeRing)
 }
 
 // Report summarizes the last pictures. Each call also moves the margin
@@ -318,7 +335,8 @@ func (e *Estimator) Report() Report {
 	if e.margin == 0 {
 		e.margin = startMargin
 	}
-	if !e.updateMode(&r) {
+	e.updateMode(&r)
+	if !e.updateLate(&r) {
 		// No refresh grid holds: pictures reach the screen off it, and
 		// the phase measured before is stale.
 		r.PeriodNs, r.Samples = e.nominal, 0
@@ -381,130 +399,108 @@ func (e *Estimator) Report() Report {
 	return r
 }
 
-// updateMode reads the presentation mode and the late share from the
-// pictures whose GPU times are known: by the refresh grid where it held for
-// griddedMost of them, else by the spread of their time to the screen. It
-// reports whether most of them came on a locked grid.
-func (e *Estimator) updateMode(r *Report) bool {
-	gridded := 0
-	for k := 0; k < e.nm; k++ {
-		if e.gridded[k] {
-			gridded++
-		}
-	}
-	if gridded*2 < e.nm {
-		e.updateModeBySpread(r)
-		return false
-	}
-	byGrid := float64(gridded) >= griddedMost*float64(e.nm)
-	if byGrid {
-		e.streak = 0
-	} else {
-		e.updateModeBySpread(r)
-	}
-	skip := e.skipHeld()
-	var known, comp int
-	for k := 0; k < e.nm; k++ {
-		if x := e.extra[k]; x >= 0 && !(skip && e.held[k]) {
-			known++
-			if x >= 1 {
-				comp++
-			}
-		}
-	}
-	if known < minModeSet {
-		return true
-	}
-	if byGrid {
-		frac := float64(comp) / float64(known)
-		switch {
-		case frac > compositedAbove:
-			e.mode = ModeComposited
-		case frac < directBelow:
-			e.mode = ModeDirect
-		}
-		r.CompositedPct = 100 * frac
-	}
-	base := int8(0)
-	if e.mode == ModeComposited {
-		base = 1
-	}
-	late := 0
-	for k := 0; k < e.nm; k++ {
-		if e.extra[k] > base && !(skip && e.held[k]) {
-			late++
-		}
-	}
-	r.LatePct = 100 * float64(late) / float64(known)
-	return true
+// slot is the ring slot of the picture back pictures before the newest.
+func (e *Estimator) slot(back int) int {
+	return (e.im - 1 - back + 2*modeRing) % modeRing
 }
 
-func (e *Estimator) updateModeBySpread(r *Report) {
-	p := e.period
+// updateMode reads the presentation mode from the time the pictures of
+// the last modeSpan took from the GPU finishing them to the screen (see
+// directBelow), against the display's stated refresh where it is known.
+func (e *Estimator) updateMode(r *Report) {
+	p := e.nominal
 	if p <= 0 {
-		p = e.nominal
+		p = e.period
 	}
-	var vals [modeWindow]int64
-	n, timed := 0, 0
-	skip := e.skipHeld()
-	for k := 0; k < e.nm; k++ {
+	if p <= 0 || e.nm == 0 {
+		return
+	}
+	from := e.glass[e.slot(0)] - modeSpan
+	n := 0
+	for n < e.nm && e.glass[e.slot(n)] > from {
+		n++
+	}
+	skip := e.skipHeld(n)
+	var vals [modeRing]int64
+	kept, timed := 0, 0
+	for b := range n {
+		k := e.slot(b)
 		v := e.toGlass[k]
 		if v < 0 {
 			continue
 		}
 		timed++
 		if v <= stallRefreshes*p && !(skip && e.held[k]) {
-			vals[n] = v
-			n++
+			vals[kept] = v
+			kept++
 		}
 	}
-	if p <= 0 || timed < minModeSet || n < minModeSet/2 {
+	if timed < minModeSet || kept < minModeSet/2 {
 		return
 	}
-	v := vals[:n]
+	v := vals[:kept]
 	slices.Sort(v)
-	floor := v[n/10]
-	late := 0
+	over := 0
 	for _, x := range v {
-		if x-floor > p/2 {
-			late++
+		if x*100 > compositedFrom*p {
+			over++
 		}
 	}
-	frac := float64(late) / float64(n)
-	r.CompositedPct = 100 * frac
-	want := e.mode
-	switch {
-	case frac > spreadCompositedAbove:
-		want = ModeComposited
-	case frac < spreadDirectBelow:
-		want = ModeDirect
-	}
-	switch {
-	case e.mode == ModeUnknown:
-		e.mode, e.streak = want, 0
-	case want != e.mode:
-		need := spreadReports
-		if want == ModeDirect {
-			need = spreadDirectReports
-		}
-		if e.streak++; e.streak >= need {
-			e.mode, e.streak = want, 0
-		}
-	default:
-		e.streak = 0
+	r.CompositedPct = 100 * float64(over) / float64(kept)
+	switch med := v[kept/2] * 100; {
+	case med > compositedAbove*p:
+		e.mode = ModeComposited
+	case med < directBelow*p:
+		e.mode = ModeDirect
 	}
 }
 
-// skipHeld reports whether to leave the held pictures out of the mode: in
-// a window not yet full, or where they are few enough (see heldMost).
-func (e *Estimator) skipHeld() bool {
+// updateLate reads the share of late pictures from the last modeWindow
+// whose GPU times are known on the refresh grid. It reports whether most
+// of them came on a locked grid.
+func (e *Estimator) updateLate(r *Report) bool {
+	n := min(e.nm, modeWindow)
+	gridded := 0
+	for b := range n {
+		if e.gridded[e.slot(b)] {
+			gridded++
+		}
+	}
+	if gridded*2 < n {
+		return false
+	}
+	skip := e.skipHeld(n)
+	base := int8(0)
+	if e.mode == ModeComposited {
+		base = 1
+	}
+	known, late := 0, 0
+	for b := range n {
+		k := e.slot(b)
+		if x := e.extra[k]; x >= 0 && !(skip && e.held[k]) {
+			known++
+			if x > base {
+				late++
+			}
+		}
+	}
+	if known >= minModeSet {
+		r.LatePct = 100 * float64(late) / float64(known)
+	}
+	return true
+}
+
+// skipHeld reports whether to leave the held pictures among the last n
+// out: where they are few enough (see heldMost), or too few pictures came
+// to tell.
+func (e *Estimator) skipHeld(n int) bool {
 	held := 0
-	for k := 0; k < e.nm; k++ {
-		if e.held[k] {
+	for b := range n {
+		if e.held[e.slot(b)] {
 			held++
 		}
 	}
-	return e.nm < modeWindow || float64(held) <= heldMost*float64(e.nm)
+	return n < modeWindow || float64(held) <= heldMost*float64(n)
 }
 
 func abs(v int64) int64 {
