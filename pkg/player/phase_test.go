@@ -62,14 +62,22 @@ func TestPhaseFromScreenTimes(t *testing.T) {
 // for seconds at a time; the scan-out must still read direct at every
 // report, with at most a quarter of the pictures late, and the window
 // composited. The second recording is of the setup the window read direct
-// in, at 60 Hz once, and full screen composited for over a minute.
+// in, at 60 Hz once, and full screen composited for over a minute. In the
+// third, WindowServer composited the surface for 4 s after it went direct
+// but for 0.7 s of it (handover), and later the direct flips came late for
+// up to 18 s at a time, which read composited for 18 s and 2 s against a
+// window's cuts; up to 42% of those pictures were slower than direct
+// scan-out.
 func TestPhaseRecorded60On120(t *testing.T) {
-	for _, name := range []string{"glass_60fps_120hz.csv", "glass_60fps_120hz_b.csv"} {
-		t.Run(name, func(t *testing.T) { phaseRecorded(t, "testdata/"+name) })
+	for _, c := range []struct {
+		name string
+		late float64
+	}{{"glass_60fps_120hz.csv", 25}, {"glass_60fps_120hz_b.csv", 25}, {"glass_60fps_120hz_c.csv", 45}} {
+		t.Run(c.name, func(t *testing.T) { phaseRecorded(t, "testdata/"+c.name, c.late) })
 	}
 }
 
-func phaseRecorded(t *testing.T, name string) {
+func phaseRecorded(t *testing.T, name string, maxLate float64) {
 	f, err := os.Open(name)
 	if err != nil {
 		t.Fatal(err)
@@ -80,8 +88,12 @@ func phaseRecorded(t *testing.T, name string) {
 	defer p.Close()
 	p.setNominalPeriod(int64(time.Second / 120))
 	path, next, pts := "window", int64(0), int64(0)
-	modes := map[string]map[phaselock.Mode]int{"window": {}, "direct": {}}
+	modes := map[string]map[phaselock.Mode]int{"window": {}, "handover": {}, "direct": {}}
 	directLate := 0.0
+	// A path that follows another without a reset counts once the pictures
+	// of the old one left the mode's span.
+	countFrom := int64(0)
+	handoverLast := phaselock.ModeUnknown
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		line := sc.Text()
@@ -98,14 +110,25 @@ func phaseRecorded(t *testing.T, name string) {
 			at[i] = us * 1000
 		}
 		if v[0] != path {
-			path, next = v[0], at[2]
-			clock.Store(at[0])
-			p.ResetPhase()
+			if (v[0] == "window") != (path == "window") {
+				next, countFrom = at[2], 0
+				clock.Store(at[0])
+				p.resetPhase(v[0] != "window")
+			} else {
+				countFrom = at[2] + int64(4*time.Second)
+			}
+			path = v[0]
 		}
 		for ; next <= at[2]; next += int64(250 * time.Millisecond) {
 			if next > 0 {
 				r := p.Phase()
+				if next < countFrom {
+					continue
+				}
 				modes[path][r.Mode]++
+				if path == "handover" {
+					handoverLast = r.Mode
+				}
 				if hz := r.RefreshHz(); hz != 0 && (hz < 100 || hz > 140) {
 					t.Errorf("%s: a harmonic, %.3f Hz, of a 120 Hz display", path, hz)
 				}
@@ -117,15 +140,18 @@ func phaseRecorded(t *testing.T, name string) {
 		p.onScreenGPU(pts, at[0], at[1], at[2])
 		pts++
 	}
-	t.Logf("reports by mode: window %v, direct %v; direct at most %.0f%% late", modes["window"], modes["direct"], directLate)
+	t.Logf("reports by mode: window %v, handover %v, direct %v; direct at most %.0f%% late", modes["window"], modes["handover"], modes["direct"], directLate)
 	if w := modes["window"]; w[phaselock.ModeComposited] < 50 || w[phaselock.ModeDirect] > 0 {
 		t.Errorf("window: reports by mode %v, want composited", w)
+	}
+	if h := modes["handover"]; len(h) > 0 && handoverLast != phaselock.ModeComposited {
+		t.Errorf("handover: reports by mode %v, the last %v, want composited by its end", h, handoverLast)
 	}
 	if d := modes["direct"]; d[phaselock.ModeDirect] < 150 || d[phaselock.ModeComposited] > 0 {
 		t.Errorf("full screen direct: reports by mode %v, want direct at every report", d)
 	}
-	if directLate > 25 {
-		t.Errorf("full screen direct: up to %.0f%% of pictures late, want at most 25%%", directLate)
+	if directLate > maxLate {
+		t.Errorf("full screen direct: up to %.0f%% of pictures late, want at most %.0f%%", directLate, maxLate)
 	}
 }
 

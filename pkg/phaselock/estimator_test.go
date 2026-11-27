@@ -212,6 +212,35 @@ func feedFree(e *Estimator, n int, toGlass, spread int64, rng *rand.Rand) {
 	}
 }
 
+// TestEstimatorDirectSurfaceCuts: direct flips that come up to 4 ms late,
+// a median of 55% of the refresh, read composited for a window's surface
+// and direct for one that asked to scan out directly; a compositor that
+// shows the pictures a refresh or two after the GPU reads composited for
+// both.
+func TestEstimatorDirectSurfaceCuts(t *testing.T) {
+	ms := int64(time.Millisecond)
+	for _, c := range []struct {
+		name            string
+		toGlass, spread int64
+		want            [2]Mode
+	}{
+		{"late flips", 2600 * int64(time.Microsecond), 4 * ms, [2]Mode{ModeComposited, ModeDirect}},
+		{"compositor", p120, p120, [2]Mode{ModeComposited, ModeComposited}},
+	} {
+		for i, direct := range []bool{false, true} {
+			rng := rand.New(rand.NewPCG(31, 32))
+			var e Estimator
+			e.SetNominalPeriod(p120)
+			e.SetDirectSurface(direct)
+			e.Reset()
+			feedFree(&e, int(modeSpan/int64(10*ms)), c.toGlass, c.spread, rng)
+			if r := e.Report(); r.Mode != c.want[i] {
+				t.Errorf("%s, direct surface %v: mode %v at %.0f%%, want %v", c.name, direct, r.Mode, r.CompositedPct, c.want[i])
+			}
+		}
+	}
+}
+
 // Where pictures reach the screen as soon as they are drawn, the mode
 // comes from the spread of their time to it, and a burst of late ones
 // does not flip it.

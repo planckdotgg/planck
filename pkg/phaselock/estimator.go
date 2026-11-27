@@ -151,6 +151,16 @@ const (
 	directBelow     = 38
 	compositedFrom  = 41
 	compositedAbove = 44
+	// Only a surface that asked for direct scan-out can get it, so one that
+	// did reads against higher cuts. In a third run, full screen direct, the
+	// flips came 1-6 ms later than usual for up to 18 s at a time, the
+	// median reaching 55%, with glass times no closer to a refresh than
+	// before and 9-18% of pictures more than a refresh after the GPU; while
+	// WindowServer still composited the same surface, 59% were, and the
+	// median of 4 s of it was 87-104%.
+	directSurfaceBelow = 62
+	directSurfaceFrom  = 68
+	directSurfaceAbove = 75
 	// A picture shown exactly two or more refreshes after the one before
 	// it, though ready at least half a refresh earlier and before that one
 	// had been up two refreshes, waited for the display to let the one
@@ -191,6 +201,7 @@ type Estimator struct {
 	held    [modeRing]bool
 	nm, im  int
 	nominal int64
+	direct  bool
 	// lastGlass is when the picture before reached the screen; holding
 	// whether it came a whole number of refreshes, two or more, after the
 	// one before it, and pending its slot plus one if it was early, 0 if not.
@@ -214,10 +225,19 @@ func (e *Estimator) SetNominalPeriod(ns int64) {
 	e.mu.Unlock()
 }
 
+// SetDirectSurface tells whether the surface asked the system to scan its
+// pictures out directly (see directSurfaceBelow).
+func (e *Estimator) SetDirectSurface(on bool) {
+	e.mu.Lock()
+	e.direct = on
+	e.mu.Unlock()
+}
+
 // Reset forgets every picture measured and the mode, as when the
 // pictures start reaching the screen another way, such as a surface going
 // direct: those of the old path would hold its mode for a whole
-// modeSpan. The nominal period stays.
+// modeSpan. The nominal period and whether the surface asked for direct
+// scan-out stay.
 func (e *Estimator) Reset() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -406,7 +426,8 @@ func (e *Estimator) slot(back int) int {
 
 // updateMode reads the presentation mode from the time the pictures of
 // the last modeSpan took from the GPU finishing them to the screen (see
-// directBelow), against the display's stated refresh where it is known.
+// directBelow and directSurfaceBelow), against the display's stated
+// refresh where it is known.
 func (e *Estimator) updateMode(r *Report) {
 	p := e.nominal
 	if p <= 0 {
@@ -440,17 +461,21 @@ func (e *Estimator) updateMode(r *Report) {
 	}
 	v := vals[:kept]
 	slices.Sort(v)
+	below, from, above := int64(directBelow), int64(compositedFrom), int64(compositedAbove)
+	if e.direct {
+		below, from, above = directSurfaceBelow, directSurfaceFrom, directSurfaceAbove
+	}
 	over := 0
 	for _, x := range v {
-		if x*100 > compositedFrom*p {
+		if x*100 > from*p {
 			over++
 		}
 	}
 	r.CompositedPct = 100 * float64(over) / float64(kept)
 	switch med := v[kept/2] * 100; {
-	case med > compositedAbove*p:
+	case med > above*p:
 		e.mode = ModeComposited
-	case med < directBelow*p:
+	case med < below*p:
 		e.mode = ModeDirect
 	}
 }

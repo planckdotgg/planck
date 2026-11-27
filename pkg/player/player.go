@@ -117,6 +117,7 @@ func New(surf *gpusurface.Surface, dec decode.Decoder, keep int) *Player {
 	p.surf = surf
 	p.hud.sink = surf
 	p.setNominalPeriod(nominalPeriod(surf))
+	p.phase.SetDirectSurface(surf.Direct())
 	watchPresents(surf, p.onScreenGPU)
 	return p
 }
@@ -211,10 +212,17 @@ const phaseSettle = int64(500 * time.Millisecond)
 // pictures presented phaseSettle after it. Call it when the surface
 // changes how it reaches the screen, as gpusurface.Surface.SetDirect does.
 func (p *Player) ResetPhase() {
-	p.phaseFrom.Store(p.now() + phaseSettle)
+	direct := false
 	if p.surf != nil {
 		p.setNominalPeriod(nominalPeriod(p.surf))
+		direct = p.surf.Direct()
 	}
+	p.resetPhase(direct)
+}
+
+func (p *Player) resetPhase(direct bool) {
+	p.phaseFrom.Store(p.now() + phaseSettle)
+	p.phase.SetDirectSurface(direct)
 	p.phase.Reset()
 }
 
