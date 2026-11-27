@@ -348,3 +348,28 @@ func TestRotationIntoAFileDoesNotHangDisable(t *testing.T) {
 		t.Fatal("tracer still on")
 	}
 }
+
+// A rotation whose flush fails ends the trace in the file it has.
+func TestRotationStopsOnFlushError(t *testing.T) {
+	dir := t.TempDir()
+	tr := New(SideClient)
+	tr.maxBytes = 1 << 10
+	tr.hold = make(chan struct{})
+	if _, err := tr.Enable(dir); err != nil {
+		t.Fatal(err)
+	}
+	pad := strings.Repeat("p", 200)
+	for i := range 20 {
+		Emit(tr, "client_input", sample{X: i, Mode: pad})
+	}
+	if err := tr.cur.Load().f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	close(tr.hold)
+	if err := tr.Disable(); err == nil {
+		t.Fatal("Disable reported no error for a failed flush")
+	}
+	if files := traceFiles(dir, SideClient); len(files) != 1 {
+		t.Fatalf("%d client files after a failed flush, want 1: %v", len(files), files)
+	}
+}

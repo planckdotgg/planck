@@ -338,6 +338,10 @@ func (s *sink) open() error {
 func (s *sink) rotate() {
 	s.flush()
 	old := s.f
+	if s.err != nil {
+		old.Close()
+		return
+	}
 	if err := s.open(); err != nil {
 		if s.err == nil {
 			s.err = err
