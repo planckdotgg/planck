@@ -4,7 +4,6 @@ import (
 	"math"
 	"strconv"
 	"sync"
-	"time"
 
 	"github.com/ebitengine/purego/objc"
 	"github.com/egoist/mygo"
@@ -41,13 +40,15 @@ const motionEvents = 1<<5 | 1<<6 | 1<<7 | 1<<27 | 1<<9
 // A warp shows in the next mouse event's delta, as though the mouse had
 // moved the cursor there: relative mode dissociates before it warps, as
 // GLFW does, and takes the warp's distance off the first event at the
-// warp's target whose delta carries it, so that it is never sent as
+// warp's target stamped at or after the warp, so that it is never sent as
 // motion.
 type macPointer struct {
 	win    func() *mygo.Window
 	motion func(dx, dy float64)
 	// cursorAt is where the cursor is now, in the screen's points.
 	cursorAt func() cgPoint
+	// uptime is the seconds since boot on the clock of NSEvent's timestamp.
+	uptime func() float64
 
 	monitor objc.ID
 	mode    pointerMode
@@ -55,21 +56,16 @@ type macPointer struct {
 	// corner, as CoreGraphics places the cursor.
 	area rect
 	// unwarp is the distance relative mode's warps moved the cursor since
-	// a mouse event last carried one, the last to warpTo at warpAt.
+	// a mouse event last carried one, the last to warpTo at uptime warpAt.
 	unwarp       cgPoint
 	warpTo       cgPoint
-	warpAt       time.Time
+	warpAt       float64
 	unwarpQueued bool
 }
 
-// warpEventWait is how long after a warp relative mode waits for the event
-// that carries it; the trace saw it 6 to 10 ms after.
-const warpEventWait = 100 * time.Millisecond
-
-// warpMouseSlop is how far, in points, the mouse's own motion in one event
-// may take the warp-bearing event's delta from the warps' distance, the
-// mouse moving against a small warp included.
-const warpMouseSlop = 32
+// warpEventWait is how long after a warp, in seconds, relative mode waits
+// for the event that carries it; the trace saw it 6 to 10 ms after.
+const warpEventWait = 0.100
 
 func newSystemPointer(win func() *mygo.Window, motion func(dx, dy float64)) pointerSys {
 	loadPointerCG.Do(func() {
@@ -82,7 +78,12 @@ func newSystemPointer(win func() *mygo.Window, motion func(dx, dy float64)) poin
 		apple.Register(&cgEventGetLocation, cg, "CGEventGetLocation")
 		apple.Register(&cgEventCreate, cg, "CGEventCreate")
 	})
-	return &macPointer{win: win, motion: motion, cursorAt: cursorLocation}
+	return &macPointer{win: win, motion: motion, cursorAt: cursorLocation, uptime: systemUptime}
+}
+
+func systemUptime() float64 {
+	info := objc.ID(objc.GetClass("NSProcessInfo")).Send(objc.RegisterName("processInfo"))
+	return objc.Send[float64](info, objc.RegisterName("systemUptime"))
 }
 
 func cursorLocation() cgPoint {
@@ -158,6 +159,7 @@ func (p *macPointer) allMoves(on bool) {
 // CoreGraphics moved it.
 func (p *macPointer) warpGlobal(x, y float64) bool {
 	from := p.cursorAt()
+	at := p.uptime()
 	ret := cgWarpMouseCursorPosition(cgPoint{x, y})
 	if itrace.On() {
 		traceCG(pointerSysRec{Call: "warp", ScreenX: f64p(x), ScreenY: f64p(y)}, ret)
@@ -171,7 +173,7 @@ func (p *macPointer) warpGlobal(x, y float64) bool {
 		return false
 	}
 	p.unwarp = cgPoint{p.unwarp.X + x - from.X, p.unwarp.Y + y - from.Y}
-	p.warpTo, p.warpAt, p.unwarpQueued = cgPoint{x, y}, time.Now(), true
+	p.warpTo, p.warpAt, p.unwarpQueued = cgPoint{x, y}, at, true
 	return true
 }
 
@@ -207,7 +209,7 @@ func (p *macPointer) event(ev objc.ID) {
 		if cg := objc.Send[uintptr](ev, objc.RegisterName("CGEvent")); cg != 0 {
 			at, known = cgEventGetLocation(cg), true
 		}
-		p.relativeEvent(dx, dy, at, known, time.Now())
+		p.relativeEvent(dx, dy, at, known, objc.Send[float64](ev, objc.RegisterName("timestamp")))
 	case pointerConfined:
 		at := p.cursorAt()
 		x, y := clampInto(at.X, p.area.X, p.area.W), clampInto(at.Y, p.area.Y, p.area.H)
@@ -218,29 +220,26 @@ func (p *macPointer) event(ev objc.ID) {
 }
 
 // relativeEvent sends a relative mouse event's delta, less the warps it
-// carries: the first event within warpEventWait of the last warp, at its
-// target, whose delta less the warps' distance is one event's mouse motion,
-// within warpMouseSlop or nearer than the delta itself, carries them. An
-// event queued before the warp carries none, wherever it lies: its delta
-// is the mouse's alone.
-func (p *macPointer) relativeEvent(dx, dy float64, at cgPoint, known bool, now time.Time) {
+// carries: the first event at the warps' target stamped at or after the
+// last warp, and within warpEventWait of it, carries them. An event stamped
+// before the warp was queued before it and is the mouse's alone, wherever
+// it lies. An event with no stamp is taken as stamped now.
+func (p *macPointer) relativeEvent(dx, dy float64, at cgPoint, known bool, stamp float64) {
 	if p.unwarpQueued {
+		if stamp <= 0 {
+			stamp = p.uptime()
+		}
 		u := p.unwarp
 		switch {
-		case now.Sub(p.warpAt) > warpEventWait || u == (cgPoint{}):
+		case stamp < p.warpAt:
+		case stamp-p.warpAt > warpEventWait || u == (cgPoint{}):
 			p.unwarpQueued, p.unwarp = false, cgPoint{}
-		case (!known || math.Abs(at.X-p.warpTo.X) <= 1 && math.Abs(at.Y-p.warpTo.Y) <= 1) && carriesWarp(dx, dy, u):
+		case !known || math.Abs(at.X-p.warpTo.X) <= 1 && math.Abs(at.Y-p.warpTo.Y) <= 1:
 			dx, dy = dx-u.X, dy-u.Y
 			p.unwarpQueued, p.unwarp = false, cgPoint{}
 		}
 	}
 	p.motion(dx, dy)
-}
-
-func carriesWarp(dx, dy float64, u cgPoint) bool {
-	mx, my := dx-u.X, dy-u.Y
-	mouse := mx*mx + my*my
-	return mouse <= warpMouseSlop*warpMouseSlop || mouse < dx*dx+dy*dy
 }
 
 // clampInto keeps v on the span of n points from lo.

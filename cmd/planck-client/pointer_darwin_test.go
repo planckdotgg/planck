@@ -6,6 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ebitengine/purego/objc"
+	"golang.org/x/sys/unix"
+
 	"github.com/egoist/mygo"
 )
 
@@ -16,6 +19,8 @@ type fakeCG struct {
 	calls []string
 	// warpErr is the CGError warps return; one but 0 leaves the cursor.
 	warpErr int32
+	// uptime is the clock's seconds since boot.
+	uptime float64
 }
 
 func (f *fakeCG) install(t *testing.T) {
@@ -36,10 +41,14 @@ func (f *fakeCG) install(t *testing.T) {
 }
 
 func fakeMacPointer(f *fakeCG, sent *[][2]float64) *macPointer {
+	if f.uptime == 0 {
+		f.uptime = 1000
+	}
 	return &macPointer{
 		monitor:  1,
 		win:      func() *mygo.Window { return nil },
 		cursorAt: func() cgPoint { return f.at },
+		uptime:   func() float64 { return f.uptime },
 		motion:   func(dx, dy float64) { *sent = append(*sent, [2]float64{dx, dy}) },
 	}
 }
@@ -68,11 +77,11 @@ func TestMacWarpDeltaNotSent(t *testing.T) {
 	var sent [][2]float64
 	p := fakeMacPointer(f, &sent)
 	p.hold(pointerRelative, rect{X: 1280, W: 2560, H: 1440}, spot{x: 2560, y: 720, set: true})
-	now := p.warpAt
+	warp := p.warpAt
 	centre := cgPoint{2560, 720}
-	p.relativeEvent(-1, 0, cgPoint{3497, 294}, true, now.Add(2*time.Millisecond))
-	p.relativeEvent(-938, 426, centre, true, now.Add(7*time.Millisecond))
-	p.relativeEvent(-1, 0, centre, true, now.Add(12*time.Millisecond))
+	p.relativeEvent(-1, 0, cgPoint{3497, 294}, true, warp-0.002)
+	p.relativeEvent(-938, 426, centre, true, warp+0.007)
+	p.relativeEvent(-1, 0, centre, true, warp+0.012)
 	if want := [][2]float64{{-1, 0}, {-2, 0}, {-1, 0}}; !slices.Equal(sent, want) {
 		t.Fatalf("sent %v, want %v: the queued event, the mouse's part of the warp's, then the next", sent, want)
 	}
@@ -86,7 +95,7 @@ func TestMacWarpDeltaExpires(t *testing.T) {
 	var sent [][2]float64
 	p := fakeMacPointer(f, &sent)
 	p.hold(pointerRelative, rect{W: 2560, H: 1440}, spot{x: 1280, y: 720, set: true})
-	p.relativeEvent(5, 5, cgPoint{1280, 720}, true, p.warpAt.Add(warpEventWait+time.Millisecond))
+	p.relativeEvent(5, 5, cgPoint{1280, 720}, true, p.warpAt+warpEventWait+0.001)
 	if want := [][2]float64{{5, 5}}; !slices.Equal(sent, want) {
 		t.Fatalf("sent %v, want %v", sent, want)
 	}
@@ -101,7 +110,7 @@ func TestMacRecentreAddsUp(t *testing.T) {
 	p := fakeMacPointer(f, &sent)
 	p.hold(pointerRelative, rect{W: 2000, H: 1000}, spot{x: 1000, y: 500, set: true})
 	p.hold(pointerRelative, rect{W: 3000, H: 1000}, spot{x: 1500, y: 500, set: true})
-	p.relativeEvent(1503, 500, cgPoint{1500, 500}, true, p.warpAt.Add(time.Millisecond))
+	p.relativeEvent(1503, 500, cgPoint{1500, 500}, true, p.warpAt+0.001)
 	if want := [][2]float64{{3, 0}}; !slices.Equal(sent, want) {
 		t.Fatalf("sent %v, want %v", sent, want)
 	}
@@ -133,25 +142,25 @@ func TestMacFreeAndConfinedAssociate(t *testing.T) {
 	}
 	f.at = cgPoint{2560, 720}
 	p.hold(pointerRelative, rect{W: 5120, H: 1440}, spot{x: 2560, y: 720, set: true})
-	p.relativeEvent(4, 0, cgPoint{2560, 720}, true, p.warpAt.Add(time.Millisecond))
+	p.relativeEvent(4, 0, cgPoint{2560, 720}, true, p.warpAt+0.001)
 	if want := [][2]float64{{4, 0}}; !slices.Equal(sent, want) {
 		t.Fatalf("sent %v, want %v", sent, want)
 	}
 }
 
-// TestMacQueuedEventAtCentreKeepsItsDelta: an event queued before the
+// TestMacQueuedEventAtCentreKeepsItsDelta: an event stamped before the
 // warp that happens to lie at the warp's target is still the mouse's
-// alone; the warp's distance comes off the event whose delta carries it.
+// alone; the warp's distance comes off the first event stamped after it.
 func TestMacQueuedEventAtCentreKeepsItsDelta(t *testing.T) {
 	f := &fakeCG{at: cgPoint{3496, 294}}
 	f.install(t)
 	var sent [][2]float64
 	p := fakeMacPointer(f, &sent)
 	p.hold(pointerRelative, rect{X: 1280, W: 2560, H: 1440}, spot{x: 2560, y: 720, set: true})
-	now := p.warpAt
+	warp := p.warpAt
 	centre := cgPoint{2560, 720}
-	p.relativeEvent(3, 1, cgPoint{2560.5, 720}, true, now.Add(2*time.Millisecond))
-	p.relativeEvent(-938, 426, centre, true, now.Add(7*time.Millisecond))
+	p.relativeEvent(3, 1, cgPoint{2560.5, 720}, true, warp-0.001)
+	p.relativeEvent(-938, 426, centre, true, warp+0.007)
 	if want := [][2]float64{{3, 1}, {-2, 0}}; !slices.Equal(sent, want) {
 		t.Fatalf("sent %v, want %v", sent, want)
 	}
@@ -168,7 +177,7 @@ func TestMacFailedWarpTakesNothingOff(t *testing.T) {
 	if p.hold(pointerRelative, rect{X: 1280, W: 2560, H: 1440}, spot{x: 2560, y: 720, set: true}) {
 		t.Fatal("hold reported a warp CoreGraphics refused")
 	}
-	p.relativeEvent(4, 0, cgPoint{2560, 720}, true, time.Now())
+	p.relativeEvent(4, 0, cgPoint{2560, 720}, true, f.uptime)
 	if want := [][2]float64{{4, 0}}; !slices.Equal(sent, want) {
 		t.Fatalf("sent %v, want %v", sent, want)
 	}
@@ -178,20 +187,81 @@ func TestMacFailedWarpTakesNothingOff(t *testing.T) {
 }
 
 // TestMacPointerWarpWithOpposingDeviceMotion: the mouse moving -6 against a
-// +4 warp gives the warp-bearing event a delta of -2, nearer none than the
-// warp's distance. It still carries the warp, so the mouse's -6 goes, and
-// the next event's +3 goes whole.
+// +4 warp gives the first event stamped after it a delta of -2. It carries
+// the warp, so the mouse's -6 goes, and the next event's +3 goes whole.
 func TestMacPointerWarpWithOpposingDeviceMotion(t *testing.T) {
 	f := &fakeCG{at: cgPoint{2556, 720}}
 	f.install(t)
 	var sent [][2]float64
 	p := fakeMacPointer(f, &sent)
 	p.hold(pointerRelative, rect{X: 1280, W: 2560, H: 1440}, spot{x: 2560, y: 720, set: true})
-	now := p.warpAt
+	warp := p.warpAt
 	centre := cgPoint{2560, 720}
-	p.relativeEvent(-2, 0, centre, true, now.Add(7*time.Millisecond))
-	p.relativeEvent(3, 0, centre, true, now.Add(12*time.Millisecond))
+	p.relativeEvent(-2, 0, centre, true, warp+0.007)
+	p.relativeEvent(3, 0, centre, true, warp+0.012)
 	if want := [][2]float64{{-6, 0}, {3, 0}}; !slices.Equal(sent, want) {
 		t.Fatalf("sent %v, want %v", sent, want)
 	}
+}
+
+// TestMacQueuedSmallMoveKeepsSmallWarp: QA's round-3 case. A +4 warp, then
+// an event at the target stamped before it with the mouse's -1, then the
+// warp-bearing +6. The queued event's delta looks like a small warp less
+// the mouse's motion, but its stamp says it came first, so -1 goes whole
+// and the +4 comes off the +6.
+func TestMacQueuedSmallMoveKeepsSmallWarp(t *testing.T) {
+	f := &fakeCG{at: cgPoint{2556, 720}}
+	f.install(t)
+	var sent [][2]float64
+	p := fakeMacPointer(f, &sent)
+	p.hold(pointerRelative, rect{X: 1280, W: 2560, H: 1440}, spot{x: 2560, y: 720, set: true})
+	warp := p.warpAt
+	centre := cgPoint{2560, 720}
+	p.relativeEvent(-1, 0, centre, true, warp-0.0005)
+	p.relativeEvent(6, 0, centre, true, warp+0.006)
+	if want := [][2]float64{{-1, 0}, {2, 0}}; !slices.Equal(sent, want) {
+		t.Fatalf("sent %v, want %v", sent, want)
+	}
+}
+
+// TestMacUnstampedEventTakesNow: an event with no stamp counts as stamped
+// at the clock's now, after the warp.
+func TestMacUnstampedEventTakesNow(t *testing.T) {
+	f := &fakeCG{at: cgPoint{2556, 720}}
+	f.install(t)
+	var sent [][2]float64
+	p := fakeMacPointer(f, &sent)
+	p.hold(pointerRelative, rect{X: 1280, W: 2560, H: 1440}, spot{x: 2560, y: 720, set: true})
+	f.uptime += 0.005
+	p.relativeEvent(5, 0, cgPoint{2560, 720}, true, 0)
+	if want := [][2]float64{{1, 0}}; !slices.Equal(sent, want) {
+		t.Fatalf("sent %v, want %v", sent, want)
+	}
+}
+
+// TestMacUptimeIsEventClock reads the real clocks, without moving the
+// cursor: systemUptime is positive, advances, and fits inside the time
+// since boot, and an NSEvent's timestamp reads back as the float it was
+// made with.
+func TestMacUptimeIsEventClock(t *testing.T) {
+	a := systemUptime()
+	time.Sleep(20 * time.Millisecond)
+	b := systemUptime()
+	boot, err := unix.SysctlTimeval("kern.boottime")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sinceBoot := time.Since(time.Unix(boot.Unix())).Seconds()
+	if a <= 0 || b-a < 0.015 || b-a > 1 || b > sinceBoot+1 {
+		t.Fatalf("uptime %v then %v, %v s since boot", a, b, sinceBoot)
+	}
+	ev := objc.ID(objc.GetClass("NSEvent")).Send(objc.RegisterName("otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:"),
+		uint(15), nsPoint{}, uint(0), b, 0, objc.ID(0), int16(0), 0, 0)
+	if ev == 0 {
+		t.Fatal("no NSEvent")
+	}
+	if got := objc.Send[float64](ev, objc.RegisterName("timestamp")); got != b {
+		t.Fatalf("timestamp %v, want %v", got, b)
+	}
+	t.Logf("systemUptime %.6f s, %.0f s since boot", b, sinceBoot)
 }
