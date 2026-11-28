@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -506,12 +507,12 @@ func TestRetraceDuringAnInput(t *testing.T) {
 func TestPollReadAcrossRetrace(t *testing.T) {
 	tr := inputtrace.New(inputtrace.SideHost)
 	reading, resume, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	reads := 0
+	var reads atomic.Int64
 	hs := startHostWith(t, t.TempDir(), "127.0.0.1:0", nil, "off", func(h *Host) {
 		h.itrace.t = tr
 		h.cfg.InputTrace = true
 		h.cfg.ReadCursor = func() (cursor.State, error) {
-			switch reads++; reads {
+			switch reads.Add(1) {
 			case 1:
 				close(reading)
 				<-resume
