@@ -133,3 +133,33 @@ func TestWarpCaptureNoFlap(t *testing.T) {
 		t.Fatalf("let go at poll %d while the game kept warping", first+i)
 	}
 }
+
+// TestWarpCaptureNarrowBand: a game holding its hidden cursor at the
+// centre while the moves sweep a narrow band far from it, on one axis or
+// both, never spanning warpFar, is a capture all the same: the cursor
+// stays put while the moves go on. The traced menu's cursor, which follows
+// them, still never is (TestWarpCaptureOblivionMenu).
+func TestWarpCaptureNarrowBand(t *testing.T) {
+	for name, target := range map[string]func(i int) (uint16, uint16){
+		"across, one row":      func(i int) (uint16, uint16) { return uint16(10000 + i%10*100), 10000 },
+		"down, one column":     func(i int) (uint16, uint16) { return 55000, uint16(50000 + i%8*120) },
+		"to and fro, diagonal": func(i int) (uint16, uint16) { d := uint16(i % 2 * 400); return 12000 + d, 50000 - d },
+		"slow, one way":        func(i int) (uint16, uint16) { return uint16(8000 + i*60), 8000 },
+	} {
+		var w warpCapture
+		var moves uint32
+		w.observe(wire.CursorState{HasPos: true, X: 32768, Y: 32768}, moves, 0, 0)
+		first := -1
+		for i := range 100 {
+			moves++
+			tx, ty := target(i)
+			at := uint16(32768 + i%3)
+			if w.observe(wire.CursorState{HasPos: true, X: at, Y: at}, moves, tx, ty) && first < 0 {
+				first = i
+			}
+		}
+		if first < 0 || first > 8 {
+			t.Errorf("%s: first captured at poll %d of 100, want by 8", name, first)
+		}
+	}
+}

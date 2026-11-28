@@ -293,6 +293,9 @@ const (
 	warpFar   = 65535 / 50
 	warpNear  = 65535 / 100
 	warpPolls = 3
+	// warpSweep is the least the moves span on an axis, the cursor
+	// staying still on it, that tells a warp from a follower.
+	warpSweep = warpNear / 2
 	// warpStallPolls is how long a cursor held where it last followed a
 	// move takes to count: the host's input stalling looks like a warp
 	// back to there for as long as the stall lasts.
@@ -306,23 +309,27 @@ const (
 // app takes it back; warpCapture holds the mouse captured once warpPolls
 // polls in a row, each after an absolute move, find the cursor at least
 // warpFar from the move and within warpNear of one point inside the
-// display, while the moves themselves span warpFar, and lets it go when
+// display, while the moves themselves spread, and lets it go when
 // the cursor shows, is confined, or follows the moves warpPolls polls in a
 // row. Only moves the host injected count. A point the cursor last went to
 // with a move takes warpStallPolls.
 //
-// The span tells a warp from a cursor that follows each move a fixed
+// The spread tells a warp from a cursor that follows each move a fixed
 // distance or fraction off, as one placed by a stale display does: that
-// cursor goes with the moves, so it leaves warpNear of its point before
-// the moves span warpFar; a warped one stays.
+// cursor goes with the moves. The moves spread when on one axis they span
+// warpFar, which a follower cannot do and stay within warpNear of its
+// point, or span warpSweep while the cursor moves under a quarter of
+// that, as a follower's at least half the moves' rate does not; a warped
+// one stays put however narrow the moves' band.
 type warpCapture struct {
 	started bool
 	abs     uint32
 	streak  int
 	ax, ay  uint16
-	// span is the box of the streak's move targets.
-	span [4]uint16
-	held bool
+	// span is the box of the streak's move targets, at the box of the
+	// cursor's places.
+	span, at [4]uint16
+	held     bool
 	// followed is whether fx, fy is where the cursor last followed a move.
 	followed bool
 	fx, fy   uint16
@@ -363,18 +370,31 @@ func (w *warpCapture) observe(m wire.CursorState, abs uint32, tx, ty uint16) boo
 	if w.streak == 0 || !near(m.X, m.Y, w.ax, w.ay, warpNear) {
 		w.streak, w.ax, w.ay = 0, m.X, m.Y
 		w.span = [4]uint16{tx, ty, tx, ty}
+		w.at = [4]uint16{m.X, m.Y, m.X, m.Y}
 	}
 	w.streak++
-	w.span = [4]uint16{min(w.span[0], tx), min(w.span[1], ty), max(w.span[2], tx), max(w.span[3], ty)}
+	w.span = grow(w.span, tx, ty)
+	w.at = grow(w.at, m.X, m.Y)
 	need := warpPolls
 	if w.followed && near(w.ax, w.ay, w.fx, w.fy, warpNear) {
 		need = warpStallPolls
 	}
-	spread := int(w.span[2])-int(w.span[0]) >= warpFar || int(w.span[3])-int(w.span[1]) >= warpFar
-	if w.streak >= need && spread {
+	if w.streak >= need && (spreads(w.span[0], w.span[2], w.at[0], w.at[2]) || spreads(w.span[1], w.span[3], w.at[1], w.at[3])) {
 		w.held, w.streak = true, 0
 	}
 	return w.held
+}
+
+// grow is box b, as x0, y0, x1, y1, grown to take in x, y.
+func grow(b [4]uint16, x, y uint16) [4]uint16 {
+	return [4]uint16{min(b[0], x), min(b[1], y), max(b[2], x), max(b[3], y)}
+}
+
+// spreads reports whether moves spanning t0..t1 on an axis, the cursor
+// spanning c0..c1 on it, spread as warpCapture has it.
+func spreads(t0, t1, c0, c1 uint16) bool {
+	t, c := int(t1)-int(t0), int(c1)-int(c0)
+	return t >= warpFar || t >= warpSweep && c*4 <= t
 }
 
 // near reports whether a and b are within d of each other on both axes.
