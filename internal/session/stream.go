@@ -55,6 +55,10 @@ type stream struct {
 	// changed size in place, so its display's input area may have moved
 	// since the pipe found it.
 	areaStale atomic.Bool
+	// areaMu is held from a change of st.info's input area through the
+	// injector taking it, so the injector always has the area st.info
+	// last got, whichever loop gave it.
+	areaMu sync.Mutex
 	// epoch counts the streams a resize switched to; every frame carries
 	// it. Only the video loop touches it.
 	epoch uint8
@@ -717,15 +721,8 @@ func (st *stream) videoLoop() {
 					return forceKey
 				})
 			}
-			info := pipe.Info()
+			info := st.opened(pipe)
 			picW, picH = info.Width, info.Height
-			st.mu.Lock()
-			st.info = info
-			st.mu.Unlock()
-			st.areaStale.Store(true)
-			st.openPhase(pipe, info.FPS)
-			st.h.targetInput(info)
-			st.traceMeta()
 			st.h.logf("planck: video %s %dx%d@%d on %s (%s), power %s, GPU priority %d", info.Codec, info.Width, info.Height, info.FPS,
 				info.Adapter.Name, info.Source, info.Power, info.GPUPriority)
 			forceKey = true
@@ -975,6 +972,23 @@ func (st *stream) unhandled(g invalidGap) (id uint32, handled bool) {
 		}
 	}
 	return id, true
+}
+
+// opened makes pipe's info the stream's and points the injector at its
+// input area. The cursor loop then asks where the display sits now, as a
+// mode switch may have come since the pipe looked.
+func (st *stream) opened(pipe VideoPipe) VideoInfo {
+	info := pipe.Info()
+	st.areaMu.Lock()
+	st.mu.Lock()
+	st.info = info
+	st.mu.Unlock()
+	st.h.targetInput(info)
+	st.areaMu.Unlock()
+	st.areaStale.Store(true)
+	st.openPhase(pipe, info.FPS)
+	st.traceMeta()
+	return info
 }
 
 func (st *stream) sleep(d time.Duration) bool {

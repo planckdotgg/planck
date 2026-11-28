@@ -64,6 +64,10 @@ func TestInputAreaFollowsModeSwitch(t *testing.T) {
 			modeLayout{rect(1920, 0, 3840, 2160), rect(0, 0, 5760, 2160)}, 0},
 		{"layout lagging the desktop", modeLayout{rect(0, 0, 5120, 1440), rect(0, 0, 5120, 1440)},
 			modeLayout{rect(0, 0, 3840, 2160), rect(0, 0, 3840, 2160)}, 8},
+		// Other displays hold the desktop's bounds through the switch, so
+		// only the captured display's size tells the layout caught up.
+		{"desktop unchanged, layout lagging", modeLayout{rect(1920, 0, 5120, 1440), rect(0, 0, 9600, 2160)},
+			modeLayout{rect(1920, 0, 3840, 2160), rect(0, 0, 9600, 2160)}, 8},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var info atomic.Pointer[VideoInfo]
@@ -147,5 +151,46 @@ func TestInputAreaFollowsModeSwitch(t *testing.T) {
 				t.Fatalf("the display's centre normalizes to %+v", m)
 			}
 		})
+	}
+}
+
+// TestPipeOpenKeepsNewerArea: the cursor loop finding the display's new
+// mode while the video loop opens a pipe that saw the old one, the
+// injector ends on the area the stream ends with, never the pipe's older
+// one under the stream's newer.
+func TestPipeOpenKeepsNewerArea(t *testing.T) {
+	const id = `\\.\DISPLAY32`
+	old := VideoInfo{Width: 5120, Height: 1440, DisplayID: id, Display: rect(1920, 0, 5120, 1440), Desktop: rect(0, 0, 7040, 1440)}
+	now := modeLayout{rect(1920, 0, 3840, 2160), rect(0, 0, 5760, 2160)}
+	inj := &areaInjector{}
+	h := &Host{logf: t.Logf, inject: inj}
+	h.cfg.InputArea = func(string) (input.Rect, input.Rect, error) { return now.display, now.desktop, nil }
+	st := &stream{h: h}
+	var info atomic.Pointer[VideoInfo]
+	info.Store(&old)
+	pipe := &modePipe{fakePipe{fps: 60, forced: new(atomic.Int64), kbps: new(atomic.Int64)}, &info}
+
+	// The pipe's open stops in openPhase, after it made its area the
+	// stream's, until the cursor loop has taken the newer one.
+	st.phaseMu.Lock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		st.opened(pipe)
+	}()
+	waitFor(t, "the pipe's area published", st.areaStale.Load)
+	st.syncInputArea()
+	st.phaseMu.Unlock()
+	<-done
+
+	d, dk := inj.target()
+	st.mu.Lock()
+	got := st.info
+	st.mu.Unlock()
+	if got.Display != now.display || got.Desktop != now.desktop {
+		t.Fatalf("stream area %+v of %+v, want the newer %+v", got.Display, got.Desktop, now)
+	}
+	if d != got.Display || dk != got.Desktop {
+		t.Fatalf("injector on %+v of %+v, stream on %+v of %+v", d, dk, got.Display, got.Desktop)
 	}
 }

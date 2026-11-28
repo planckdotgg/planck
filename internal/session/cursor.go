@@ -47,7 +47,7 @@ func (st *stream) cursorLoop() {
 		if err == nil && (s.Desktop != desk || st.areaStale.Swap(false)) {
 			desk, settle = s.Desktop, areaSettlePolls
 			st.syncInputArea()
-		} else if settle > 0 && !st.areaMatches(desk) {
+		} else if settle > 0 && !st.areaSettled(desk) {
 			settle--
 			st.syncInputArea()
 		}
@@ -90,9 +90,10 @@ func (st *stream) cursorLoop() {
 	}
 }
 
-// areaSettlePolls is how many polls after the system's desktop changed the
-// cursor loop goes on asking where the captured display sits, while its
-// answer lags the desktop the cursor reports.
+// areaSettlePolls is how many polls after the system's desktop or the
+// picture changed the cursor loop goes on asking where the captured
+// display sits, while its answer lags the desktop the cursor reports or
+// the picture's size.
 const areaSettlePolls = 60
 
 // syncInputArea points absolute moves, and the cursor's place, at where
@@ -114,28 +115,36 @@ func (st *stream) syncInputArea() {
 	if err != nil || d.W <= 0 || d.H <= 0 {
 		return
 	}
+	st.areaMu.Lock()
 	st.mu.Lock()
 	if st.info.DisplayID != id || st.info.Display == d && st.info.Desktop == dk {
 		st.mu.Unlock()
+		st.areaMu.Unlock()
 		return
 	}
 	st.info.Display, st.info.Desktop = d, dk
 	info := st.info
 	st.mu.Unlock()
 	st.h.targetInput(info)
+	st.areaMu.Unlock()
 	st.traceMeta()
 }
 
-// areaMatches reports whether the input desktop is the desktop the
-// system's cursor reports, or that the cursor reports none.
-func (st *stream) areaMatches(desk cursor.Rect) bool {
-	if desk.W <= 0 || desk.H <= 0 {
-		return true
-	}
+// areaSettled reports whether the input area has caught up with the
+// system: its desktop is the one the cursor reports, where the cursor
+// reports one, and its display is the picture's size. Other displays can
+// keep the desktop's bounds through the captured one's mode switch.
+func (st *stream) areaSettled(desk cursor.Rect) bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	if st.info.DisplayID == "" {
+		return true
+	}
+	if d := st.info.Display; st.info.Width > 0 && st.info.Height > 0 && (d.W != st.info.Width || d.H != st.info.Height) {
+		return false
+	}
 	dk := st.info.Desktop
-	return st.info.DisplayID == "" || dk.X == desk.X && dk.Y == desk.Y && dk.W == desk.W && dk.H == desk.H
+	return desk.W <= 0 || desk.H <= 0 || dk.X == desk.X && dk.Y == desk.Y && dk.W == desk.W && dk.H == desk.H
 }
 
 // cursorReport decides which polls the client hears of: the first, and
