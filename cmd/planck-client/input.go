@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"runtime"
 	"slices"
 	"sync"
@@ -186,9 +187,15 @@ func (f *inputForwarder) view(c *mui.Context) {
 	}
 }
 
+// warpPinSlop is how far, in DIPs, from where MyGo had the pointer at a
+// warp an event it reports may be and still be one from before the warp:
+// the cursor relative mode held stays within a point of its place.
+const warpPinSlop = 2
+
 // warped is where the pointer is, x, y and over as MyGo has it in a view
 // at bx, by: no system tells MyGo of a warp, so after the lock's last
-// warp the pointer is where the warp put it until MyGo's place moves.
+// warp the pointer is where the warp put it until MyGo's place moves off
+// where it had it then.
 func (f *inputForwarder) warped(x, y float32, over bool, bx, by float32) (float32, float32, bool) {
 	if n, wx, wy := f.lock.lastWarp(); n != f.warp.n {
 		f.warp = warpPin{n: n, on: true, myX: x, myY: y, x: wx - bx, y: wy - by}
@@ -196,7 +203,7 @@ func (f *inputForwarder) warped(x, y float32, over bool, bx, by float32) (float3
 	if !f.warp.on {
 		return x, y, over
 	}
-	if x != f.warp.myX || y != f.warp.myY {
+	if math.Abs(float64(x-f.warp.myX)) > warpPinSlop || math.Abs(float64(y-f.warp.myY)) > warpPinSlop {
 		f.warp.on = false
 		return x, y, over
 	}

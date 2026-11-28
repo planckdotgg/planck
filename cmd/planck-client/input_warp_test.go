@@ -158,3 +158,42 @@ func TestUnconfirmedWarpSendsLivePlace(t *testing.T) {
 		}
 	}
 }
+
+// TestReleaseWarpIgnoresStaleJitter: the traced release. Relative mode
+// held the cursor at the picture's centre; the host let go with its cursor
+// a quarter of the way in, and the lock warped there. MyGo, which hears of
+// no warp, then reported an event queued before it, a fraction of a point
+// off the centre: that is not the mouse moving the cursor back to the
+// centre, so no move goes there. The mouse moving from the warp's place
+// goes as usual.
+func TestReleaseWarpIgnoresStaleJitter(t *testing.T) {
+	l, _, tt, take := lockedForwarder(t)
+	tt.Move(600, 100)
+	tt.Frame()
+	l.setHost(wire.CursorState{Captured: true})
+	tt.Frame()
+	tt.Move(400, 200)
+	tt.Frame()
+	take()
+
+	l.setHost(wire.CursorState{HasPos: true, X: 16384, Y: 16384})
+	tt.Frame()
+	abs := ofType(take(), input.TypeMouseMoveAbs)
+	if len(abs) != 1 || abs[0].MouseAbs.X < 16000 || abs[0].MouseAbs.X > 16800 || abs[0].MouseAbs.Y < 16000 || abs[0].MouseAbs.Y > 16800 {
+		t.Fatalf("on the release sent %+v, want the host's place", abs)
+	}
+	tt.Move(399.75, 200.25)
+	tt.Frame()
+	tt.Frame()
+	for _, ev := range ofType(take(), input.TypeMouseMoveAbs) {
+		if ev.MouseAbs.X > 20000 || ev.MouseAbs.Y > 20000 {
+			t.Fatalf("a stale event sent %+v, the picture's centre", ev.MouseAbs)
+		}
+	}
+	tt.Move(230, 110)
+	tt.Frame()
+	abs = ofType(take(), input.TypeMouseMoveAbs)
+	if len(abs) != 1 || abs[0].MouseAbs.X > 17500 || abs[0].MouseAbs.Y > 18500 {
+		t.Fatalf("after a move from the warp sent %+v", abs)
+	}
+}
