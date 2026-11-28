@@ -14,6 +14,8 @@ import (
 type fakeCG struct {
 	at    cgPoint
 	calls []string
+	// warpErr is the CGError warps return; one but 0 leaves the cursor.
+	warpErr int32
 }
 
 func (f *fakeCG) install(t *testing.T) {
@@ -21,6 +23,9 @@ func (f *fakeCG) install(t *testing.T) {
 	t.Cleanup(func() { cgWarpMouseCursorPosition, cgAssociateMouseAndPosition = warp, assoc })
 	cgWarpMouseCursorPosition = func(at cgPoint) int32 {
 		f.calls = append(f.calls, fmt.Sprintf("warp %g,%g", at.X, at.Y))
+		if f.warpErr != 0 {
+			return f.warpErr
+		}
 		f.at = at
 		return 0
 	}
@@ -131,5 +136,43 @@ func TestMacFreeAndConfinedAssociate(t *testing.T) {
 	p.relativeEvent(4, 0, cgPoint{2560, 720}, true, p.warpAt.Add(time.Millisecond))
 	if want := [][2]float64{{4, 0}}; !slices.Equal(sent, want) {
 		t.Fatalf("sent %v, want %v", sent, want)
+	}
+}
+
+// TestMacQueuedEventAtCentreKeepsItsDelta: an event queued before the
+// warp that happens to lie at the warp's target is still the mouse's
+// alone; the warp's distance comes off the event whose delta carries it.
+func TestMacQueuedEventAtCentreKeepsItsDelta(t *testing.T) {
+	f := &fakeCG{at: cgPoint{3496, 294}}
+	f.install(t)
+	var sent [][2]float64
+	p := fakeMacPointer(f, &sent)
+	p.hold(pointerRelative, rect{X: 1280, W: 2560, H: 1440}, spot{x: 2560, y: 720, set: true})
+	now := p.warpAt
+	centre := cgPoint{2560, 720}
+	p.relativeEvent(3, 1, cgPoint{2560.5, 720}, true, now.Add(2*time.Millisecond))
+	p.relativeEvent(-938, 426, centre, true, now.Add(7*time.Millisecond))
+	if want := [][2]float64{{3, 1}, {-2, 0}}; !slices.Equal(sent, want) {
+		t.Fatalf("sent %v, want %v", sent, want)
+	}
+}
+
+// TestMacFailedWarpTakesNothingOff: a warp CoreGraphics refuses moved
+// nothing, so going relative reports no warp and the next event's delta
+// goes as it came.
+func TestMacFailedWarpTakesNothingOff(t *testing.T) {
+	f := &fakeCG{at: cgPoint{2860, 820}, warpErr: 1001}
+	f.install(t)
+	var sent [][2]float64
+	p := fakeMacPointer(f, &sent)
+	if p.hold(pointerRelative, rect{X: 1280, W: 2560, H: 1440}, spot{x: 2560, y: 720, set: true}) {
+		t.Fatal("hold reported a warp CoreGraphics refused")
+	}
+	p.relativeEvent(4, 0, cgPoint{2560, 720}, true, time.Now())
+	if want := [][2]float64{{4, 0}}; !slices.Equal(sent, want) {
+		t.Fatalf("sent %v, want %v", sent, want)
+	}
+	if p.free(spot{x: 100, y: 100, set: true}) {
+		t.Fatal("free reported a warp CoreGraphics refused")
 	}
 }

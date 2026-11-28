@@ -41,7 +41,8 @@ const motionEvents = 1<<5 | 1<<6 | 1<<7 | 1<<27 | 1<<9
 // A warp shows in the next mouse event's delta, as though the mouse had
 // moved the cursor there: relative mode dissociates before it warps, as
 // GLFW does, and takes the warp's distance off the first event at the
-// warp's target, so that it is never sent as motion.
+// warp's target whose delta carries it, so that it is never sent as
+// motion.
 type macPointer struct {
 	win    func() *mygo.Window
 	motion func(dx, dy float64)
@@ -121,25 +122,23 @@ func (p *macPointer) hold(m pointerMode, area rect, at spot) bool {
 	if m == pointerRelative {
 		associate(0)
 	}
-	if at.set {
-		p.warpGlobal(float64(x+at.x), float64(y+at.y))
-	}
+	warped := at.set && p.warpGlobal(float64(x+at.x), float64(y+at.y))
 	if m != pointerRelative && !at.set {
 		associate(1)
 	}
 	p.allMoves(true)
-	return at.set
+	return warped
 }
 
 func (p *macPointer) free(at spot) bool {
 	p.mode = pointerFree
 	associate(1)
 	p.allMoves(false)
-	if at.set {
-		ox, oy := p.origin()
-		p.warpGlobal(float64(ox+at.x), float64(oy+at.y))
+	if !at.set {
+		return false
 	}
-	return at.set
+	ox, oy := p.origin()
+	return p.warpGlobal(float64(ox+at.x), float64(oy+at.y))
 }
 
 // allMoves has the window take the mouse's moves off its view too, or
@@ -150,7 +149,9 @@ func (p *macPointer) allMoves(on bool) {
 	}
 }
 
-func (p *macPointer) warpGlobal(x, y float64) {
+// warpGlobal warps the cursor to x, y on the screen and reports whether
+// CoreGraphics moved it.
+func (p *macPointer) warpGlobal(x, y float64) bool {
 	from := p.cursorAt()
 	ret := cgWarpMouseCursorPosition(cgPoint{x, y})
 	if itrace.On() {
@@ -159,10 +160,14 @@ func (p *macPointer) warpGlobal(x, y float64) {
 	if p.mode != pointerRelative {
 		p.unwarpQueued, p.unwarp = false, cgPoint{}
 		associate(1)
-		return
+		return ret == 0
+	}
+	if ret != 0 {
+		return false
 	}
 	p.unwarp = cgPoint{p.unwarp.X + x - from.X, p.unwarp.Y + y - from.Y}
 	p.warpTo, p.warpAt, p.unwarpQueued = cgPoint{x, y}, time.Now(), true
+	return true
 }
 
 // origin is the window content's top-left corner on the screen, in points.
@@ -208,15 +213,18 @@ func (p *macPointer) event(ev objc.ID) {
 }
 
 // relativeEvent sends a relative mouse event's delta, less the warps it
-// carries: the first event at the last warp's target within warpEventWait
-// of it carries them, and one queued before the warp, elsewhere, none.
+// carries: the first event within warpEventWait of the last warp, at its
+// target, whose delta is nearer the warps' distance than none carries
+// them. An event queued before the warp carries none, wherever it lies:
+// its delta is the mouse's alone.
 func (p *macPointer) relativeEvent(dx, dy float64, at cgPoint, known bool, now time.Time) {
 	if p.unwarpQueued {
+		u := p.unwarp
 		switch {
-		case now.Sub(p.warpAt) > warpEventWait:
+		case now.Sub(p.warpAt) > warpEventWait || u == (cgPoint{}):
 			p.unwarpQueued, p.unwarp = false, cgPoint{}
-		case !known || math.Abs(at.X-p.warpTo.X) <= 1 && math.Abs(at.Y-p.warpTo.Y) <= 1:
-			dx, dy = dx-p.unwarp.X, dy-p.unwarp.Y
+		case (!known || math.Abs(at.X-p.warpTo.X) <= 1 && math.Abs(at.Y-p.warpTo.Y) <= 1) && 2*(dx*u.X+dy*u.Y) > u.X*u.X+u.Y*u.Y:
+			dx, dy = dx-u.X, dy-u.Y
 			p.unwarpQueued, p.unwarp = false, cgPoint{}
 		}
 	}
