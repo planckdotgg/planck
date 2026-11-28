@@ -163,7 +163,12 @@ func describe(o win.Output, info gpu.Adapter) (capture.Display, bool) {
 	if d1, err := o.Desc1(); err == nil {
 		d.HDR = d1.ColorSpace == colorSpaceHDR10
 	}
-	d.Refresh = refreshOf(desc.Name())
+	if m, ok := gdiMode(desc.Name()); ok {
+		// DXGI's desktop coordinates lag a full-screen game's mode switch;
+		// GDI's mode is the one GetSystemMetrics and SendInput use.
+		d.X, d.Y, d.Width, d.Height, d.Refresh = m.x, m.y, m.w, m.h, m.hz
+		d.Primary = m.x == 0 && m.y == 0
+	}
 	return d, true
 }
 
@@ -175,17 +180,31 @@ var (
 	procEnumDisplaySettings = user32.NewProc("EnumDisplaySettingsW")
 )
 
-// refreshOf reads the display's current refresh rate from GDI; DXGI only
-// reports it once duplication starts.
-func refreshOf(device string) float64 {
+// displayMode is a display's current GDI mode: its place on the desktop,
+// its size and refresh rate. DXGI only reports the rate once duplication
+// starts.
+type displayMode struct {
+	x, y, w, h int
+	hz         float64
+}
+
+func gdiMode(device string) (displayMode, bool) {
 	var dm [220]byte // DEVMODEW
 	*(*uint16)(unsafe.Pointer(&dm[68])) = uint16(len(dm))
 	name, _ := syscall.UTF16PtrFromString(device)
 	const currentSettings = ^uintptr(0) // ENUM_CURRENT_SETTINGS
 	if r, _, _ := procEnumDisplaySettings.Call(uintptr(unsafe.Pointer(name)), currentSettings, uintptr(unsafe.Pointer(&dm[0]))); r == 0 {
-		return 0
+		return displayMode{}, false
 	}
-	return float64(*(*uint32)(unsafe.Pointer(&dm[184]))) // dmDisplayFrequency
+	return parseDevMode(&dm)
+}
+
+// parseDevMode reads a display DEVMODEW: dmPosition, dmPelsWidth,
+// dmPelsHeight and dmDisplayFrequency.
+func parseDevMode(dm *[220]byte) (displayMode, bool) {
+	u32 := func(off int) uint32 { return *(*uint32)(unsafe.Pointer(&dm[off])) }
+	m := displayMode{x: int(int32(u32(76))), y: int(int32(u32(80))), w: int(u32(172)), h: int(u32(176)), hz: float64(u32(184))}
+	return m, m.w > 0 && m.h > 0
 }
 
 // findOutput returns the output named id ("" for the primary display) and

@@ -62,9 +62,31 @@ func openDisplay(p VideoParams) (VideoPipe, error) {
 	p.FPS = fps
 	prio := win.Device{Object: win.ObjectAt(src.Device.Handle)}.RaiseGPUThreadPriority()
 	info := VideoInfo{Width: src.Display.Width, Height: src.Display.Height, FPS: fps, Codec: p.Codec, Chroma: p.Chroma,
-		Adapter: src.Device.Adapter, Power: power.Mode, GPUPriority: prio, Source: "display " + d.ID}
-	info.Display, info.Desktop = inputArea(d, all)
+		Adapter: src.Device.Adapter, Power: power.Mode, GPUPriority: prio, Source: "display " + d.ID, DisplayID: d.ID}
+	// A full-screen game's mode switch can come between the list above and
+	// the duplication: the source's display, and a list taken after it,
+	// have the mode it captures.
+	if now, err := display.List(); err == nil {
+		all = now
+	}
+	info.Display, info.Desktop = inputArea(src.Display, all)
 	return &sourcePipe{src: src, devices: []gpu.Device{src.Device}, params: p, power: power, info: info}, nil
+}
+
+// liveInputArea is inputArea for the display with this ID as GDI lays it
+// out now, which is where SendInput puts absolute moves.
+func liveInputArea(id string) (disp, desk input.Rect, err error) {
+	all, err := display.List()
+	if err != nil {
+		return input.Rect{}, input.Rect{}, err
+	}
+	for _, d := range all {
+		if d.ID == id {
+			disp, desk = inputArea(d, all)
+			return disp, desk, nil
+		}
+	}
+	return input.Rect{}, input.Rect{}, fmt.Errorf("session: no display %q", id)
 }
 
 func pickAdapter(match string) (gpu.Adapter, error) {

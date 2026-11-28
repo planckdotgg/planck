@@ -69,7 +69,10 @@ func openDisplay(p VideoParams) (VideoPipe, error) {
 		return nil, err
 	}
 	info := VideoInfo{Width: src.Display.Width, Height: src.Display.Height, FPS: p.FPS, Codec: p.Codec, Chroma: p.Chroma,
-		Adapter: dev.Adapter, Power: power.Mode, Source: "display " + src.Display.ID}
+		Adapter: dev.Adapter, Power: power.Mode, Source: "display " + src.Display.ID, DisplayID: src.Display.ID}
+	if now, err := display.List(); err == nil {
+		all = now
+	}
 	info.Display, info.Desktop = inputArea(src.Display, all)
 	return &sourcePipe{src: src, devices: []gpu.Device{dev}, params: p, power: power, info: info}, nil
 }

@@ -60,14 +60,22 @@ type VideoInfo struct {
 	// and Desktop the bounds of every display, for absolute pointer moves;
 	// zero where the source is no display or the platform does not say.
 	Display, Desktop input.Rect
+	// DisplayID is the captured display's capture.Display ID, empty for
+	// any other source.
+	DisplayID string
 }
 
 // inputArea is d's place on the desktop and the bounds of all the
-// displays together, as Windows lays out its virtual desktop.
+// displays together, as Windows lays out its virtual desktop. d stands in
+// for its own entry of all, which a list taken before a mode switch
+// settled still has at the old size.
 func inputArea(d capture.Display, all []capture.Display) (display, desktop input.Rect) {
 	display = input.Rect{X: d.X, Y: d.Y, W: d.Width, H: d.Height}
 	x0, y0, x1, y1 := d.X, d.Y, d.X+d.Width, d.Y+d.Height
 	for _, o := range all {
+		if o.ID == d.ID {
+			continue
+		}
 		x0, y0 = min(x0, o.X), min(y0, o.Y)
 		x1, y1 = max(x1, o.X+o.Width), max(y1, o.Y+o.Height)
 	}

@@ -23,6 +23,11 @@ func TestInputArea(t *testing.T) {
 		{"virtual display right", vdd, []capture.Display{primary, vdd}, rect(1920, 0, 5120, 1440), rect(0, 0, 7040, 1440)},
 		{"primary beside a virtual display", primary, []capture.Display{primary, vdd}, rect(0, 0, 1920, 1080), rect(0, 0, 7040, 1440)},
 		{"display at negative coordinates", left, []capture.Display{primary, left}, rect(-2560, -360, 2560, 1440), rect(-2560, -360, 4480, 1440)},
+		// A list taken before a game's 5120x1440 to 3840x2160 switch settled.
+		{"lone display, stale list", capture.Display{ID: vdd.ID, Width: 3840, Height: 2160},
+			[]capture.Display{{ID: vdd.ID, Width: 5120, Height: 1440}}, rect(0, 0, 3840, 2160), rect(0, 0, 3840, 2160)},
+		{"beside the primary, stale list", capture.Display{ID: vdd.ID, X: 1920, Width: 3840, Height: 2160},
+			[]capture.Display{primary, vdd}, rect(1920, 0, 3840, 2160), rect(0, 0, 5760, 2160)},
 	} {
 		d, dk := inputArea(c.d, c.all)
 		if d != c.wantD || dk != c.wantDk {

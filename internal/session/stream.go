@@ -51,6 +51,10 @@ type stream struct {
 	// keyNeeded asks the video loop for a keyframe: an invalidation that
 	// did not fit in invalid.
 	keyNeeded atomic.Bool
+	// areaStale tells the cursor loop a pipe opened, or its picture
+	// changed size in place, so its display's input area may have moved
+	// since the pipe found it.
+	areaStale atomic.Bool
 	// epoch counts the streams a resize switched to; every frame carries
 	// it. Only the video loop touches it.
 	epoch uint8
@@ -649,6 +653,8 @@ func (st *stream) videoLoop() {
 	buf := send.buffer()
 	kbps := st.params.BitrateKbps
 	var frameID uint32
+	// picW, picH are the picture size st.info has.
+	var picW, picH int
 	forceKey := true
 	// recovery marks the next frame encoded after an invalidation.
 	recovery := false
@@ -712,9 +718,11 @@ func (st *stream) videoLoop() {
 				})
 			}
 			info := pipe.Info()
+			picW, picH = info.Width, info.Height
 			st.mu.Lock()
 			st.info = info
 			st.mu.Unlock()
+			st.areaStale.Store(true)
 			st.openPhase(pipe, info.FPS)
 			st.h.targetInput(info)
 			st.traceMeta()
@@ -779,6 +787,14 @@ func (st *stream) videoLoop() {
 				return
 			}
 			continue
+		}
+		if inf := pipe.Info(); inf.Width != picW || inf.Height != picH {
+			// A mode switch the pipe recovered from without reopening.
+			picW, picH = inf.Width, inf.Height
+			st.mu.Lock()
+			st.info.Width, st.info.Height = picW, picH
+			st.mu.Unlock()
+			st.areaStale.Store(true)
 		}
 		if !streamed && len(pkt.Data) < slices {
 			continue

@@ -149,6 +149,9 @@ type HostConfig struct {
 	// ReadCursorShape replaces cursor.ReadShape, the image of the cursor
 	// clients reading wire.CursorShape see.
 	ReadCursorShape func(cursor.State) (cursor.Shape, error)
+	// InputArea replaces the system's layout of the display with this ID,
+	// which a stream follows when the display changes mode under it.
+	InputArea func(id string) (display, desktop input.Rect, err error)
 	// WhoIs replaces the local Tailscale daemon client.
 	WhoIs WhoIser
 	// FECMinLoss keeps parity for at least this loss rate.
