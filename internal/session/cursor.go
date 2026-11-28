@@ -37,6 +37,7 @@ func (st *stream) cursorLoop() {
 	var warp warpCapture
 	var trace cursorTrace
 	for {
+		epoch := st.h.itrace.epoch()
 		s, err := read()
 		if errors.Is(err, cursor.ErrUnsupported) {
 			return
@@ -66,7 +67,7 @@ func (st *stream) cursorLoop() {
 				}
 			}
 			if st.h.itrace.on() {
-				trace.poll(st.h, s, m, warped, act)
+				trace.poll(st.h, epoch, s, m, warped, act)
 			}
 		}
 		select {

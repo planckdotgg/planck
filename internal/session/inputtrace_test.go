@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
@@ -313,7 +314,7 @@ func TestCursorPollTrace(t *testing.T) {
 		if act == reportEmit {
 			report.sent(m)
 		}
-		ct.poll(h, s, m, false, act)
+		ct.poll(h, h.itrace.epoch(), s, m, false, act)
 	}
 	shown := cursor.State{Visible: true, X: 100, Y: 100, Handle: 7}
 	hidden := shown
@@ -434,8 +435,9 @@ func TestRetraceForgetsTheCursor(t *testing.T) {
 	rel := input.Event{Type: input.TypeMouseMoveRel, MouseRel: input.MouseMoveRel{DX: 1, DY: 1}}
 	var ct cursorTrace
 	poll := func() {
+		e := h.itrace.epoch()
 		s, _ := inj.read()
-		ct.poll(h, s, cursorMessage(s, cursor.Rect{W: 1920, H: 1080}), false, reportSame)
+		ct.poll(h, e, s, cursorMessage(s, cursor.Rect{W: 1920, H: 1080}), false, reportSame)
 	}
 	h.askTrace(true)
 	sendTo(t, h, 1, rel)
@@ -465,8 +467,9 @@ func TestRetraceDuringAnInput(t *testing.T) {
 	rel := input.Event{Type: input.TypeMouseMoveRel, MouseRel: input.MouseMoveRel{DX: 1, DY: 1}}
 	var ct cursorTrace
 	poll := func() {
+		e := h.itrace.epoch()
 		s, _ := inj.read()
-		ct.poll(h, s, cursorMessage(s, cursor.Rect{W: 1920, H: 1080}), false, reportSame)
+		ct.poll(h, e, s, cursorMessage(s, cursor.Rect{W: 1920, H: 1080}), false, reportSame)
 	}
 	h.askTrace(true)
 	sendTo(t, h, 1, rel)
@@ -495,5 +498,61 @@ func TestRetraceDuringAnInput(t *testing.T) {
 	jumps := ofKind(traceRecords(t, path), "cursor_jump")
 	if len(jumps) != 1 || jumps[0]["source"] != "input_gap" || jumps[0]["to"].(map[string]any)["x"] != float64(200) {
 		t.Fatalf("jumps %v, want only the warp to 200, 200 while tracing", jumps)
+	}
+}
+
+// TestPollReadAcrossRetrace: a cursor read that began before the trace went
+// off and on again is no base for the new trace's polls.
+func TestPollReadAcrossRetrace(t *testing.T) {
+	tr := inputtrace.New(inputtrace.SideHost)
+	reading, resume, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	reads := 0
+	hs := startHostWith(t, t.TempDir(), "127.0.0.1:0", nil, "off", func(h *Host) {
+		h.itrace.t = tr
+		h.cfg.InputTrace = true
+		h.cfg.ReadCursor = func() (cursor.State, error) {
+			switch reads++; reads {
+			case 1:
+				close(reading)
+				<-resume
+				return cursor.State{X: 101, Y: 101, Visible: true}, nil
+			case 2:
+				return cursor.State{X: 960, Y: 540, Visible: true}, nil
+			case 3:
+				close(done)
+			}
+			return cursor.State{}, cursor.ErrUnsupported
+		}
+	})
+	r := newClient(t, t.TempDir(), hs.host.PIN())
+	if err := connect(t, r, hs.host.Addr().String()); err != nil {
+		close(resume)
+		t.Fatal(err)
+	}
+	select {
+	case <-reading:
+	case <-time.After(3 * time.Second):
+		close(resume)
+		t.Fatal("cursorLoop never read the cursor")
+	}
+	dir := filepath.Dir(tr.Path())
+	if err := tr.Disable(); err != nil {
+		t.Fatal(err)
+	}
+	path, err := tr.Enable(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	close(resume)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("cursorLoop did not poll again")
+	}
+	if err := tr.Disable(); err != nil {
+		t.Fatal(err)
+	}
+	if jumps := ofKind(traceRecords(t, path), "cursor_jump"); len(jumps) != 0 {
+		t.Fatalf("jumps %v, want none: the cursor did not move within the trace", jumps)
 	}
 }

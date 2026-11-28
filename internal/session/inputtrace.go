@@ -47,6 +47,14 @@ type hostTrace struct {
 // on reports whether the host traces.
 func (ht *hostTrace) on() bool { return ht.t != nil && ht.t.On() }
 
+// epoch is the trace recording now, 0 while off.
+func (ht *hostTrace) epoch() uint32 {
+	if !ht.on() {
+		return 0
+	}
+	return ht.t.Epoch()
+}
+
 type tracePoint struct {
 	X int `json:"x"`
 	Y int `json:"y"`
@@ -342,9 +350,15 @@ var reportActionNames = [...]string{reportSame: "same", reportEmit: "emit", repo
 // poll traces a poll of the cursor, s as the system reported it and m as
 // the client hears of it, when it changed or the report did something;
 // and a jump where the cursor moved with no injection since the last poll.
-func (ct *cursorTrace) poll(h *Host, s cursor.State, m wire.CursorState, warped bool, act reportAction) {
+// read is the trace that was recording as the poll began: a sample read
+// across a restart belongs to neither trace and is dropped.
+func (ct *cursorTrace) poll(h *Host, read uint32, s cursor.State, m wire.CursorState, warped bool, act reportAction) {
 	t := h.itrace.t
-	if e := t.Epoch(); e != ct.epoch {
+	e := t.Epoch()
+	if read == 0 || e != read {
+		return
+	}
+	if e != ct.epoch {
 		// An injection of an earlier trace leaves no base.
 		h.itrace.lastMu.Lock()
 		*ct = cursorTrace{epoch: e, injects: h.itrace.injects}
