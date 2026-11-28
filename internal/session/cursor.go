@@ -224,15 +224,23 @@ const (
 // app takes it back; warpCapture holds the mouse captured once warpPolls
 // polls in a row, each after an absolute move, find the cursor at least
 // warpFar from the move and within warpNear of one point inside the
-// display, and lets it go when the cursor shows, is confined, or follows
-// the moves warpPolls polls in a row. Only moves the host injected count.
-// A point the cursor last went to with a move takes warpStallPolls.
+// display, while the moves themselves span warpFar, and lets it go when
+// the cursor shows, is confined, or follows the moves warpPolls polls in a
+// row. Only moves the host injected count. A point the cursor last went to
+// with a move takes warpStallPolls.
+//
+// The span tells a warp from a cursor that follows each move a fixed
+// distance or fraction off, as one placed by a stale display does: that
+// cursor goes with the moves, so it leaves warpNear of its point before
+// the moves span warpFar; a warped one stays.
 type warpCapture struct {
 	started bool
 	abs     uint32
 	streak  int
 	ax, ay  uint16
-	held    bool
+	// span is the box of the streak's move targets.
+	span [4]uint16
+	held bool
 	// followed is whether fx, fy is where the cursor last followed a move.
 	followed bool
 	fx, fy   uint16
@@ -272,13 +280,16 @@ func (w *warpCapture) observe(m wire.CursorState, abs uint32, tx, ty uint16) boo
 	}
 	if w.streak == 0 || !near(m.X, m.Y, w.ax, w.ay, warpNear) {
 		w.streak, w.ax, w.ay = 0, m.X, m.Y
+		w.span = [4]uint16{tx, ty, tx, ty}
 	}
 	w.streak++
+	w.span = [4]uint16{min(w.span[0], tx), min(w.span[1], ty), max(w.span[2], tx), max(w.span[3], ty)}
 	need := warpPolls
 	if w.followed && near(w.ax, w.ay, w.fx, w.fy, warpNear) {
 		need = warpStallPolls
 	}
-	if w.streak >= need {
+	spread := int(w.span[2])-int(w.span[0]) >= warpFar || int(w.span[3])-int(w.span[1]) >= warpFar
+	if w.streak >= need && spread {
 		w.held, w.streak = true, 0
 	}
 	return w.held
