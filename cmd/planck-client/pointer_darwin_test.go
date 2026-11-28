@@ -176,3 +176,22 @@ func TestMacFailedWarpTakesNothingOff(t *testing.T) {
 		t.Fatal("free reported a warp CoreGraphics refused")
 	}
 }
+
+// TestMacPointerWarpWithOpposingDeviceMotion: the mouse moving -6 against a
+// +4 warp gives the warp-bearing event a delta of -2, nearer none than the
+// warp's distance. It still carries the warp, so the mouse's -6 goes, and
+// the next event's +3 goes whole.
+func TestMacPointerWarpWithOpposingDeviceMotion(t *testing.T) {
+	f := &fakeCG{at: cgPoint{2556, 720}}
+	f.install(t)
+	var sent [][2]float64
+	p := fakeMacPointer(f, &sent)
+	p.hold(pointerRelative, rect{X: 1280, W: 2560, H: 1440}, spot{x: 2560, y: 720, set: true})
+	now := p.warpAt
+	centre := cgPoint{2560, 720}
+	p.relativeEvent(-2, 0, centre, true, now.Add(7*time.Millisecond))
+	p.relativeEvent(3, 0, centre, true, now.Add(12*time.Millisecond))
+	if want := [][2]float64{{-6, 0}, {3, 0}}; !slices.Equal(sent, want) {
+		t.Fatalf("sent %v, want %v", sent, want)
+	}
+}
