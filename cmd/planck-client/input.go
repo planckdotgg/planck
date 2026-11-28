@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/egoist/mygo/gpusurface"
 	mui "github.com/egoist/mygo/ui"
@@ -47,6 +48,8 @@ type inputForwarder struct {
 	// frame found it.
 	relMoves uint32
 	warp     warpPin
+	// now is the clock warp pins keep; nil is time.Now.
+	now func() time.Time
 	// btnSys tells what MyGo does not of the buttons; nil takes MyGo's
 	// buttons 0, 1 and 2 as left, right and middle, and its releases alone.
 	btnSys     buttonSys
@@ -103,12 +106,14 @@ type buttonEdge struct {
 	x, y                       float32
 }
 
-// warpPin is the lock's warp number n, to x, y in the view, taken while on
-// and MyGo still has the pointer at myX, myY, where it had it then.
+// warpPin is the lock's warp number n, to x, y in the view, made at at,
+// taken while on and MyGo still has the pointer at myX, myY, where it had
+// it then; lastX, lastY is where MyGo had it at the frame before.
 type warpPin struct {
-	n              uint32
-	on             bool
-	myX, myY, x, y float32
+	n                            uint32
+	on                           bool
+	myX, myY, x, y, lastX, lastY float32
+	at                           time.Time
 }
 
 // framePointer is where the frame finds the pointer, on the host's
@@ -189,25 +194,51 @@ func (f *inputForwarder) view(c *mui.Context) {
 
 // warpPinSlop is how far, in DIPs, from where MyGo had the pointer at a
 // warp an event it reports may be and still be one from before the warp:
-// the cursor relative mode held stays within a point of its place.
-const warpPinSlop = 2
+// the cursor relative mode held stays within a point of its place. Those
+// events come within warpPinWindow of the warp; after it, any change of
+// MyGo's place from the frame before is the mouse's.
+const (
+	warpPinSlop   = 2
+	warpPinWindow = 100 * time.Millisecond
+)
 
 // warped is where the pointer is, x, y and over as MyGo has it in a view
 // at bx, by: no system tells MyGo of a warp, so after the lock's last
 // warp the pointer is where the warp put it until MyGo's place moves off
-// where it had it then.
+// where it had it then. A warp to within warpPinSlop of that place pins
+// nothing: MyGo's place is the warp's, near enough, and a stale event
+// there is no move away.
 func (f *inputForwarder) warped(x, y float32, over bool, bx, by float32) (float32, float32, bool) {
+	now := f.clock()
 	if n, wx, wy := f.lock.lastWarp(); n != f.warp.n {
-		f.warp = warpPin{n: n, on: true, myX: x, myY: y, x: wx - bx, y: wy - by}
+		tx, ty := wx-bx, wy-by
+		f.warp = warpPin{n: n, on: !within(x, y, tx, ty, warpPinSlop), myX: x, myY: y, x: tx, y: ty, lastX: x, lastY: y, at: now}
 	}
 	if !f.warp.on {
 		return x, y, over
 	}
-	if math.Abs(float64(x-f.warp.myX)) > warpPinSlop || math.Abs(float64(y-f.warp.myY)) > warpPinSlop {
+	stale := within(x, y, f.warp.myX, f.warp.myY, warpPinSlop)
+	if now.Sub(f.warp.at) > warpPinWindow {
+		stale = x == f.warp.lastX && y == f.warp.lastY
+	}
+	if !stale {
 		f.warp.on = false
 		return x, y, over
 	}
+	f.warp.lastX, f.warp.lastY = x, y
 	return f.warp.x, f.warp.y, true
+}
+
+// within reports whether x, y is within d of bx, by on both axes.
+func within(x, y, bx, by, d float32) bool {
+	return math.Abs(float64(x-bx)) <= float64(d) && math.Abs(float64(y-by)) <= float64(d)
+}
+
+func (f *inputForwarder) clock() time.Time {
+	if f.now != nil {
+		return f.now()
+	}
+	return time.Now()
 }
 
 // moveAbs puts the host's pointer at x, y, unless it is there, and

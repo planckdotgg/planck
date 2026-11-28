@@ -2,6 +2,9 @@ package main
 
 import (
 	"testing"
+	"time"
+
+	mui "github.com/egoist/mygo/ui"
 
 	"github.com/planckdotgg/planck/pkg/input"
 	"github.com/planckdotgg/planck/pkg/wire"
@@ -195,5 +198,81 @@ func TestReleaseWarpIgnoresStaleJitter(t *testing.T) {
 	abs = ofType(take(), input.TypeMouseMoveAbs)
 	if len(abs) != 1 || abs[0].MouseAbs.X > 17500 || abs[0].MouseAbs.Y > 18500 {
 		t.Fatalf("after a move from the warp sent %+v", abs)
+	}
+}
+
+// clockedForwarder is lockedForwarder with the forwarder's clock the
+// test's, which starts at *now.
+func clockedForwarder(t *testing.T, now *time.Time) (*pointerLock, *mui.Tester, func() []input.Event) {
+	f, tt, got := barsForwarder(1920, 1080)
+	f.lock = newPointerLock(&fakePointer{t: t}, f.send)
+	f.now = func() time.Time { return *now }
+	return f.lock, tt, func() []input.Event {
+		out := *got
+		*got = nil
+		return out
+	}
+}
+
+// relativeAtCentre takes the pointer relative and leaves MyGo with it at
+// the picture's centre, as relative mode holds it.
+func relativeAtCentre(l *pointerLock, tt *mui.Tester, take func() []input.Event) {
+	tt.Move(600, 100)
+	tt.Frame()
+	l.setHost(wire.CursorState{Captured: true})
+	tt.Frame()
+	tt.Move(400, 200)
+	tt.Frame()
+	take()
+}
+
+// TestReleaseAtCentreSendsSmallMove: a release that warps the cursor to
+// about where relative mode held it leaves nothing for MyGo's stale place
+// to get wrong, so the mouse's next 1 DIP goes to the host at once.
+func TestReleaseAtCentreSendsSmallMove(t *testing.T) {
+	now := time.Unix(1000, 0)
+	l, tt, take := clockedForwarder(t, &now)
+	relativeAtCentre(l, tt, take)
+	l.setHost(wire.CursorState{HasPos: true, X: 32768, Y: 32768})
+	tt.Frame()
+	take()
+	now = now.Add(5 * time.Millisecond)
+	tt.Move(401, 200)
+	tt.Frame()
+	abs := ofType(take(), input.TypeMouseMoveAbs)
+	if len(abs) != 1 || abs[0].MouseAbs.X < 32820 || abs[0].MouseAbs.X > 32920 {
+		t.Fatalf("after a 1 DIP move sent %+v, want it", abs)
+	}
+}
+
+// TestReleaseWarpPinEnds: away from the release's warp, MyGo's events
+// from before it, within warpPinSlop of where it had the pointer, go
+// nowhere for warpPinWindow; after it any move MyGo reports is the
+// mouse's, however small, while a still mouse still sends nothing.
+func TestReleaseWarpPinEnds(t *testing.T) {
+	now := time.Unix(1000, 0)
+	l, tt, take := clockedForwarder(t, &now)
+	relativeAtCentre(l, tt, take)
+	l.setHost(wire.CursorState{HasPos: true, X: 16384, Y: 16384})
+	tt.Frame()
+	take()
+
+	now = now.Add(warpPinWindow / 2)
+	tt.Move(399.75, 200.25)
+	tt.Frame()
+	if abs := ofType(take(), input.TypeMouseMoveAbs); len(abs) != 0 {
+		t.Fatalf("a stale event inside the window sent %+v", abs)
+	}
+	now = now.Add(warpPinWindow)
+	tt.Frame()
+	tt.Frame()
+	if abs := ofType(take(), input.TypeMouseMoveAbs); len(abs) != 0 {
+		t.Fatalf("a still mouse after the window sent %+v", abs)
+	}
+	tt.Move(400.75, 200.25)
+	tt.Frame()
+	abs := ofType(take(), input.TypeMouseMoveAbs)
+	if len(abs) != 1 || abs[0].MouseAbs.X < 32700 || abs[0].MouseAbs.X > 33000 {
+		t.Fatalf("a 1 DIP move after the window sent %+v, want it", abs)
 	}
 }
