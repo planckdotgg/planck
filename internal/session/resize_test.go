@@ -333,8 +333,11 @@ func TestResizeFollowsDisplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, "video frames", func() bool { return r.sink.Units.Load() >= 10 })
-	if p := r.client.Stats().Profile; p.FPS != 120 || vdd.scales[0] != 100 {
-		t.Fatalf("initial stream %d fps at %d%% scale, want 120 at 100%%", p.FPS, vdd.scales[0])
+	vdd.mu.Lock()
+	first := vdd.scales[0]
+	vdd.mu.Unlock()
+	if p := r.client.Stats().Profile; p.FPS != 120 || first != 100 {
+		t.Fatalf("initial stream %d fps at %d%% scale, want 120 at 100%%", p.FPS, first)
 	}
 	other := defaults.ClientDisplay{WidthPx: 3440, HeightPx: 1440, Scale: 2, MaxHz: 60, MinHz: 24}
 	if err := r.client.ResizeOn(1280, 720, other); err != nil {
