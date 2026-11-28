@@ -68,6 +68,9 @@ func (st *stream) cursorLoop() {
 			warped := warp.observe(m, moves, uint16(target>>16), uint16(target))
 			m.Captured = warped || m.Captured
 			act := report.decide(m)
+			if act == reportEmit && report.started && report.last.Captured && !m.Captured && !m.HasPos {
+				m.X, m.Y, m.HasPos = clampOnto(s, cursor.Rect{X: d.X, Y: d.Y, W: d.W, H: d.H})
+			}
 			if act == reportEmit {
 				if st.sess.SendControl(&m) == nil {
 					report.sent(m)
@@ -261,6 +264,19 @@ func cursorMessage(s cursor.State, display cursor.Rect) wire.CursorState {
 	m := wire.CursorState{Visible: s.Visible, Captured: s.Captured}
 	m.X, m.Y, m.HasPos = cursor.Normalize(s.X, s.Y, display)
 	return m
+}
+
+// clampOnto is s's place moved onto display at its nearest point. A
+// release of a captured cursor off the display carries it: the client puts
+// its own cursor there, where its next absolute move starts from, rather
+// than where relative mode held it, the picture's centre.
+func clampOnto(s cursor.State, display cursor.Rect) (x, y uint16, ok bool) {
+	if display.W <= 0 || display.H <= 0 {
+		return 0, 0, false
+	}
+	cx := min(max(s.X, display.X), display.X+display.W-1)
+	cy := min(max(s.Y, display.Y), display.Y+display.H-1)
+	return cursor.Normalize(cx, cy, display)
 }
 
 // Bounds of warpCapture, across the streamed display's 0..65535.
